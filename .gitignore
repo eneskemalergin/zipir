@@ -1,0 +1,12 @@
+# Zig build artifacts
+.zig-cache/
+.zig-out/
+zig-cache/
+zig-out/
+
+
+# ignored dev folders
+tmp/
+ref/
+data/
+plan/
