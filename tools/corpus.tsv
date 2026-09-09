@@ -1,0 +1,14 @@
+# z-flate local gzip corpus
+category	class	filename	bytes	sha256	url
+sequencing	sanity	test_1.fastq.gz	9413	0515ba304cb1bf7abcdd9c156b6affad7e580273f983dfed2e8fe2d918e800ff	https://raw.githubusercontent.com/nf-core/test-datasets/a4ac5288cc8b4dd208b9421121a48079d92750c8/data/genomics/sarscov2/illumina/fastq/test_1.fastq.gz
+sequencing	small	SRR389222_sub1.fastq.gz	3302006	cf64dcfa6399e1f872a2c8cad0568db96d9fcc4c210ef00c9f5db06e689e1238	https://raw.githubusercontent.com/nf-core/test-datasets/e7e1fb8940fc14e2336101147a31ce8e0eda6264/testdata/SRR389222_sub1.fastq.gz
+sequencing	medium	DRR003897.fastq.gz	21969196	86879b60c81aef5fcdf9a2f437e0fc9d4f8d1f09521ba93a60d4fad9b70e1f76	https://ftp.sra.ebi.ac.uk/vol1/fastq/DRR003/DRR003897/DRR003897.fastq.gz
+sequencing	large	DRR000184.fastq.gz	183397860	9cc5dde3e842bc7206b967a18a2394b8a830c1d111ca0b78c1ab880aaec7885c	https://ftp.sra.ebi.ac.uk/vol1/fastq/DRR000/DRR000184/DRR000184.fastq.gz
+ms	sanity	55merge_omssa.mzid.gz	14109	2b70fb6cd5e97114598a1bfba6ee5a9d41cb94ae2e5ba70a329a4613d55e866d	https://raw.githubusercontent.com/HUPO-PSI/mzIdentML/e5b2430053f2d86567e24edaf6205f883ad38b5c/examples/1_1examples/55merge_omssa.mzid.gz
+ms	small	55merge_tandem.mzid.gz	268700	8a4cb86c84b41aebf96a2ab03a2769239491f4c7cc9fe7e278d8b1e385c34f5e	https://raw.githubusercontent.com/HUPO-PSI/mzIdentML/e5b2430053f2d86567e24edaf6205f883ad38b5c/examples/1_1examples/55merge_tandem.mzid.gz
+ms	medium	PRIDE_Exp_Complete_Ac_22134.xml.gz	10668000	ee51944f27f8f5557e5f3cb5491b278d67f0fd3e88eaeb358b67bd35f8242a1f	https://ftp.pride.ebi.ac.uk/pride/data/archive/2012/03/PXD000001/PRIDE_Exp_Complete_Ac_22134.xml.gz
+ms	large	YJ_Cc_WT1_IM_P_9Jan17_Pippin_16-09-11.mzML.gz	131190795	2757a46e981af251662a956ccf17c73c7d969193152ce77c46390fa26d2cf057	https://ftp.pride.ebi.ac.uk/pride/data/archive/2022/09/PXD010613/YJ_Cc_WT1_IM_P_9Jan17_Pippin_16-09-11.mzML.gz
+generalized	sanity	hello-1.3.tar.gz	87942	21eec261fbc60c1760051112a02b2d9548b6fa85422d4c79ea756077cc9623f6	https://ftp.gnu.org/gnu/hello/hello-1.3.tar.gz
+generalized	small	cantrbry.tar.gz	739071	f140e8a5b73d3f53198555a63bfb827889394a42f20825df33c810c3d5e3f8fb	https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz
+generalized	medium	silesia.tar.gz	68228455	4eedfb1a11acf1f5c63abc2845bd6c043b1ca75d11b199f9f8c719e30f132de8	https://raw.githubusercontent.com/DataCompression/corpus-collection/d59143a41cc7d65063a70e86063a3c39aeae6d9f/Silesia-Corpus/silesia.tar.gz
+generalized	large	linux-6.6.51.tar.gz	225305559	2b731d9899e5143c81420898952b8c9162c568c142a400b8ca904e594734d9a4	https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.51.tar.gz

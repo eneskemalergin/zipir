@@ -1,0 +1,82 @@
+# z-flate run matrix
+# One row per tool + format + compress-level + threads we qualify and time.
+# Decompress is not a row: it uses level - at the same format and threads.
+# Decode-only tools have a single row with level -.
+# All rows here are ST. Do not add pigz -p32, igzip -T, or pigz -11.
+# Why a tool is live or dropped: tools/LOG.md.
+# Levels are that tool's scale. See tools/levels.tsv.
+tool	tool_version	format	level	threads	nthreads
+std-gzip	0.16.0	gzip	1	ST	1
+std-gzip	0.16.0	gzip	2	ST	1
+std-gzip	0.16.0	gzip	3	ST	1
+std-gzip	0.16.0	gzip	4	ST	1
+std-gzip	0.16.0	gzip	5	ST	1
+std-gzip	0.16.0	gzip	6	ST	1
+std-gzip	0.16.0	gzip	7	ST	1
+std-gzip	0.16.0	gzip	8	ST	1
+std-gzip	0.16.0	gzip	9	ST	1
+gnu-gzip	1.14	gzip	1	ST	1
+gnu-gzip	1.14	gzip	2	ST	1
+gnu-gzip	1.14	gzip	3	ST	1
+gnu-gzip	1.14	gzip	4	ST	1
+gnu-gzip	1.14	gzip	5	ST	1
+gnu-gzip	1.14	gzip	6	ST	1
+gnu-gzip	1.14	gzip	7	ST	1
+gnu-gzip	1.14	gzip	8	ST	1
+gnu-gzip	1.14	gzip	9	ST	1
+libdeflate-gzip	1.26	gzip	1	ST	1
+libdeflate-gzip	1.26	gzip	2	ST	1
+libdeflate-gzip	1.26	gzip	3	ST	1
+libdeflate-gzip	1.26	gzip	4	ST	1
+libdeflate-gzip	1.26	gzip	5	ST	1
+libdeflate-gzip	1.26	gzip	6	ST	1
+libdeflate-gzip	1.26	gzip	7	ST	1
+libdeflate-gzip	1.26	gzip	8	ST	1
+libdeflate-gzip	1.26	gzip	9	ST	1
+libdeflate-gzip	1.26	gzip	10	ST	1
+libdeflate-gzip	1.26	gzip	11	ST	1
+libdeflate-gzip	1.26	gzip	12	ST	1
+igzip	2.32.1	gzip	0	ST	1
+igzip	2.32.1	gzip	1	ST	1
+igzip	2.32.1	gzip	2	ST	1
+igzip	2.32.1	gzip	3	ST	1
+pigz	2.8	gzip	0	ST	1
+pigz	2.8	gzip	1	ST	1
+pigz	2.8	gzip	2	ST	1
+pigz	2.8	gzip	3	ST	1
+pigz	2.8	gzip	4	ST	1
+pigz	2.8	gzip	5	ST	1
+pigz	2.8	gzip	6	ST	1
+pigz	2.8	gzip	7	ST	1
+pigz	2.8	gzip	8	ST	1
+pigz	2.8	gzip	9	ST	1
+flate2-miniz	1.1.10	gzip	0	ST	1
+flate2-miniz	1.1.10	gzip	1	ST	1
+flate2-miniz	1.1.10	gzip	2	ST	1
+flate2-miniz	1.1.10	gzip	3	ST	1
+flate2-miniz	1.1.10	gzip	4	ST	1
+flate2-miniz	1.1.10	gzip	5	ST	1
+flate2-miniz	1.1.10	gzip	6	ST	1
+flate2-miniz	1.1.10	gzip	7	ST	1
+flate2-miniz	1.1.10	gzip	8	ST	1
+flate2-miniz	1.1.10	gzip	9	ST	1
+flate2-zlib-rs	1.1.10	gzip	0	ST	1
+flate2-zlib-rs	1.1.10	gzip	1	ST	1
+flate2-zlib-rs	1.1.10	gzip	2	ST	1
+flate2-zlib-rs	1.1.10	gzip	3	ST	1
+flate2-zlib-rs	1.1.10	gzip	4	ST	1
+flate2-zlib-rs	1.1.10	gzip	5	ST	1
+flate2-zlib-rs	1.1.10	gzip	6	ST	1
+flate2-zlib-rs	1.1.10	gzip	7	ST	1
+flate2-zlib-rs	1.1.10	gzip	8	ST	1
+flate2-zlib-rs	1.1.10	gzip	9	ST	1
+zlib-ng	2.3.3	gzip	0	ST	1
+zlib-ng	2.3.3	gzip	1	ST	1
+zlib-ng	2.3.3	gzip	2	ST	1
+zlib-ng	2.3.3	gzip	3	ST	1
+zlib-ng	2.3.3	gzip	4	ST	1
+zlib-ng	2.3.3	gzip	5	ST	1
+zlib-ng	2.3.3	gzip	6	ST	1
+zlib-ng	2.3.3	gzip	7	ST	1
+zlib-ng	2.3.3	gzip	8	ST	1
+zlib-ng	2.3.3	gzip	9	ST	1

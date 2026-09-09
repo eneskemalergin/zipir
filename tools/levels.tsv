@@ -1,0 +1,14 @@
+# Level scales. Integers are not comparable across rows.
+# default is the CLI/library default on that scale.
+# fast is the knob used for the gzip -1 kept-band encode table.
+# store is zlib stored (no DEFLATE). zopfli is pigz -11, not a gzip level.
+# full is every level we qualify and time. Decompress is always -.
+tool	scale	default	full	store	fast	notes
+std-gzip	1-9	6	1 2 3 4 5 6 7 8 9	no	1	Zig std has no 0
+gnu-gzip	1-9	6	1 2 3 4 5 6 7 8 9	no	1	GNU gzip has no -0
+pigz	0-9	6	0 1 2 3 4 5 6 7 8 9	0	1	-11 is zopfli; not in this matrix
+libdeflate-gzip	1-12	6	1 2 3 4 5 6 7 8 9 10 11 12	no	1	CLI rejects -0; library 0 exists but is not this binary
+igzip	0-3	2	0 1 2 3	no	0	igzip -6 is invalid; -2 is not gzip -6
+flate2-miniz	0-9	6	0 1 2 3 4 5 6 7 8 9	0	1	flate2 rust_backend
+flate2-zlib-rs	0-9	6	0 1 2 3 4 5 6 7 8 9	0	1	flate2 zlib-rs 0.6.7
+zlib-ng	0-9	6	0 1 2 3 4 5 6 7 8 9	0	1	zlib-ng minigzip; not pigz framing

@@ -1,0 +1,12 @@
+# z-flate coverage matrix
+# Capability of a tool + format + version. Not speed.
+# levels lists compress levels we actually qualify, space-separated, on that tool's scale.
+tool	tool_version	format	compress	decompress	levels	st	mt	stream	bound	window	heap	crc	isize	concat	cap	dict	source
+std-gzip	0.16.0	gzip	yes	yes	1 2 3 4 5 6 7 8 9	yes	no	yes	yes	32 KiB	no	no	no	no	no	no	Zig 0.16 std.compress.flate gzip
+gnu-gzip	1.14	gzip	yes	yes	1 2 3 4 5 6 7 8 9	yes	no	yes	yes	32 KiB	no	yes	yes	yes	no	no	host GNU gzip 1.14
+libdeflate-gzip	1.26	gzip	yes	yes	1 2 3 4 5 6 7 8 9 10 11 12	yes	no	no	no	32 KiB	yes	yes	hint	yes	no	no	local libdeflate 1.26 gzip CLI
+igzip	2.32.1	gzip	yes	yes	0 1 2 3	yes	no	yes	yes	32 KiB	yes	yes	yes	yes	no	no	local ISA-L 2.32.1 igzip ST
+pigz	2.8	gzip	yes	yes	0 1 2 3 4 5 6 7 8 9	yes	no	yes	yes	32 KiB	no	yes	yes	yes	no	no	host pigz 2.8 -p1
+flate2-miniz	1.1.10	gzip	yes	yes	0 1 2 3 4 5 6 7 8 9	yes	no	yes	no	32 KiB	yes	yes	yes	yes	no	no	flate2 1.1.10 rust_backend miniz_oxide
+flate2-zlib-rs	1.1.10	gzip	yes	yes	0 1 2 3 4 5 6 7 8 9	yes	no	yes	no	32 KiB	yes	yes	yes	yes	no	no	flate2 1.1.10 zlib-rs 0.6.7
+zlib-ng	2.3.3	gzip	yes	yes	0 1 2 3 4 5 6 7 8 9	yes	no	yes	yes	32 KiB	no	yes	yes	yes	no	no	local zlib-ng 2.3.3 minigzip ST
