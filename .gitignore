@@ -4,9 +4,18 @@
 zig-cache/
 zig-out/
 
+# Python
+__pycache__/
 
 # ignored dev folders
 tmp/
 ref/
 data/
 plan/
+
+# Repository-local tools publish only generated state here.
+/tools/bin/
+/tools/.local/
+/tools/.zig-cache/
+/tools/zig-out/
+/tools/zig-pkg/
