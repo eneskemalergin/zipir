@@ -399,8 +399,10 @@ const Ctx = struct {
         while (off < bytes.len) {
             try self.room(keep_history);
             const n = @min(bytes.len - off, self.out.len - self.out_pos);
-            @memcpy(self.out[self.out_pos..][0..n], bytes[off..][0..n]);
+            self.crcCatchup();
+            self.crc = crc.copyUpdate(self.crc, bytes[off..][0..n], self.out[self.out_pos..][0..n]);
             self.out_pos += n;
+            self.crc_pos = self.out_pos;
             off += n;
         }
     }
@@ -527,8 +529,8 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
         br.i = index;
         ctx.out_pos = op;
     }
-    // A complete symbol consumes <=48 bits; wild copies require 288 owned bytes.
-    while (output.len - op >= 288 and input.len - index >= 8) {
+    // A complete symbol consumes <=48 bits; wild copies require 289 owned bytes.
+    while (output.len - op >= 289 and input.len - index >= 8) {
         const word = std.mem.readInt(u64, input[index..][0..8], .little);
         bits |= word << @intCast(count);
         index += 7 - (count >> 3);
@@ -565,14 +567,8 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
                 const chunk: @Vector(32, u8) = output[op + j - distance ..][0..32].*;
                 output[op + j ..][0..32].* = chunk;
             }
-        } else if (distance >= 16) {
-            var j: usize = 0;
-            while (j < length) : (j += 16) {
-                const chunk: @Vector(16, u8) = output[op + j - distance ..][0..16].*;
-                output[op + j ..][0..16].* = chunk;
-            }
-        } else if (distance == 1) {
-            copy.dist1Broadcast32(output[op..][0..length], output[op - 1]);
+        } else if (full_history or history + (op - initial_op) >= 32) {
+            copy.repeatSmall(output, op, distance, length);
         } else {
             copy.matchVec16(output, op, distance, length);
         }
@@ -584,7 +580,16 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
 fn decodeHuff(ctx: *Ctx, lit: []const Entry, dist: []const Entry) !void {
     const br = ctx.br;
     while (true) {
-        if (br.src.len - br.i < 8) _ = try br.window(8);
+        if (br.src.len - br.i < 8) {
+            if (br.nbits >= 11) {
+                const buffered = peekFirst(lit, 11, br.bits);
+                if (buffered.kind == .eob) {
+                    br.consume(buffered.nbits);
+                    return;
+                }
+            }
+            _ = try br.window(8);
+        }
         if (try @call(.never_inline, decodeFast, .{ ctx, lit, dist })) return;
         try br.need(15);
         var e = peekFirst(lit, 11, br.bits);

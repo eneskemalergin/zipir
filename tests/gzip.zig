@@ -30,6 +30,34 @@ test "[integration] - [gzip]: bounded refills and partial drains preserve member
     }
 }
 
+test "[integration] - [gzip]: optional headers without FHCRC preserve refills and payload CRC" {
+    const seed = @embedFile("data/synthetic/long-header.gz");
+    const plain = @embedFile("data/synthetic/short.plain");
+    const header_end = 10 + 2 + 65535 + 70001 + 66001;
+    const compressed = try std.testing.allocator.alloc(u8, seed.len - 2);
+    defer std.testing.allocator.free(compressed);
+    @memcpy(compressed[0..header_end], seed[0..header_end]);
+    @memcpy(compressed[header_end..], seed[header_end + 2 ..]);
+    compressed[3] &= ~@as(u8, 2);
+    const work = try std.testing.allocator.create(Decoder);
+    defer std.testing.allocator.destroy(work);
+    const got = try std.testing.allocator.alloc(u8, plain.len);
+    defer std.testing.allocator.free(got);
+    var input: [32768]u8 = undefined;
+    var output: [4096]u8 = undefined;
+    for ([_]usize{ 16, 32768 }) |size| {
+        var source = support.Source.init(compressed, input[0..size], if (size == 16) 1 else size);
+        var sink: support.Sink = .{ .output = &output, .sink = got };
+        try std.testing.expectEqual(plain.len, try work.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectEqualSlices(u8, plain, got);
+        compressed[compressed.len - 8] ^= 1;
+        source = support.Source.init(compressed, input[0..size], size);
+        sink = .{ .output = &output };
+        try std.testing.expectError(error.CrcMismatch, work.decompress(&source.reader, &sink.writer, .{}));
+        compressed[compressed.len - 8] ^= 1;
+    }
+}
+
 test "[property] - [gzip]: every small input split and truncated prefix is checked" {
     const seed = @embedFile("data/synthetic/repeat-zero.gz");
     const work = try std.testing.allocator.create(Decoder);

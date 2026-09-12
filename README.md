@@ -52,7 +52,7 @@ cat input.gz | ./zig-out/bin/z_flate decompress > output
 
 ## Memory and CPU targets
 
-The gzip workspace is 200,704 bytes. With the example's 32 KiB input and 4 KiB output buffers, explicit storage is 237,568 bytes (232 KiB), plus bounded stack, shared tables, and runtime/code residency. These are fixed reservations, not total process peak RSS. No complete input/output allocation or application-level memory mapping occurs inside the decoder.
+The gzip workspace is 200,704 bytes. With the example's 32 KiB input and 4 KiB output buffers, explicit storage is 237,568 bytes (232 KiB), plus bounded stack, shared tables, and runtime/code residency. Fixed Huffman blocks use 10 KiB of shared read-only tables generated at compile time. These are fixed reservations, not total process peak RSS. No complete input/output allocation or application-level memory mapping occurs inside the decoder.
 
 CRC uses a portable implementation with compile-time guarded x86 PCLMUL and AArch64 CRC instructions. CPU selection follows Zig's target options: a native build targets the build machine. Use `-Dcpu=baseline` when distributing to other CPUs, or select a known minimum CPU explicitly. Linux and macOS on x86_64 and AArch64 are the intended targets. Cross-compilation is separate from runtime performance qualification.
 
@@ -67,5 +67,3 @@ zig build test -Dcpu=baseline --summary all
 ```
 
 The self-contained tests cover public streaming contracts, corruption, chunk boundaries, output limits, CLI behavior, and scalar/native kernel agreement. Test fixtures and verification outputs may occupy more memory than a standalone decoder. Performance and RSS must be measured in separate processes with fixed input/output buffers, without those retained oracle files.
-
-The local experiment history remains in `tmp/next/`. Integration validation and measurements are recorded in `tmp/next/P01.md`; these local files and external corpora are not package dependencies.

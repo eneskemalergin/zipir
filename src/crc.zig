@@ -124,13 +124,23 @@ fn reduce128(x1_in: X) u32 {
     return extract1(x1);
 }
 
-fn pclmul64Body(data: []const u8, crc_in: u32) u32 {
+inline fn storeu(p: [*]u8, value: X) void {
+    p[0..16].* = @bitCast(value);
+}
+
+fn pclmul64Body(comptime copying: bool, data: []const u8, crc_in: u32, dest: []u8) u32 {
     std.debug.assert(data.len >= 64);
     std.debug.assert(data.len % 16 == 0);
     var x1 = loadu(data.ptr + 0);
     var x2 = loadu(data.ptr + 16);
     var x3 = loadu(data.ptr + 32);
     var x4 = loadu(data.ptr + 48);
+    if (copying) {
+        storeu(dest.ptr, x1);
+        storeu(dest.ptr + 16, x2);
+        storeu(dest.ptr + 32, x3);
+        storeu(dest.ptr + 48, x4);
+    }
     x1[0] ^= crc_in;
     const k64 = K1K2;
     var off: usize = 64;
@@ -139,6 +149,12 @@ fn pclmul64Body(data: []const u8, crc_in: u32) u32 {
         const y2 = loadu(data.ptr + off + 16);
         const y3 = loadu(data.ptr + off + 32);
         const y4 = loadu(data.ptr + off + 48);
+        if (copying) {
+            storeu(dest.ptr + off, y1);
+            storeu(dest.ptr + off + 16, y2);
+            storeu(dest.ptr + off + 32, y3);
+            storeu(dest.ptr + off + 48, y4);
+        }
         const a1 = clmul(x1, k64, 0x00);
         const a2 = clmul(x2, k64, 0x00);
         const a3 = clmul(x3, k64, 0x00);
@@ -157,6 +173,7 @@ fn pclmul64Body(data: []const u8, crc_in: u32) u32 {
     x1 = clmul(x1, k16, 0x11) ^ x4 ^ t;
     while (off < data.len) : (off += 16) {
         const nxt = loadu(data.ptr + off);
+        if (copying) storeu(dest.ptr + off, nxt);
         t = clmul(x1, k16, 0x00);
         x1 = clmul(x1, k16, 0x11) ^ nxt ^ t;
     }
@@ -194,11 +211,26 @@ pub fn update(crc_in: u32, data: []const u8) u32 {
         if (data.len >= 64) {
             const bulk = data.len & ~@as(usize, 15);
             if (bulk >= 64) {
-                return tail(pclmul64Body(data[0..bulk], crc_in), data[bulk..]);
+                return tail(pclmul64Body(false, data[0..bulk], crc_in, &.{}), data[bulk..]);
             }
         }
     }
     return updatePortable(crc_in, data);
+}
+
+/// Copies non-overlapping slices of equal length and updates the raw gzip CRC.
+pub fn copyUpdate(crc_in: u32, data: []const u8, dest: []u8) u32 {
+    std.debug.assert(data.len == dest.len);
+    if (comptime HAVE_PCLMUL) {
+        if (data.len >= 64) {
+            const bulk = data.len & ~@as(usize, 15);
+            const value = pclmul64Body(true, data[0..bulk], crc_in, dest[0..bulk]);
+            @memcpy(dest[bulk..], data[bulk..]);
+            return tail(value, data[bulk..]);
+        }
+    }
+    @memcpy(dest, data);
+    return update(crc_in, data);
 }
 
 test "[property] - [crc]: native and portable incremental paths match independent CRC" {
@@ -221,6 +253,34 @@ test "[property] - [crc]: native and portable incremental paths match independen
                 }
                 try std.testing.expectEqual(expected, finish(native));
                 try std.testing.expectEqual(expected, finish(portable));
+            }
+        }
+    }
+}
+
+test "[property] - [crc]: fused copies preserve bytes, incremental CRC and exact bounds" {
+    var bytes: [8192 + 64]u8 = undefined;
+    var copied: [8192 + 128]u8 = undefined;
+    var random = std.Random.DefaultPrng.init(97);
+    random.fill(&bytes);
+    for ([_]usize{ 0, 1, 7, 15, 31, 63 }) |prefix| {
+        for ([_]usize{ 0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 65, 79, 80, 127, 128, 129, 255, 256, 4096, 8192 }) |length| {
+            const expected = std.hash.crc.Crc32IsoHdlc.hash(bytes[0 .. prefix + length]);
+            for ([_]usize{ 1, 7, 63, 64, 65, 511, 8192 }) |chunk| {
+                @memset(&copied, 0xa5);
+                const start = 64 - prefix;
+                var value = std.hash.crc.Crc32IsoHdlc.hash(bytes[0..prefix]) ^ 0xffffffff;
+                var i: usize = 0;
+                while (i < length) {
+                    const n = @min(chunk, length - i);
+                    value = copyUpdate(value, bytes[prefix + i ..][0..n], copied[start + i ..][0..n]);
+                    i += n;
+                }
+                value = copyUpdate(value, &.{}, copied[start..start]);
+                try std.testing.expectEqual(expected, finish(value));
+                try std.testing.expectEqualSlices(u8, bytes[prefix..][0..length], copied[start..][0..length]);
+                for (copied[0..start]) |b| try std.testing.expectEqual(@as(u8, 0xa5), b);
+                for (copied[start + length ..]) |b| try std.testing.expectEqual(@as(u8, 0xa5), b);
             }
         }
     }
