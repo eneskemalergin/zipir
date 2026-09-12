@@ -1,8 +1,8 @@
 # z-flate
 
-Native Zig streaming compression APIs, starting with gzip decompression. Requires Zig 0.16.0. The library has no external dependencies and does not create threads or allocate during decompression.
+Native Zig streaming gzip compression and decompression. Requires Zig 0.16.0. The library has no external dependencies and does not create threads or allocate during codec operations.
 
-Gzip decompression is implemented. Compression and other formats are not implemented yet.
+Gzip compression and decompression are implemented. Other formats are not implemented yet.
 
 ## Library
 
@@ -38,21 +38,42 @@ Stored, fixed-Huffman, and dynamic-Huffman blocks, optional gzip headers, header
 
 Trailing data is rejected by default, including zero padding. Set `.trailing_data = .leave` to stop before a non-gzip suffix and retain it in the reader. A suffix beginning with gzip magic is parsed as another member and must be valid. Header names/comments are validated or skipped incrementally; they are not retained or exposed.
 
+`Compressor(.gzip)` selects the gzip encoder. It uses the same borrowed interfaces and reusable workspace convention:
+
+```zig
+const encoder = try allocator.create(z_flate.Compressor(.gzip));
+defer allocator.destroy(encoder);
+const input_bytes = try encoder.compress(&reader.interface, &writer.interface, .{
+    .level = .balanced,
+});
+try writer.interface.flush();
+```
+
+`gzip.CompressOptions.level` supports `.fast` (1), `.balanced` (5, the default), and `.dense` (9). These presets increase match-search effort while retaining the same fixed workspace. They are initial tuning choices, not a guarantee that every higher preset produces fewer bytes or matches another encoder's numeric level. Compression remains lossless at every preset.
+
+Each call reads through EOF, writes one gzip member with CRC32 and ISIZE, and returns a `u64` count of input bytes. Empty input produces a valid empty member. Metadata is deterministic, with zero timestamp and no filename. Multiple successful calls to the same writer produce concatenated members. Compressed bytes may change as the implementation improves; gzip compatibility and exact decoded bytes are the contract.
+
+Compression accepts fixed readers and streaming readers with any buffer capacity, including zero. It retains a 32 KiB input block plus at most one byte of lookahead before emitting that block, with a separate bounded history. It chooses stored, fixed-Huffman or dynamic-Huffman coding while the raw block is available. `gzip.CompressError` reports `ReadFailed` or `WriteFailed`; the caller also handles writer-flush errors. Failure may leave partial output, and a new call resets the workspace. Incremental push/resume and explicit sync-flush operations are not exposed.
+
 ## Command line
 
 ```sh
 zig build -Doptimize=ReleaseFast
 ./zig-out/bin/z_flate decompress input.gz > output
+./zig-out/bin/z_flate compress --level 5 input > output.gz
+cat input | ./zig-out/bin/z_flate compress --level 1 > output.gz
 cat input.gz | ./zig-out/bin/z_flate decompress > output
 ./zig-out/bin/z_flate test input.gz
 ./zig-out/bin/z_flate decompress --max-output-bytes 67108864 input.gz > output
 ```
 
-`decompress` writes decoded bytes to stdout. `test` verifies and discards decoded output. Omit the input path or use `-` for stdin. Use `--` before a path starting with `-`. Input files are preserved. Reported errors print to stderr and exit with status 1; invalid arguments exit with status 2. A closed output pipe retains the default Unix SIGPIPE termination. No arguments or `--version` prints the version; `--help` prints usage.
+`compress` writes gzip bytes to stdout and accepts `--level 1`, `5`, or `9`, defaulting to 5. `decompress` writes decoded bytes to stdout. `test` verifies and discards decoded output. `--max-output-bytes` applies to decompression and verification. Omit the input path or use `-` for stdin. Use `--` before a path starting with `-`. Input files are preserved. Reported errors print to stderr and exit with status 1; invalid arguments exit with status 2. A closed output pipe retains the default Unix SIGPIPE termination. No arguments or `--version` prints the version; `--help` prints usage.
 
 ## Memory and CPU targets
 
-The gzip workspace is 200,704 bytes. With the example's 32 KiB input and 4 KiB output buffers, explicit storage is 237,568 bytes (232 KiB), plus bounded stack, shared tables, and runtime/code residency. Fixed Huffman blocks use 10 KiB of shared read-only tables generated at compile time. These are fixed reservations, not total process peak RSS. No complete input/output allocation or application-level memory mapping occurs inside the decoder.
+The gzip decoder workspace is 200,704 bytes. With the example's 32 KiB input and 4 KiB output buffers, explicit storage is 237,568 bytes (232 KiB), plus bounded stack, shared tables, and runtime/code residency. Fixed Huffman decoding uses 10 KiB of shared read-only tables generated at compile time.
+
+The encoder workspace is 263,416 bytes. With the same I/O buffers, explicit storage is 300,280 bytes (about 293.24 KiB), plus bounded Huffman scratch and runtime/code residency. These budgets are identical across the three compression presets and independent of stream size. The CLI allocates only the selected codec's workspace. These are fixed reservations, not total process peak RSS. Neither codec allocates complete input/output buffers or uses application-level memory mapping.
 
 CRC uses a portable implementation with compile-time guarded x86 PCLMUL and AArch64 CRC instructions. CPU selection follows Zig's target options: a native build targets the build machine. Use `-Dcpu=baseline` when distributing to other CPUs, or select a known minimum CPU explicitly. Linux and macOS on x86_64 and AArch64 are the intended targets. Cross-compilation is separate from runtime performance qualification.
 
@@ -66,4 +87,4 @@ zig build test -Doptimize=ReleaseFast --summary all
 zig build test -Dcpu=baseline --summary all
 ```
 
-The self-contained tests cover public streaming contracts, corruption, chunk boundaries, output limits, CLI behavior, and scalar/native kernel agreement. Test fixtures and verification outputs may occupy more memory than a standalone decoder. Performance and RSS must be measured in separate processes with fixed input/output buffers, without those retained oracle files.
+The self-contained tests cover public streaming contracts, independent compression decoding and checksums, corruption, chunk boundaries, output limits, CLI behavior, and scalar/native kernel agreement. Test fixtures and verification outputs may occupy more memory than a standalone codec. Performance and RSS must be measured in separate processes with fixed input/output buffers, without those retained oracle files. Compression speed and size remain active tuning targets; bounded memory does not imply speed parity with other encoders.
