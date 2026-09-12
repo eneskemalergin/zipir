@@ -1,4 +1,4 @@
-//! Bounded gzip decompression through caller-owned readers and writers.
+//! Bounded gzip compression and decompression through caller-owned readers and writers.
 
 const std = @import("std");
 const copy = @import("match.zig");
@@ -46,6 +46,226 @@ pub const Decompressor = struct {
     }
 };
 
+pub const CompressError = error{ ReadFailed, WriteFailed };
+
+pub const CompressOptions = struct {
+    level: enum(u4) { fast = 1, balanced = 5, dense = 9 } = .balanced,
+};
+
+/// Reusable without initialization, including after errors. No allocation occurs during compression.
+/// Reader, writer and workspace storage must not overlap. One active call per workspace.
+pub const Compressor = struct {
+    window: [2 * RING]u8 = undefined,
+    head: [ENCODE_HASH]u16 = undefined,
+    previous: [RING]u16 = undefined,
+    values: [RING]u8 = undefined,
+    distances: [RING]u16 = undefined,
+    lit_freq: [286]u32 = undefined,
+    dist_freq: [30]u32 = undefined,
+    tokens: usize = undefined,
+
+    /// Reads through EOF and writes one member. Caller flushes writer; failures may leave partial output.
+    /// Reader capacity may be zero. A failed call cannot be resumed.
+    pub fn compress(self: *Compressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: CompressOptions) CompressError!u64 {
+        @memset(&self.head, 0);
+        @memset(&self.previous, 0);
+        try writer.writeAll(&.{ 31, 139, 8, 0, 0, 0, 0, 0, 0, 255 });
+        var bits: Bw = .{ .writer = writer };
+        var history: usize = 0;
+        var sum: u32 = 0xffffffff;
+        var size: u64 = 0;
+        var lookahead: [1]u8 = undefined;
+        var carried: usize = 0;
+        while (true) {
+            if (carried != 0) self.window[history] = lookahead[0];
+            const n = carried + try reader.readSliceShort(self.window[history + carried ..][0 .. RING - carried]);
+            carried = if (n == RING) try reader.readSliceShort(&lookahead) else 0;
+            const last = carried == 0;
+            const end = history + n;
+            sum = crc.update(sum, self.window[history..end]);
+            size +%= n;
+            // The previous block's final two positions lacked three-byte lookahead.
+            if (history != 0) {
+                var p = history - 2;
+                while (p < history and p + 3 <= end) : (p += 1) self.insert(p);
+            }
+            self.parse(history, end, options);
+            try self.emit(&bits, self.window[history..end], last);
+            if (last) break;
+            if (history != 0) {
+                @memcpy(self.window[0..RING], self.window[RING..][0..RING]);
+                for (&self.head) |*p| p.* -|= RING;
+                for (&self.previous) |*p| p.* -|= RING;
+            }
+            history = RING;
+        }
+        try bits.alignByte();
+        var trailer: [8]u8 = undefined;
+        std.mem.writeInt(u32, trailer[0..4], crc.finish(sum), .little);
+        std.mem.writeInt(u32, trailer[4..8], @truncate(size), .little);
+        try writer.writeAll(&trailer);
+        return size;
+    }
+
+    fn hash(self: *const Compressor, p: usize) usize {
+        const v = @as(u32, self.window[p]) | (@as(u32, self.window[p + 1]) << 8) | (@as(u32, self.window[p + 2]) << 16);
+        return (v *% 0x1e35a7bd) >> 18;
+    }
+
+    fn insert(self: *Compressor, p: usize) void {
+        const h = self.hash(p);
+        self.previous[p & (RING - 1)] = self.head[h];
+        self.head[h] = @intCast(p + 1);
+    }
+
+    const Match = struct { len: usize = 2, dist: usize = 0 };
+
+    fn find(self: *const Compressor, p: usize, end: usize, budget: usize) Match {
+        var best: Match = .{};
+        if (p + 3 > end) return best;
+        const limit = @min(258, end - p);
+        const lower = p -| RING;
+        var entry = self.head[self.hash(p)];
+        var attempts = budget;
+        while (entry != 0 and attempts != 0) : (attempts -= 1) {
+            const q: usize = entry - 1;
+            if (q < lower or q >= p) break;
+            if (self.window[q + best.len] == self.window[p + best.len] and
+                self.window[q] == self.window[p] and self.window[q + 1] == self.window[p + 1])
+            {
+                const len = matchLength(self.window[p..][0..limit], self.window[q..][0..limit]);
+                if (len > best.len) {
+                    best = .{ .len = len, .dist = p - q };
+                    if (len == limit) break;
+                }
+            }
+            const next = self.previous[q & (RING - 1)];
+            if (next >= entry) break;
+            entry = next;
+        }
+        return best;
+    }
+
+    fn parse(self: *Compressor, start: usize, end: usize, options: CompressOptions) void {
+        @memset(&self.lit_freq, 0);
+        @memset(&self.dist_freq, 0);
+        self.lit_freq[256] = 1;
+        self.tokens = 0;
+        const budget: usize = switch (options.level) {
+            .fast => 4,
+            .balanced => 32,
+            .dense => 128,
+        };
+        var p = start;
+        while (p < end) {
+            var m = self.find(p, end, budget);
+            if (p + 3 <= end) self.insert(p);
+            if (options.level != .fast and m.len >= 3 and m.len < 258 and p + 3 < end) {
+                const next = self.find(p + 1, end, budget);
+                if (next.len > m.len) m.len = 2;
+            }
+            if (m.len >= 3) {
+                self.values[self.tokens] = @intCast(m.len - 3);
+                self.distances[self.tokens] = @intCast(m.dist);
+                self.lit_freq[257 + @as(usize, LEN_CODE[m.len - 3])] += 1;
+                self.dist_freq[distCode(m.dist)] += 1;
+                const stop = p + m.len;
+                p += 1;
+                while (p < stop) : (p += 1) {
+                    if (p + 3 <= end) self.insert(p);
+                }
+            } else {
+                self.values[self.tokens] = self.window[p];
+                self.distances[self.tokens] = 0;
+                self.lit_freq[self.window[p]] += 1;
+                p += 1;
+            }
+            self.tokens += 1;
+        }
+    }
+
+    fn cost(self: *const Compressor, lit: *const EncodeTree, dist: *const EncodeTree) u64 {
+        var n: u64 = 0;
+        for (self.lit_freq, 0..) |f, i| n += @as(u64, f) * (lit.lens[i] + @as(u8, if (i >= 257) LEN_EXTRA[i - 257] else 0));
+        for (self.dist_freq, 0..) |f, i| n += @as(u64, f) * (dist.lens[i] + @as(u8, DIST_EXTRA[i]));
+        return n;
+    }
+
+    fn emit(self: *const Compressor, bits: *Bw, raw: []const u8, last: bool) CompressError!void {
+        var lit: EncodeTree = .{};
+        var dist: EncodeTree = .{};
+        var code: EncodeTree = .{};
+        var run: CodeRuns = .{};
+        var dynamic: u64 = std.math.maxInt(u64);
+        var nl: usize = 286;
+        var nd: usize = 30;
+        var nc: usize = 19;
+        var dist_freq = self.dist_freq;
+        var sum: u32 = 0;
+        for (dist_freq) |f| sum += f;
+        if (sum == 0) dist_freq[0] = 1;
+        if (lit.build(&self.lit_freq, 15) and dist.build(&dist_freq, 15)) {
+            while (nl > 257 and lit.lens[nl - 1] == 0) nl -= 1;
+            while (nd > 1 and dist.lens[nd - 1] == 0) nd -= 1;
+            var lengths: [316]u4 = undefined;
+            @memcpy(lengths[0..nl], lit.lens[0..nl]);
+            @memcpy(lengths[nl..][0..nd], dist.lens[0..nd]);
+            run.encode(lengths[0 .. nl + nd]);
+            if (code.build(&run.freq, 7)) {
+                while (nc > 4 and code.lens[CLEN_ORDER[nc - 1]] == 0) nc -= 1;
+                dynamic = 3 + 5 + 5 + 4 + 3 * nc + self.cost(&lit, &dist);
+                for (run.symbols[0..run.count], run.widths[0..run.count]) |s, w| dynamic += code.lens[s] + @as(u8, w);
+            }
+        }
+        const fixed = 3 + self.cost(&FIXED_LIT, &FIXED_DIST);
+        const stored = 3 + ((8 - ((@as(usize, bits.count) + 3) & 7)) & 7) + 32 + raw.len * 8;
+        if (stored < fixed and stored <= dynamic) {
+            try bits.put(@intFromBool(last), 3);
+            try bits.alignByte();
+            var header: [4]u8 = undefined;
+            const len: u16 = @intCast(raw.len);
+            std.mem.writeInt(u16, header[0..2], len, .little);
+            std.mem.writeInt(u16, header[2..4], ~len, .little);
+            try bits.writer.writeAll(&header);
+            try bits.writer.writeAll(raw);
+            return;
+        }
+        if (dynamic < fixed) {
+            try bits.put(4 | @as(u32, @intFromBool(last)), 3);
+            try bits.put(@intCast(nl - 257), 5);
+            try bits.put(@intCast(nd - 1), 5);
+            try bits.put(@intCast(nc - 4), 4);
+            for (CLEN_ORDER[0..nc]) |s| try bits.put(code.lens[s], 3);
+            for (run.symbols[0..run.count], run.widths[0..run.count], run.extras[0..run.count]) |s, w, e| {
+                try bits.symbol(&code, s);
+                try bits.put(e, w);
+            }
+            try self.emitTokens(bits, &lit, &dist);
+        } else {
+            try bits.put(2 | @as(u32, @intFromBool(last)), 3);
+            try self.emitTokens(bits, &FIXED_LIT, &FIXED_DIST);
+        }
+    }
+
+    fn emitTokens(self: *const Compressor, bits: *Bw, lit: *const EncodeTree, dist: *const EncodeTree) CompressError!void {
+        for (self.values[0..self.tokens], self.distances[0..self.tokens]) |v, d| {
+            if (d == 0) {
+                try bits.symbol(lit, v);
+            } else {
+                const l = LEN_CODE[v];
+                const dc = distCode(d);
+                try bits.symbol(lit, 257 + @as(usize, l));
+                try bits.put(@as(u32, v) + 3 - LEN_BASE[l], LEN_EXTRA[l]);
+                try bits.symbol(dist, dc);
+                try bits.put(d - DIST_BASE[dc], DIST_EXTRA[dc]);
+            }
+        }
+        try bits.symbol(lit, 256);
+    }
+};
+
+// --- Huffman codes ---
+
 const CLEN_ORDER = [_]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
 const LEN_EXTRA = [_]u4{ 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 };
 const DIST_EXTRA = [_]u4{ 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 };
@@ -53,6 +273,51 @@ const LEN_BASE = [_]u16{ 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31
 const DIST_BASE = [_]u16{ 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 };
 
 const RING = 32768;
+
+const FIXED_LIT_LENS: [288]u4 = blk: {
+    var lengths: [288]u4 = undefined;
+    @memset(lengths[0..144], 8);
+    @memset(lengths[144..256], 9);
+    @memset(lengths[256..280], 7);
+    @memset(lengths[280..288], 8);
+    break :blk lengths;
+};
+const FIXED_DIST_LENS = [_]u4{5} ** 32;
+
+fn bitReverse(code: u16, n: u4) u16 {
+    if (n == 0) return 0;
+    return @bitReverse(code) >> @intCast(16 - @as(u16, n));
+}
+
+fn buildCodes(lens: []const u4, codes: []u16, kind: enum { codes, symbols }) !void {
+    var bl_count: [16]u16 = .{0} ** 16;
+    for (lens) |L| {
+        if (L != 0) bl_count[L] += 1;
+    }
+    var next_code: [16]u16 = .{0} ** 16;
+    var code: u32 = 0;
+    var left: i32 = 1;
+    for (1..16) |Li| {
+        const L: u4 = @intCast(Li);
+        code = (code + bl_count[L - 1]) << 1;
+        left = left * 2 - bl_count[L];
+        if (left < 0) return error.BadHuffman;
+        next_code[L] = @intCast(code & 0xffff);
+    }
+    if (left != 0) {
+        var symbols: usize = 0;
+        for (bl_count[1..]) |count| symbols += count;
+        if (kind == .codes or (symbols != 0 and !(symbols == 1 and bl_count[1] == 1))) return error.BadHuffman;
+    }
+    for (lens, codes) |len, *c| {
+        if (len == 0) {
+            c.* = 0;
+            continue;
+        }
+        c.* = next_code[len];
+        next_code[len] +%= 1;
+    }
+}
 
 const Kind = enum(u4) { invalid = 0, lit, eob, len, dist, long };
 
@@ -73,17 +338,13 @@ const FIXED_TABLES: FixedTables = fixedTables();
 fn fixedTables() FixedTables {
     @setEvalBranchQuota(100000);
     var tables: FixedTables = undefined;
-    var lit_lens: [288]u4 = undefined;
-    for (0..144) |i| lit_lens[i] = 8;
-    for (144..256) |i| lit_lens[i] = 9;
-    for (256..280) |i| lit_lens[i] = 7;
-    for (280..288) |i| lit_lens[i] = 8;
-    const dist_lens = [_]u4{5} ** 32;
     var no_spill: [0]Entry = .{};
-    fillTwoLevel(&tables.lit, &no_spill, 11, &lit_lens, litKind, litPayload, true) catch unreachable;
-    fillTwoLevel(&tables.dist, &no_spill, 9, &dist_lens, distKind, distPayload, true) catch unreachable;
+    fillTwoLevel(&tables.lit, &no_spill, 11, &FIXED_LIT_LENS, litKind, litPayload, true) catch unreachable;
+    fillTwoLevel(&tables.dist, &no_spill, 9, &FIXED_DIST_LENS, distKind, distPayload, true) catch unreachable;
     return tables;
 }
+
+// --- Decompression ---
 
 const Br = struct {
     reader: *std.Io.Reader,
@@ -179,41 +440,6 @@ const Br = struct {
         return s;
     }
 };
-
-fn bitReverse(code: u16, n: u4) u16 {
-    if (n == 0) return 0;
-    return @bitReverse(code) >> @intCast(16 - @as(u16, n));
-}
-
-fn buildCodes(lens: []const u4, codes: []u16, kind: enum { codes, symbols }) !void {
-    var bl_count: [16]u16 = .{0} ** 16;
-    for (lens) |L| {
-        if (L != 0) bl_count[L] += 1;
-    }
-    var next_code: [16]u16 = .{0} ** 16;
-    var code: u32 = 0;
-    var left: i32 = 1;
-    for (1..16) |Li| {
-        const L: u4 = @intCast(Li);
-        code = (code + bl_count[L - 1]) << 1;
-        left = left * 2 - bl_count[L];
-        if (left < 0) return error.BadHuffman;
-        next_code[L] = @intCast(code & 0xffff);
-    }
-    if (left != 0) {
-        var symbols: usize = 0;
-        for (bl_count[1..]) |count| symbols += count;
-        if (kind == .codes or (symbols != 0 and !(symbols == 1 and bl_count[1] == 1))) return error.BadHuffman;
-    }
-    for (lens, codes) |len, *c| {
-        if (len == 0) {
-            c.* = 0;
-            continue;
-        }
-        c.* = next_code[len];
-        next_code[len] +%= 1;
-    }
-}
 
 fn fillFirst(table: []Entry, W: u4, lens: []const u4, kind_of: *const fn (usize) Kind, payload_of: *const fn (usize) u16, comptime predecoded: bool) !void {
     const tlen: usize = @as(usize, 1) << W;
@@ -717,6 +943,199 @@ fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, 
     return ctx.produced;
 }
 
+// --- Compression ---
+
+const ENCODE_HASH = 16384;
+
+fn matchLength(a: []const u8, b: []const u8) usize {
+    var n: usize = 0;
+    while (n + 8 <= a.len) : (n += 8) {
+        const x = std.mem.readInt(u64, a[n..][0..8], .little) ^ std.mem.readInt(u64, b[n..][0..8], .little);
+        if (x != 0) return n + @as(usize, @ctz(x)) / 8;
+    }
+    while (n < a.len and a[n] == b[n]) : (n += 1) {}
+    return n;
+}
+
+fn distCode(d: usize) usize {
+    if (d <= 4) return d - 1;
+    const top = std.math.log2_int(usize, d - 1);
+    return 2 * @as(usize, top) + (((d - 1) >> (top - 1)) & 1);
+}
+
+const Bw = struct {
+    writer: *std.Io.Writer,
+    value: u64 = 0,
+    count: u6 = 0,
+
+    fn put(self: *Bw, value: u32, n: u5) CompressError!void {
+        std.debug.assert(n <= 16 and (n == 0 or value < (@as(u32, 1) << n)));
+        if (n == 0) return;
+        self.value |= @as(u64, value) << self.count;
+        self.count += n;
+        while (self.count >= 8) {
+            try self.writer.writeByte(@truncate(self.value));
+            self.value >>= 8;
+            self.count -= 8;
+        }
+    }
+
+    fn symbol(self: *Bw, tree: *const EncodeTree, s: usize) CompressError!void {
+        try self.put(tree.codes[s], @intCast(tree.lens[s]));
+    }
+
+    fn alignByte(self: *Bw) CompressError!void {
+        if (self.count != 0) try self.put(0, @intCast(8 - self.count));
+    }
+};
+
+// Over-depth trees fall back to fixed or stored blocks.
+const EncodeTree = struct {
+    const Node = struct { weight: u32, parent: u16 = 0 };
+    lens: [288]u4 = @splat(0),
+    codes: [288]u16 = undefined,
+
+    fn build(self: *EncodeTree, freq: []const u32, max_bits: u4) bool {
+        var nodes: [576]Node = undefined;
+        var heap: [288]u16 = undefined;
+        var size: usize = 0;
+        @memset(&self.lens, 0);
+        for (freq, 0..) |f, i| {
+            nodes[i] = .{ .weight = f };
+            if (f == 0) continue;
+            var j = size;
+            size += 1;
+            while (j != 0) {
+                const parent = (j - 1) / 2;
+                if (nodes[heap[parent]].weight <= f) break;
+                heap[j] = heap[parent];
+                j = parent;
+            }
+            heap[j] = @intCast(i);
+        }
+        if (size == 0) return false;
+        var next: usize = freq.len;
+        while (size > 1) {
+            const a = heap[0];
+            size -= 1;
+            heap[0] = heap[size];
+            sift(&heap, size, &nodes);
+            const b = heap[0];
+            nodes[next] = .{ .weight = nodes[a].weight + nodes[b].weight };
+            nodes[a].parent = @intCast(next);
+            nodes[b].parent = @intCast(next);
+            heap[0] = @intCast(next);
+            sift(&heap, size, &nodes);
+            next += 1;
+        }
+        for (freq, 0..) |f, i| {
+            if (f == 0) continue;
+            var p = i;
+            var depth: u8 = 0;
+            while (nodes[p].parent != 0) {
+                depth += 1;
+                if (depth > max_bits) return false;
+                p = nodes[p].parent;
+            }
+            self.lens[i] = @intCast(@max(1, depth));
+        }
+        return self.canonical();
+    }
+
+    fn sift(heap: *[288]u16, size: usize, nodes: *const [576]Node) void {
+        const value = heap[0];
+        var p: usize = 0;
+        while (p * 2 + 1 < size) {
+            var child = p * 2 + 1;
+            if (child + 1 < size and nodes[heap[child + 1]].weight < nodes[heap[child]].weight) child += 1;
+            if (nodes[value].weight <= nodes[heap[child]].weight) break;
+            heap[p] = heap[child];
+            p = child;
+        }
+        heap[p] = value;
+    }
+
+    fn canonical(self: *EncodeTree) bool {
+        buildCodes(&self.lens, &self.codes, .symbols) catch return false;
+        for (self.lens, &self.codes) |n, *code| code.* = bitReverse(code.*, n);
+        return true;
+    }
+};
+
+const CodeRuns = struct {
+    symbols: [316]u8 = undefined,
+    extras: [316]u8 = undefined,
+    widths: [316]u5 = undefined,
+    freq: [19]u32 = @splat(0),
+    count: usize = 0,
+
+    fn add(self: *CodeRuns, s: u8, e: u8, w: u5) void {
+        self.symbols[self.count] = s;
+        self.extras[self.count] = e;
+        self.widths[self.count] = w;
+        self.freq[s] += 1;
+        self.count += 1;
+    }
+
+    fn encode(self: *CodeRuns, lengths: []const u4) void {
+        var p: usize = 0;
+        while (p < lengths.len) {
+            const value = lengths[p];
+            var end = p + 1;
+            while (end < lengths.len and lengths[end] == value) : (end += 1) {}
+            var left = end - p;
+            if (value != 0) {
+                self.add(value, 0, 0);
+                left -= 1;
+            }
+            while (left != 0) {
+                if (value == 0 and left >= 11) {
+                    const n = @min(left, 138);
+                    self.add(18, @intCast(n - 11), 7);
+                    left -= n;
+                } else if (value == 0 and left >= 3) {
+                    const n = @min(left, 10);
+                    self.add(17, @intCast(n - 3), 3);
+                    left -= n;
+                } else if (value != 0 and left >= 3) {
+                    const n = @min(left, 6);
+                    self.add(16, @intCast(n - 3), 2);
+                    left -= n;
+                } else {
+                    self.add(value, 0, 0);
+                    left -= 1;
+                }
+            }
+            p = end;
+        }
+    }
+};
+
+const LEN_CODE: [256]u8 = blk: {
+    @setEvalBranchQuota(10000);
+    var result: [256]u8 = undefined;
+    for (&result, 0..) |*c, i| {
+        var k: usize = 0;
+        while (k + 1 < LEN_BASE.len and LEN_BASE[k + 1] <= i + 3) : (k += 1) {}
+        c.* = @intCast(k);
+    }
+    break :blk result;
+};
+const FIXED_LIT: EncodeTree = blk: {
+    @setEvalBranchQuota(10000);
+    var tree: EncodeTree = .{};
+    tree.lens = FIXED_LIT_LENS;
+    if (!tree.canonical()) @compileError("invalid fixed Huffman tree");
+    break :blk tree;
+};
+const FIXED_DIST: EncodeTree = blk: {
+    @setEvalBranchQuota(10000);
+    var tree: EncodeTree = .{};
+    @memcpy(tree.lens[0..32], &FIXED_DIST_LENS);
+    if (!tree.canonical()) @compileError("invalid fixed Huffman tree");
+    break :blk tree;
+};
+
 test {
     _ = crc;
     _ = copy;
@@ -743,4 +1162,16 @@ test "[edge] - [gzip]: decoded counters stop at the u64 output bound" {
     try std.testing.expectEqual(std.math.maxInt(u64), ctx.produced);
     try std.testing.expectError(error.OutputLimitExceeded, ctx.emitByte('B'));
     try std.testing.expectEqual(@as(u64, 1), sink.fullCount());
+}
+
+test "[edge] - [gzip]: over-depth encoding trees select the fallback" {
+    var tree: EncodeTree = .{};
+    var freq: [25]u32 = @splat(1);
+    for (2..freq.len) |i| freq[i] = freq[i - 1] + freq[i - 2];
+    try std.testing.expect(!tree.build(&freq, 15));
+    @memset(&freq, 0);
+    freq[9] = 1;
+    try std.testing.expect(tree.build(&freq, 15));
+    try std.testing.expectEqual(@as(u4, 1), tree.lens[9]);
+    try std.testing.expectEqual(@as(u16, 0), tree.codes[9]);
 }

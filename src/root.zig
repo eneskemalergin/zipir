@@ -11,6 +11,12 @@ pub fn Decompressor(comptime format: Format) type {
     };
 }
 
+pub fn Compressor(comptime format: Format) type {
+    return switch (format) {
+        .gzip => gzip.Compressor,
+    };
+}
+
 pub const version: std.SemanticVersion = .{
     .major = 0,
     .minor = 0,
