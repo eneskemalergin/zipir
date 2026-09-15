@@ -32,9 +32,9 @@ pub const Options = struct {
 /// Reusable without initialization, including after errors. No allocation occurs during decode.
 /// Reader, writer and workspace storage must not overlap. One active call per workspace.
 pub const Decompressor = struct {
-    lit_first: [1 << 11]Entry = undefined,
+    lit_first: [1 << 10]Entry = undefined,
     dist_first: [1 << 9]Entry = undefined,
-    // At widths 11/9 each occupied long prefix requires at most 16/64 entries.
+    // Complete residual trees need <=1536/292 entries at widths 10/9.
     lit_spill: [288 * 16]Entry = undefined,
     dist_spill: [32 * 64]Entry = undefined,
     buffer: [RING + 131072]u8 = undefined,
@@ -353,7 +353,7 @@ const Entry = packed struct(u32) {
 };
 
 const FixedTables = struct {
-    lit: [1 << 11]Entry,
+    lit: [1 << 10]Entry,
     dist: [1 << 9]Entry,
 };
 
@@ -363,7 +363,7 @@ fn fixedTables() FixedTables {
     @setEvalBranchQuota(100000);
     var tables: FixedTables = undefined;
     var no_spill: [0]Entry = .{};
-    fillTwoLevel(&tables.lit, &no_spill, 11, &FIXED_LIT_LENS, litKind, litPayload, true) catch unreachable;
+    fillTwoLevel(&tables.lit, &no_spill, 10, &FIXED_LIT_LENS, litKind, litPayload, true) catch unreachable;
     fillTwoLevel(&tables.dist, &no_spill, 9, &FIXED_DIST_LENS, distKind, distPayload, true) catch unreachable;
     return tables;
 }
@@ -781,7 +781,7 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
     }
     if (output.len - op < 289 or input.len - index < 8) return false;
     const first_word = std.mem.readInt(u64, input[index..][0..8], .little);
-    var e = lit[@intCast((bits | (first_word << @intCast(count))) & ((1 << 11) - 1))];
+    var e = lit[@intCast((bits | (first_word << @intCast(count))) & ((1 << 10) - 1))];
     // Eight-byte reads leave >=16 physical bits after each <=48-bit token.
     // Wild copies require 289 owned bytes; prefetched entries do not consume bits.
     while (output.len - op >= 289 and input.len - index >= 8) {
@@ -789,7 +789,7 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
         bits |= word << @intCast(count);
         index += 7 - (count >> 3);
         count |= 56;
-        if (e.kind == .long) e = lookupLong(e, &ctx.work.lit_spill, bits, 11);
+        if (e.kind == .long) e = lookupLong(e, &ctx.work.lit_spill, bits, 10);
         if (e.kind == .invalid or e.kind == .dist) return error.BadSymbol;
         bits >>= e.nbits;
         count -= e.nbits;
@@ -797,7 +797,7 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
         if (e.kind == .lit) {
             output[op] = @truncate(e.payload);
             op += 1;
-            e = lit[@intCast(bits & ((1 << 11) - 1))];
+            e = lit[@intCast(bits & ((1 << 10) - 1))];
             continue;
         }
         if (e.kind != .len) return error.BadSymbol;
@@ -814,7 +814,7 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
         const distance: usize = d.payload + @as(usize, @intCast(bits & ((@as(u64, 1) << dx) - 1)));
         bits >>= dx;
         count -= dx;
-        const next = lit[@intCast(bits & ((1 << 11) - 1))];
+        const next = lit[@intCast(bits & ((1 << 10) - 1))];
         if (!full_history and distance > history + (op - initial_op)) return error.BadDistance;
         if (distance >= 32) {
             var j: usize = 0;
@@ -837,8 +837,8 @@ fn decodeHuff(ctx: *Ctx, lit: []const Entry, dist: []const Entry) !void {
     const br = ctx.br;
     while (true) {
         if (br.src.len - br.i < 8) {
-            if (br.nbits >= 11) {
-                const buffered = peekFirst(lit, 11, br.bits);
+            if (br.nbits >= 10) {
+                const buffered = peekFirst(lit, 10, br.bits);
                 if (buffered.kind == .eob) {
                     br.consume(buffered.nbits);
                     return;
@@ -848,8 +848,8 @@ fn decodeHuff(ctx: *Ctx, lit: []const Entry, dist: []const Entry) !void {
         }
         if (try @call(.never_inline, decodeFast, .{ ctx, lit, dist })) return;
         try br.need(15);
-        var e = peekFirst(lit, 11, br.bits);
-        if (e.kind == .long) e = lookupLong(e, &ctx.work.lit_spill, br.bits, 11);
+        var e = peekFirst(lit, 10, br.bits);
+        if (e.kind == .long) e = lookupLong(e, &ctx.work.lit_spill, br.bits, 10);
         switch (e.kind) {
             .eob => {
                 br.consume(e.nbits);
@@ -922,7 +922,7 @@ fn inflateMember(ctx: *Ctx) !void {
                 var dist_lens: [32]u4 = .{0} ** 32;
                 @memcpy(dist_lens[0..hdist], all_lens[hlit..ntot]);
                 if (lit_lens[256] == 0) return error.BadHuffman;
-                try fillTwoLevel(&ctx.work.lit_first, &ctx.work.lit_spill, 11, &lit_lens, litKind, litPayload, true);
+                try fillTwoLevel(&ctx.work.lit_first, &ctx.work.lit_spill, 10, &lit_lens, litKind, litPayload, true);
                 try fillTwoLevel(&ctx.work.dist_first, &ctx.work.dist_spill, 9, &dist_lens, distKind, distPayload, true);
                 try decodeHuff(ctx, &ctx.work.lit_first, &ctx.work.dist_first);
             },
@@ -1195,6 +1195,97 @@ test {
     _ = copy;
 }
 
+test "[property] - [gzip tables]: narrower roots preserve entries and bounded spill" {
+    const Tables = struct {
+        fn check(comptime width: u4, lens: []const u4, seen_heights: *u16, compare_widths: bool) !void {
+            const capacity = if (width == 10) 1536 else 292;
+            var root: [1 << width]Entry = undefined;
+            var spill: [if (width == 10) 4608 else 2048]Entry = undefined;
+            const kind = if (width == 10) litKind else distKind;
+            const payload = if (width == 10) litPayload else distPayload;
+            try fillTwoLevel(&root, &spill, width, lens, kind, payload, true);
+            var used: usize = 0;
+            for (root) |entry| {
+                if (entry.kind == .long) used = @max(used, entry.payload + (@as(usize, 1) << @intCast(entry.extra)));
+            }
+            try std.testing.expect(used <= capacity);
+
+            var leaves: [1 << width]u16 = @splat(0);
+            var heights: [1 << width]u4 = @splat(0);
+            var slot: usize = 0;
+            var symbols: usize = 0;
+            for (1..16) |depth| {
+                for (lens) |len| {
+                    if (len != depth) continue;
+                    if (len > width) {
+                        const prefix = slot >> (15 - width);
+                        leaves[prefix] += 1;
+                        heights[prefix] = @max(heights[prefix], len - width);
+                    }
+                    slot += @as(usize, 1) << @intCast(15 - depth);
+                    symbols += 1;
+                }
+            }
+            var modeled: usize = 0;
+            for (heights, leaves) |height, leaf_count| {
+                if (height == 0) continue;
+                seen_heights.* |= @as(u16, 1) << height;
+                const slots = @as(usize, 1) << height;
+                try std.testing.expect(leaf_count >= @as(usize, height) + 1);
+                try std.testing.expect(slots * (16 - @as(usize, width)) <= @as(usize, leaf_count) * (@as(usize, 1) << (15 - width)));
+                modeled += slots;
+            }
+            try std.testing.expectEqual(used, modeled);
+            if (symbols > 1) try std.testing.expectEqual(@as(usize, 32768), slot);
+
+            if (width == 10 and compare_widths) {
+                var original_root: [1 << 11]Entry = undefined;
+                var original_spill: [4608]Entry = undefined;
+                try fillTwoLevel(&original_root, &original_spill, 11, lens, litKind, litPayload, true);
+                for (0..32768) |bits| {
+                    var original = original_root[bits & 2047];
+                    if (original.kind == .long) original = lookupLong(original, &original_spill, bits, 11);
+                    var narrowed = root[bits & 1023];
+                    if (narrowed.kind == .long) narrowed = lookupLong(narrowed, &spill, bits, 10);
+                    try std.testing.expectEqual(@as(u32, @bitCast(original)), @as(u32, @bitCast(narrowed)));
+                }
+            }
+        }
+    };
+
+    inline for (.{ @as(u4, 10), @as(u4, 9) }) |width| {
+        const alphabet = if (width == 10) 288 else 32;
+        var lens: [alphabet]u4 = @splat(0);
+        var seen_heights: u16 = 0;
+        try Tables.check(width, &lens, &seen_heights, true);
+        lens[alphabet - 1] = 1;
+        try Tables.check(width, &lens, &seen_heights, true);
+        for (0..32) |trial| {
+            @memset(&lens, 0);
+            var random = std.Random.DefaultPrng.init(0x513 + trial);
+            var count: usize = 1;
+            while (count < alphabet) {
+                var selected: usize = 0;
+                if (trial < 2) {
+                    for (lens[0..count], 0..) |len, i| {
+                        if (len == 15) continue;
+                        if (lens[selected] == 15 or (trial == 0 and len > lens[selected]) or (trial == 1 and len < lens[selected])) selected = i;
+                    }
+                } else {
+                    selected = random.random().uintLessThan(usize, count);
+                    while (lens[selected] == 15) selected = (selected + 1) % count;
+                }
+                try std.testing.expect(lens[selected] < 15);
+                lens[selected] += 1;
+                lens[count] = lens[selected];
+                count += 1;
+                if (count <= 17 or count % 16 == 0 or count == alphabet) try Tables.check(width, &lens, &seen_heights, count == alphabet);
+            }
+        }
+        try std.testing.expectEqual((@as(u16, 1) << @as(u4, 16 - @as(u5, width))) - 2, seen_heights);
+    }
+}
+
 test "[edge] - [gzip]: decoded counters stop at the u64 output bound" {
     const decoder = try std.testing.allocator.create(Decompressor);
     defer std.testing.allocator.destroy(decoder);
@@ -1221,7 +1312,7 @@ test "[edge] - [gzip]: decoded counters stop at the u64 output bound" {
 test "[property] - [gzip]: fast literals consume exact bits within output room" {
     const decoder = try std.testing.allocator.create(Decompressor);
     defer std.testing.allocator.destroy(decoder);
-    try std.testing.expectEqual(@as(usize, 200704), @sizeOf(Decompressor));
+    try std.testing.expectEqual(@as(usize, 196608), @sizeOf(Decompressor));
     var sink: std.Io.Writer.Discarding = .init(&.{});
     for (0..65) |length| {
         var input: [128]u8 = @splat(0);
@@ -1271,32 +1362,38 @@ test "[edge] - [gzip]: lookahead retains unread bits after a maximum-width match
     @memset(&decoder.dist_first, invalid);
     @memset(&decoder.lit_spill, invalid);
     @memset(&decoder.dist_spill, invalid);
-    decoder.lit_first[0] = .{ .nbits = 11, .kind = .long, .extra = 4, .payload = 0 };
+    decoder.lit_first[0] = .{ .nbits = 10, .kind = .long, .extra = 5, .payload = 0 };
     decoder.lit_spill[0] = .{ .nbits = 15, .kind = .len, .extra = 5, .payload = 227 };
     decoder.dist_first[0] = .{ .nbits = 9, .kind = .long, .extra = 6, .payload = 0 };
     decoder.dist_spill[0] = .{ .nbits = 15, .kind = .dist, .extra = 13, .payload = 24577 };
-    decoder.lit_first[1024] = .{ .nbits = 11, .kind = .lit, .payload = 'A' };
     decoder.lit_first[1] = .{ .nbits = 1, .kind = .eob, .payload = 0 };
     for (decoder.buffer[0..RING], 0..) |*byte, i| byte.* = @truncate(i * 73 + i / 256);
-    var input: [32]u8 = @splat(0);
-    const token_bits: u64 = (@as(u64, 31) << 15) | (@as(u64, 8191) << 35);
-    std.mem.writeInt(u64, input[0..8], token_bits | (@as(u64, 1024) << 48) | (@as(u64, 1) << 59), .little);
-    var reader = std.Io.Reader.fixed(&input);
-    var br: Br = .{ .reader = &reader, .src = &input };
     var sink: std.Io.Writer.Discarding = .init(&.{});
-    var ctx: Ctx = .{
-        .br = &br,
-        .work = decoder,
-        .out = &decoder.buffer,
-        .writer = &sink.writer,
-        .produced = RING,
-        .max_output_bytes = std.math.maxInt(u64),
-    };
-    try std.testing.expect(try decodeFastImpl(&ctx, &decoder.lit_first, &decoder.dist_first, true));
-    try std.testing.expectEqual(RING + 259, ctx.out_pos);
-    try std.testing.expectEqual(@as(usize, 60), br.i * 8 - br.nbits);
-    try std.testing.expectEqualSlices(u8, decoder.buffer[0..258], decoder.buffer[RING..][0..258]);
-    try std.testing.expectEqual(@as(u8, 'A'), decoder.buffer[RING + 258]);
+    for ([_]u4{ 10, 11 }) |literal_width| {
+        const literal: Entry = .{ .nbits = literal_width, .kind = .lit, .payload = 'A' };
+        decoder.lit_first[512] = if (literal_width == 10) literal else .{ .nbits = 10, .kind = .long, .extra = 1, .payload = 32 };
+        decoder.lit_spill[33] = literal;
+        const literal_code: u64 = if (literal_width == 10) 512 else 1536;
+        const consumed: usize = 48 + @as(usize, literal_width) + 1;
+        var input: [32]u8 = @splat(0);
+        const token_bits: u64 = (@as(u64, 31) << 15) | (@as(u64, 8191) << 35);
+        std.mem.writeInt(u64, input[0..8], token_bits | (literal_code << 48) | (@as(u64, 1) << @intCast(consumed - 1)), .little);
+        var reader = std.Io.Reader.fixed(&input);
+        var br: Br = .{ .reader = &reader, .src = &input };
+        var ctx: Ctx = .{
+            .br = &br,
+            .work = decoder,
+            .out = &decoder.buffer,
+            .writer = &sink.writer,
+            .produced = RING,
+            .max_output_bytes = std.math.maxInt(u64),
+        };
+        try std.testing.expect(try decodeFastImpl(&ctx, &decoder.lit_first, &decoder.dist_first, true));
+        try std.testing.expectEqual(RING + 259, ctx.out_pos);
+        try std.testing.expectEqual(consumed, br.i * 8 - br.nbits);
+        try std.testing.expectEqualSlices(u8, decoder.buffer[0..258], decoder.buffer[RING..][0..258]);
+        try std.testing.expectEqual(@as(u8, 'A'), decoder.buffer[RING + 258]);
+    }
 }
 
 test "[edge] - [gzip]: over-depth encoding trees select the fallback" {

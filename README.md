@@ -71,7 +71,7 @@ cat input.gz | ./zig-out/bin/z_flate decompress > output
 
 ## Memory and CPU targets
 
-The gzip decoder workspace is 200,704 bytes. With the example's 32 KiB input and 4 KiB output buffers, explicit storage is 237,568 bytes (232 KiB), plus bounded stack, shared tables, and runtime/code residency. Fixed Huffman decoding uses 10 KiB of shared read-only tables generated at compile time.
+The gzip decoder workspace is 196,608 bytes. With the example's 32 KiB input and 4 KiB output buffers, explicit storage is 233,472 bytes (228 KiB), plus bounded stack, shared tables, and runtime/code residency. Fixed Huffman decoding uses 6 KiB of shared read-only tables generated at compile time.
 
 The encoder workspace is 206,080 bytes. With the same I/O buffers, explicit storage is 242,944 bytes (237.25 KiB), plus bounded Huffman scratch and runtime/code residency. These budgets are identical across the three compression presets and independent of stream size. The CLI allocates only the selected codec's workspace. These are fixed reservations, not total process peak RSS. Neither codec allocates complete input/output buffers or uses application-level memory mapping.
 
