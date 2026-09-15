@@ -58,11 +58,10 @@ pub const Compressor = struct {
     window: [2 * RING]u8 = undefined,
     head: [ENCODE_HASH]u16 = undefined,
     previous: [RING]u16 = undefined,
-    values: [RING]u8 = undefined,
-    distances: [RING]u16 = undefined,
+    tokens: [RING + RING / 4 + 2]u8 = undefined,
     lit_freq: [286]u32 = undefined,
     dist_freq: [30]u32 = undefined,
-    tokens: usize = undefined,
+    token_bytes: usize = undefined,
 
     /// Reads through EOF and writes one member. Caller flushes writer; failures may leave partial output.
     /// Reader capacity may be zero. A failed call cannot be resumed.
@@ -94,8 +93,8 @@ pub const Compressor = struct {
             if (last) break;
             if (history != 0) {
                 @memcpy(self.window[0..RING], self.window[RING..][0..RING]);
-                for (&self.head) |*p| p.* -|= RING;
-                for (&self.previous) |*p| p.* -|= RING;
+                rebase(&self.head);
+                rebase(&self.previous);
             }
             history = RING;
         }
@@ -150,23 +149,31 @@ pub const Compressor = struct {
         @memset(&self.lit_freq, 0);
         @memset(&self.dist_freq, 0);
         self.lit_freq[256] = 1;
-        self.tokens = 0;
+        self.token_bytes = 0;
         const budget: usize = switch (options.level) {
             .fast => 4,
             .balanced => 32,
             .dense => 128,
         };
         var p = start;
+        var literal_start = start;
+        var pending: Match = .{};
         while (p < end) {
-            var m = self.find(p, end, budget);
+            var m = if (pending.len >= 3) pending else self.find(p, end, budget);
+            pending = .{};
             if (p + 3 <= end) self.insert(p);
             if (options.level != .fast and m.len >= 3 and m.len < 258 and p + 3 < end) {
                 const next = self.find(p + 1, end, budget);
-                if (next.len > m.len) m.len = 2;
+                if (next.len > m.len) {
+                    pending = next;
+                    m.len = 2;
+                }
             }
             if (m.len >= 3) {
-                self.values[self.tokens] = @intCast(m.len - 3);
-                self.distances[self.tokens] = @intCast(m.dist);
+                self.addLiterals(p - literal_start);
+                std.mem.writeInt(u16, self.tokens[self.token_bytes..][0..2], @as(u16, @intCast(m.dist - 1)) | 0x8000, .little);
+                self.tokens[self.token_bytes + 2] = @intCast(m.len - 3);
+                self.token_bytes += 3;
                 self.lit_freq[257 + @as(usize, LEN_CODE[m.len - 3])] += 1;
                 self.dist_freq[distCode(m.dist)] += 1;
                 const stop = p + m.len;
@@ -174,14 +181,19 @@ pub const Compressor = struct {
                 while (p < stop) : (p += 1) {
                     if (p + 3 <= end) self.insert(p);
                 }
+                literal_start = p;
             } else {
-                self.values[self.tokens] = self.window[p];
-                self.distances[self.tokens] = 0;
                 self.lit_freq[self.window[p]] += 1;
                 p += 1;
             }
-            self.tokens += 1;
         }
+        self.addLiterals(end - literal_start);
+    }
+
+    fn addLiterals(self: *Compressor, n: usize) void {
+        if (n == 0) return;
+        std.mem.writeInt(u16, self.tokens[self.token_bytes..][0..2], @intCast(n - 1), .little);
+        self.token_bytes += 2;
     }
 
     fn cost(self: *const Compressor, lit: *const EncodeTree, dist: *const EncodeTree) u64 {
@@ -240,26 +252,38 @@ pub const Compressor = struct {
                 try bits.symbol(&code, s);
                 try bits.put(e, w);
             }
-            try self.emitTokens(bits, &lit, &dist);
+            try self.emitTokens(bits, raw, &lit, &dist);
         } else {
             try bits.put(2 | @as(u32, @intFromBool(last)), 3);
-            try self.emitTokens(bits, &FIXED_LIT, &FIXED_DIST);
+            try self.emitTokens(bits, raw, &FIXED_LIT, &FIXED_DIST);
         }
+        try bits.drain();
     }
 
-    fn emitTokens(self: *const Compressor, bits: *Bw, lit: *const EncodeTree, dist: *const EncodeTree) CompressError!void {
-        for (self.values[0..self.tokens], self.distances[0..self.tokens]) |v, d| {
-            if (d == 0) {
-                try bits.symbol(lit, v);
+    fn emitTokens(self: *const Compressor, bits: *Bw, raw: []const u8, lit: *const EncodeTree, dist: *const EncodeTree) CompressError!void {
+        var t: usize = 0;
+        var p: usize = 0;
+        while (t < self.token_bytes) {
+            const word = std.mem.readInt(u16, self.tokens[t..][0..2], .little);
+            t += 2;
+            if (word & 0x8000 == 0) {
+                const end = p + @as(usize, word) + 1;
+                for (raw[p..end]) |v| try bits.symbol(lit, v);
+                p = end;
             } else {
+                const v = self.tokens[t];
+                t += 1;
+                const d = @as(usize, word & 0x7fff) + 1;
                 const l = LEN_CODE[v];
                 const dc = distCode(d);
                 try bits.symbol(lit, 257 + @as(usize, l));
                 try bits.put(@as(u32, v) + 3 - LEN_BASE[l], LEN_EXTRA[l]);
                 try bits.symbol(dist, dc);
-                try bits.put(d - DIST_BASE[dc], DIST_EXTRA[dc]);
+                try bits.put(@intCast(d - DIST_BASE[dc]), DIST_EXTRA[dc]);
+                p += @as(usize, v) + 3;
             }
         }
+        std.debug.assert(p == raw.len);
         try bits.symbol(lit, 256);
     }
 };
@@ -947,6 +971,16 @@ fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, 
 
 const ENCODE_HASH = 16384;
 
+fn rebase(positions: []u16) void {
+    const V = @Vector(16, u16);
+    var p: usize = 0;
+    while (p + 16 <= positions.len) : (p += 16) {
+        const values: V = positions[p..][0..16].*;
+        positions[p..][0..16].* = values -| @as(V, @splat(RING));
+    }
+    for (positions[p..]) |*value| value.* -|= RING;
+}
+
 fn matchLength(a: []const u8, b: []const u8) usize {
     var n: usize = 0;
     while (n + 8 <= a.len) : (n += 8) {
@@ -971,13 +1005,25 @@ const Bw = struct {
     fn put(self: *Bw, value: u32, n: u5) CompressError!void {
         std.debug.assert(n <= 16 and (n == 0 or value < (@as(u32, 1) << n)));
         if (n == 0) return;
+        if (self.count > 47) try self.drain();
         self.value |= @as(u64, value) << self.count;
         self.count += n;
-        while (self.count >= 8) {
-            try self.writer.writeByte(@truncate(self.value));
-            self.value >>= 8;
-            self.count -= 8;
+    }
+
+    fn drain(self: *Bw) CompressError!void {
+        const n: usize = self.count / 8;
+        if (n == 0) return;
+        if (self.writer.buffer.len - self.writer.end >= 8) {
+            // The wider store stays in unused capacity; only whole bytes become buffered.
+            std.mem.writeInt(u64, self.writer.buffer[self.writer.end..][0..8], self.value, .little);
+            self.writer.end += n;
+        } else {
+            var bytes: [8]u8 = undefined;
+            std.mem.writeInt(u64, &bytes, self.value, .little);
+            try self.writer.writeAll(bytes[0..n]);
         }
+        self.value >>= @intCast(n * 8);
+        self.count &= 7;
     }
 
     fn symbol(self: *Bw, tree: *const EncodeTree, s: usize) CompressError!void {
@@ -985,7 +1031,9 @@ const Bw = struct {
     }
 
     fn alignByte(self: *Bw) CompressError!void {
-        if (self.count != 0) try self.put(0, @intCast(8 - self.count));
+        const remainder = self.count & 7;
+        if (remainder != 0) try self.put(0, @intCast(8 - remainder));
+        try self.drain();
     }
 };
 
@@ -1174,4 +1222,58 @@ test "[edge] - [gzip]: over-depth encoding trees select the fallback" {
     try std.testing.expect(tree.build(&freq, 15));
     try std.testing.expectEqual(@as(u4, 1), tree.lens[9]);
     try std.testing.expectEqual(@as(u16, 0), tree.codes[9]);
+}
+
+test "[edge] - [gzip compressor]: position rebasing preserves sentinels and every vector tail" {
+    const values = [_]u16{ 0, 1, 32767, 32768, 32769, 65534, 65535 };
+    var positions: [65]u16 = undefined;
+    for (0..positions.len + 1) |n| {
+        for (&positions, 0..) |*p, i| p.* = values[i % values.len];
+        rebase(positions[0..n]);
+        for (positions, 0..) |p, i| {
+            const original = values[i % values.len];
+            const expected = if (i >= n) original else if (original <= 32768) 0 else original - 32768;
+            try std.testing.expectEqual(expected, p);
+        }
+    }
+}
+
+test "[property] - [gzip compressor]: bit output matches scalar packing at writer limits" {
+    for (0..8) |tail| {
+        const count = 129 + tail;
+        var expected: [256]u8 = @splat(0);
+        var bit: usize = 0;
+        for (0..count) |i| {
+            const width: u5 = @intCast(i % 17);
+            const value = (@as(u32, 0xb17acced) *% @as(u32, @intCast(i + 1))) & ((@as(u32, 1) << width) - 1);
+            for (0..width) |j| {
+                expected[bit / 8] |= @as(u8, @intCast((value >> @intCast(j)) & 1)) << @intCast(bit % 8);
+                bit += 1;
+            }
+        }
+        const bytes = (bit + 7) / 8;
+        for (0..10) |extra| {
+            const capacity = bytes - 1 + extra;
+            var storage: [288]u8 = @splat(0xa5);
+            var writer = std.Io.Writer.fixed(storage[8..][0..capacity]);
+            var bits: Bw = .{ .writer = &writer };
+            var failed = false;
+            for (0..count) |i| {
+                const width: u5 = @intCast(i % 17);
+                const value = (@as(u32, 0xb17acced) *% @as(u32, @intCast(i + 1))) & ((@as(u32, 1) << width) - 1);
+                bits.put(value, width) catch {
+                    failed = true;
+                    break;
+                };
+            }
+            if (!failed) bits.alignByte() catch {
+                failed = true;
+            };
+            try std.testing.expectEqual(capacity < bytes, failed);
+            try std.testing.expectEqualSlices(u8, expected[0..writer.end], writer.buffered());
+            if (!failed) try std.testing.expectEqual(bytes, writer.end);
+            try std.testing.expectEqualSlices(u8, &(@as([8]u8, @splat(0xa5))), storage[0..8]);
+            for (storage[8 + capacity ..]) |value| try std.testing.expectEqual(@as(u8, 0xa5), value);
+        }
+    }
 }
