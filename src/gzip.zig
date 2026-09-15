@@ -779,13 +779,16 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
         br.i = index;
         ctx.out_pos = op;
     }
-    // A complete symbol consumes <=48 bits; wild copies require 289 owned bytes.
+    if (output.len - op < 289 or input.len - index < 8) return false;
+    const first_word = std.mem.readInt(u64, input[index..][0..8], .little);
+    var e = lit[@intCast((bits | (first_word << @intCast(count))) & ((1 << 11) - 1))];
+    // Eight-byte reads leave >=16 physical bits after each <=48-bit token.
+    // Wild copies require 289 owned bytes; prefetched entries do not consume bits.
     while (output.len - op >= 289 and input.len - index >= 8) {
         const word = std.mem.readInt(u64, input[index..][0..8], .little);
         bits |= word << @intCast(count);
         index += 7 - (count >> 3);
         count |= 56;
-        var e = lit[@intCast(bits & ((1 << 11) - 1))];
         if (e.kind == .long) e = lookupLong(e, &ctx.work.lit_spill, bits, 11);
         if (e.kind == .invalid or e.kind == .dist) return error.BadSymbol;
         bits >>= e.nbits;
@@ -794,6 +797,7 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
         if (e.kind == .lit) {
             output[op] = @truncate(e.payload);
             op += 1;
+            e = lit[@intCast(bits & ((1 << 11) - 1))];
             continue;
         }
         if (e.kind != .len) return error.BadSymbol;
@@ -810,6 +814,7 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
         const distance: usize = d.payload + @as(usize, @intCast(bits & ((@as(u64, 1) << dx) - 1)));
         bits >>= dx;
         count -= dx;
+        const next = lit[@intCast(bits & ((1 << 11) - 1))];
         if (!full_history and distance > history + (op - initial_op)) return error.BadDistance;
         if (distance >= 32) {
             var j: usize = 0;
@@ -823,6 +828,7 @@ fn decodeFastImpl(ctx: *Ctx, lit: []const Entry, dist: []const Entry, comptime f
             copy.matchVec16(output, op, distance, length);
         }
         op += length;
+        e = next;
     }
     return false;
 }
@@ -1210,6 +1216,87 @@ test "[edge] - [gzip]: decoded counters stop at the u64 output bound" {
     try std.testing.expectEqual(std.math.maxInt(u64), ctx.produced);
     try std.testing.expectError(error.OutputLimitExceeded, ctx.emitByte('B'));
     try std.testing.expectEqual(@as(u64, 1), sink.fullCount());
+}
+
+test "[property] - [gzip]: fast literals consume exact bits within output room" {
+    const decoder = try std.testing.allocator.create(Decompressor);
+    defer std.testing.allocator.destroy(decoder);
+    try std.testing.expectEqual(@as(usize, 200704), @sizeOf(Decompressor));
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    for (0..65) |length| {
+        var input: [128]u8 = @splat(0);
+        var plain: [64]u8 = undefined;
+        var ends: [66]usize = undefined;
+        ends[0] = 0;
+        var position: usize = 0;
+        for (0..length + 1) |i| {
+            const symbol: u16 = if (i == length) 256 else @as(u8, @truncate(i * 37));
+            if (i < length) plain[i] = @intCast(symbol);
+            const width: usize = if (symbol == 256) 7 else if (symbol < 144) 8 else 9;
+            const code: u16 = if (symbol == 256) 0 else if (symbol < 144) 0x30 + symbol else 0x190 + symbol - 144;
+            for (0..width) |j| {
+                const bit: u8 = @intCast((code >> @intCast(width - 1 - j)) & 1);
+                input[position / 8] |= bit << @intCast(position % 8);
+                position += 1;
+            }
+            ends[i + 1] = position;
+        }
+        for ([_]usize{ 0, 1, 2, 287, 288, 289, 290, 291, 320, 353 }) |room| {
+            @memset(decoder.buffer[RING..][0..384], 0xa5);
+            var reader = std.Io.Reader.fixed(&input);
+            var br: Br = .{ .reader = &reader, .src = &input };
+            var ctx: Ctx = .{
+                .br = &br,
+                .work = decoder,
+                .out = decoder.buffer[0 .. RING + room],
+                .writer = &sink.writer,
+                .max_output_bytes = std.math.maxInt(u64),
+            };
+            const ended = try decodeFastImpl(&ctx, &FIXED_TABLES.lit, &FIXED_TABLES.dist, false);
+            const written = ctx.out_pos - RING;
+            try std.testing.expect(written <= length and written <= room);
+            if (ended) try std.testing.expectEqual(length, written);
+            try std.testing.expectEqual(ends[if (ended) length + 1 else written], br.i * 8 - br.nbits);
+            try std.testing.expectEqualSlices(u8, plain[0..written], decoder.buffer[RING..][0..written]);
+            for (decoder.buffer[ctx.out_pos .. RING + 384]) |byte| try std.testing.expectEqual(@as(u8, 0xa5), byte);
+        }
+    }
+}
+
+test "[edge] - [gzip]: lookahead retains unread bits after a maximum-width match" {
+    const decoder = try std.testing.allocator.create(Decompressor);
+    defer std.testing.allocator.destroy(decoder);
+    const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
+    @memset(&decoder.lit_first, invalid);
+    @memset(&decoder.dist_first, invalid);
+    @memset(&decoder.lit_spill, invalid);
+    @memset(&decoder.dist_spill, invalid);
+    decoder.lit_first[0] = .{ .nbits = 11, .kind = .long, .extra = 4, .payload = 0 };
+    decoder.lit_spill[0] = .{ .nbits = 15, .kind = .len, .extra = 5, .payload = 227 };
+    decoder.dist_first[0] = .{ .nbits = 9, .kind = .long, .extra = 6, .payload = 0 };
+    decoder.dist_spill[0] = .{ .nbits = 15, .kind = .dist, .extra = 13, .payload = 24577 };
+    decoder.lit_first[1024] = .{ .nbits = 11, .kind = .lit, .payload = 'A' };
+    decoder.lit_first[1] = .{ .nbits = 1, .kind = .eob, .payload = 0 };
+    for (decoder.buffer[0..RING], 0..) |*byte, i| byte.* = @truncate(i * 73 + i / 256);
+    var input: [32]u8 = @splat(0);
+    const token_bits: u64 = (@as(u64, 31) << 15) | (@as(u64, 8191) << 35);
+    std.mem.writeInt(u64, input[0..8], token_bits | (@as(u64, 1024) << 48) | (@as(u64, 1) << 59), .little);
+    var reader = std.Io.Reader.fixed(&input);
+    var br: Br = .{ .reader = &reader, .src = &input };
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    var ctx: Ctx = .{
+        .br = &br,
+        .work = decoder,
+        .out = &decoder.buffer,
+        .writer = &sink.writer,
+        .produced = RING,
+        .max_output_bytes = std.math.maxInt(u64),
+    };
+    try std.testing.expect(try decodeFastImpl(&ctx, &decoder.lit_first, &decoder.dist_first, true));
+    try std.testing.expectEqual(RING + 259, ctx.out_pos);
+    try std.testing.expectEqual(@as(usize, 60), br.i * 8 - br.nbits);
+    try std.testing.expectEqualSlices(u8, decoder.buffer[0..258], decoder.buffer[RING..][0..258]);
+    try std.testing.expectEqual(@as(u8, 'A'), decoder.buffer[RING + 258]);
 }
 
 test "[edge] - [gzip]: over-depth encoding trees select the fallback" {
