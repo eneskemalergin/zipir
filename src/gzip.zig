@@ -501,7 +501,18 @@ fn fillFirst(table: []Entry, W: u4, lens: []const u4, kind_of: *const fn (usize)
 }
 
 fn fillTwoLevel(table: []Entry, spill: []Entry, comptime W: u4, lens: []const u4, kind_of: *const fn (usize) Kind, payload_of: *const fn (usize) u16, comptime predecoded: bool) !void {
-    @memset(table, .{ .nbits = 0, .kind = .invalid, .payload = 0 });
+    if (@inComptime()) {
+        @memset(table, .{ .nbits = 0, .kind = .invalid, .payload = 0 });
+    } else {
+        const bytes = std.mem.sliceAsBytes(table);
+        var offset: usize = 0;
+        while (bytes.len - offset >= 32) : (offset += 32) {
+            // Volatile keeps LLVM from restoring the byte-loop runtime memset.
+            const block: *align(1) volatile @Vector(32, u8) = @ptrCast(bytes[offset..][0..32].ptr);
+            block.* = @splat(0);
+        }
+        @memset(bytes[offset..], 0);
+    }
     var codes: [288]u16 = undefined;
     try buildCodes(lens, codes[0..lens.len], .symbols);
     const mask: u16 = @intCast(table.len - 1);
@@ -1193,6 +1204,29 @@ const FIXED_DIST: EncodeTree = blk: {
 test {
     _ = crc;
     _ = copy;
+}
+
+test "[property] - [gzip tables]: rejected trees clear roots without changing adjacent entries" {
+    const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
+    const sentinel: Entry = .{ .nbits = 15, .kind = .long, .extra = 0xa5, .payload = 0x5a5a };
+    inline for (.{ @as(u4, 9), @as(u4, 10), @as(u4, 11) }) |width| {
+        const count = 1 << width;
+        var actual: [count + 16]Entry align(32) = undefined;
+        var expected: [count + 16]Entry = undefined;
+        for (0..8) |offset| {
+            for ([_]Entry{ invalid, sentinel }) |previous| {
+                @memset(&actual, sentinel);
+                const root = actual[8 + offset ..][0..count];
+                @memset(root, previous);
+                expected = actual;
+                @memset(expected[8 + offset ..][0..count], invalid);
+                var spill: [0]Entry = .{};
+
+                try std.testing.expectError(error.BadHuffman, fillTwoLevel(root, &spill, width, &.{ 1, 1, 1 }, litKind, litPayload, true));
+                try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&expected), std.mem.sliceAsBytes(&actual));
+            }
+        }
+    }
 }
 
 test "[property] - [gzip tables]: narrower roots preserve entries and bounded spill" {
