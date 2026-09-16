@@ -516,6 +516,7 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime W: u4, lens: []const u4
     var codes: [288]u16 = undefined;
     try buildCodes(lens, codes[0..lens.len], .symbols);
     const mask: u16 = @intCast(table.len - 1);
+    var has_long = false;
     for (lens, 0..) |len, symbol| {
         if (len == 0) continue;
         const rev = bitReverse(codes[symbol], len);
@@ -525,11 +526,13 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime W: u4, lens: []const u4
             var i: usize = rev;
             while (i < table.len) : (i += @as(usize, 1) << len) table[i] = entry;
         } else {
+            has_long = true;
             const entry = &table[rev & mask];
             if (entry.kind != .invalid and entry.kind != .long) return error.BadHuffman;
             entry.* = .{ .nbits = W, .kind = .long, .extra = @max(entry.extra, len - W), .payload = 0 };
         }
     }
+    if (!has_long) return;
     var used: usize = 0;
     for (table) |*entry| {
         if (entry.kind != .long) continue;
@@ -1233,8 +1236,9 @@ test "[property] - [gzip tables]: narrower roots preserve entries and bounded sp
     const Tables = struct {
         fn check(comptime width: u4, lens: []const u4, seen_heights: *u16, compare_widths: bool) !void {
             const capacity = if (width == 10) 1536 else 292;
-            var root: [1 << width]Entry = undefined;
-            var spill: [if (width == 10) 4608 else 2048]Entry = undefined;
+            const sentinel: Entry = .{ .nbits = 15, .kind = .long, .extra = 0xa5, .payload = 0x5a5a };
+            var root: [1 << width]Entry = @splat(sentinel);
+            var spill: [if (width == 10) 4608 else 2048]Entry = @splat(sentinel);
             const kind = if (width == 10) litKind else distKind;
             const payload = if (width == 10) litPayload else distPayload;
             try fillTwoLevel(&root, &spill, width, lens, kind, payload, true);
@@ -1243,6 +1247,7 @@ test "[property] - [gzip tables]: narrower roots preserve entries and bounded sp
                 if (entry.kind == .long) used = @max(used, entry.payload + (@as(usize, 1) << @intCast(entry.extra)));
             }
             try std.testing.expect(used <= capacity);
+            for (spill[used..]) |entry| try std.testing.expectEqual(@as(u32, @bitCast(sentinel)), @as(u32, @bitCast(entry)));
 
             var leaves: [1 << width]u16 = @splat(0);
             var heights: [1 << width]u4 = @splat(0);
@@ -1272,6 +1277,43 @@ test "[property] - [gzip tables]: narrower roots preserve entries and bounded sp
             try std.testing.expectEqual(used, modeled);
             if (symbols > 1) try std.testing.expectEqual(@as(usize, 32768), slot);
 
+            if (compare_widths) {
+                var canonical: [32768]u16 = @splat(65535);
+                var start: usize = 0;
+                for (1..16) |depth| {
+                    for (lens, 0..) |len, symbol| {
+                        if (len != depth) continue;
+                        const count = @as(usize, 1) << @intCast(15 - depth);
+                        @memset(canonical[start..][0..count], @intCast(symbol));
+                        start += count;
+                    }
+                }
+                for (0..32768) |bits| {
+                    const symbol = canonical[@bitReverse(@as(u16, @intCast(bits))) >> 1];
+                    var expected: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
+                    if (symbol != 65535) {
+                        expected.nbits = lens[symbol];
+                        if (width == 9) {
+                            expected.kind = if (symbol < 30) .dist else .invalid;
+                            expected.payload = if (symbol < 30) DIST_BASE[symbol] else symbol;
+                            expected.extra = if (symbol < 30) DIST_EXTRA[symbol] else 0;
+                        } else if (symbol < 256) {
+                            expected.kind = .lit;
+                            expected.payload = symbol;
+                        } else if (symbol == 256) {
+                            expected.kind = .eob;
+                        } else {
+                            expected.kind = if (symbol <= 285) .len else .invalid;
+                            expected.payload = if (symbol <= 285) LEN_BASE[symbol - 257] else symbol - 257;
+                            expected.extra = if (symbol <= 285) LEN_EXTRA[symbol - 257] else 0;
+                        }
+                    }
+                    var actual = root[bits & (root.len - 1)];
+                    if (actual.kind == .long) actual = lookupLong(actual, &spill, bits, width);
+                    try std.testing.expectEqual(@as(u32, @bitCast(expected)), @as(u32, @bitCast(actual)));
+                }
+            }
+
             if (width == 10 and compare_widths) {
                 var original_root: [1 << 11]Entry = undefined;
                 var original_spill: [4608]Entry = undefined;
@@ -1282,6 +1324,23 @@ test "[property] - [gzip tables]: narrower roots preserve entries and bounded sp
                     var narrowed = root[bits & 1023];
                     if (narrowed.kind == .long) narrowed = lookupLong(narrowed, &spill, bits, 10);
                     try std.testing.expectEqual(@as(u32, @bitCast(original)), @as(u32, @bitCast(narrowed)));
+                }
+            }
+            if (compare_widths) {
+                if (used != 0) try std.testing.expectError(error.BadHuffman, fillTwoLevel(&root, spill[0 .. used - 1], width, lens, kind, payload, true));
+                const previous_spill = spill;
+                var short_lens: [if (width == 10) 288 else 32]u4 = @splat(0);
+                for (0..2) |single| {
+                    short_lens[0] = @intCast(single);
+                    try fillTwoLevel(&root, &spill, width, &short_lens, kind, payload, true);
+                    for (root, 0..) |entry, prefix| {
+                        const expected: Entry = if (single != 0 and prefix & 1 == 0)
+                            .{ .nbits = 1, .kind = if (width == 10) .lit else .dist, .payload = if (width == 10) 0 else 1 }
+                        else
+                            .{ .nbits = 0, .kind = .invalid, .payload = 0 };
+                        try std.testing.expectEqual(@as(u32, @bitCast(expected)), @as(u32, @bitCast(entry)));
+                    }
+                    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&previous_spill), std.mem.sliceAsBytes(&spill));
                 }
             }
         }
