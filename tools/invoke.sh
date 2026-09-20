@@ -2,7 +2,7 @@
 # Native argv for C/host gzip CLIs. Uniform path CLI for language adapters.
 # Sourced by qualify.sh and bench.sh. Not a timed program.
 
-# shellcheck source=versions.sh
+# shellcheck source=tools/versions.sh
 source "${TOOLS_DIR}/versions.sh"
 
 BIN_DIR="${BIN_DIR:-$TOOLS_DIR/bin}"

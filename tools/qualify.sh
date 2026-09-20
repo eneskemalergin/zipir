@@ -8,8 +8,7 @@ ROOT_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
 MANIFEST="$TOOLS_DIR/corpus.tsv"
 DATA_DIR="$ROOT_DIR/data"
 LOCAL_DIR="$TOOLS_DIR/.local"
-BIN_DIR="$TOOLS_DIR/bin"
-# shellcheck source=invoke.sh
+# shellcheck source=tools/invoke.sh
 source "$TOOLS_DIR/invoke.sh"
 KEEP_TOOL_WORK="${KEEP_TOOL_WORK:-0}"
 BLOCKING_FAILS=0
@@ -162,12 +161,12 @@ load_peer_config() {
 }
 
 load_coverage() {
-    local tool ver fmt compress decompress levels st mt stream bound window heap crc isize concat cap dict source
+    local tool ver fmt _compress _decompress _levels st _mt _stream _bound _window _heap crc isize concat cap _dict _source
     COV_CRC=""
     COV_ISIZE=""
     COV_CONCAT=""
     COV_CAP=""
-    while IFS=$'\t' read -r tool ver fmt compress decompress levels st mt stream bound window heap crc isize concat cap dict source; do
+    while IFS=$'\t' read -r tool ver fmt _compress _decompress _levels st _mt _stream _bound _window _heap crc isize concat cap _dict _source; do
         [[ -z "${tool:-}" || "$tool" == \#* || "$tool" == tool ]] && continue
         if [[ "$tool" == "$TOOL" && "$ver" == "$PEER_VERSION" && "$fmt" == "$FORMAT" ]]; then
             COV_CRC="$crc"
@@ -192,8 +191,8 @@ class_selected() {
 }
 
 each_row() {
-    local category class filename bytes sha256 url
-    while IFS=$'\t' read -r category class filename bytes sha256 url; do
+    local category class filename _bytes _sha256 _url
+    while IFS=$'\t' read -r category class filename _bytes _sha256 _url; do
         [[ -z "${category:-}" || "$category" == \#* || "$category" == category ]] && continue
         if [[ "$FILTER_CATEGORY" != all && "$category" != "$FILTER_CATEGORY" ]]; then
             continue
@@ -213,7 +212,7 @@ record() {
     local category="$1" class="$2" filename="$3" op="$4" check="$5" kind="$6" result="$7" detail="$8"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$category" "$class" "$filename" "$op" "$check" "$kind" "$result" "$detail" >>"$CHECKS"
-    printf '%s %s %s %s %s %s %s\n' \
+    printf '%s %s %s %s %s %s\n' \
         "$result" "$kind" "$category/$class/$filename" "$op" "$check" "$detail"
     if [[ "$kind" == blocking && "$result" == fail ]]; then
         BLOCKING_FAILS=$((BLOCKING_FAILS + 1))

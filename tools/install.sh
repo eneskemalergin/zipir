@@ -19,7 +19,7 @@ REBUILD=0
 ACTIVE_WORK=""
 ACTIVE_STAGE=""
 
-# shellcheck source=versions.sh
+# shellcheck source=tools/versions.sh
 source "$TOOLS_DIR/versions.sh"
 
 PEERS=(std-gzip gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng)
@@ -174,7 +174,8 @@ switch_abs_link() {
 }
 
 remove_bin_link() {
-    local name="$1" link="$BIN_DIR/$name"
+    local name="$1"
+    local link="$BIN_DIR/$name"
     if [[ -L "$link" ]]; then
         rm -f -- "$link"
     elif [[ -e "$link" ]]; then

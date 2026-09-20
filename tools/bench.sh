@@ -8,8 +8,7 @@ ROOT_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
 MANIFEST="$TOOLS_DIR/corpus.tsv"
 DATA_DIR="$ROOT_DIR/data"
 LOCAL_DIR="$TOOLS_DIR/.local"
-BIN_DIR="$TOOLS_DIR/bin"
-# shellcheck source=invoke.sh
+# shellcheck source=tools/invoke.sh
 source "$TOOLS_DIR/invoke.sh"
 KEEP_TOOL_WORK="${KEEP_TOOL_WORK:-0}"
 FORCE=0
@@ -164,8 +163,8 @@ load_peer_config() {
 }
 
 each_row() {
-    local category class filename bytes sha256 url
-    while IFS=$'\t' read -r category class filename bytes sha256 url; do
+    local category class filename _bytes _sha256 _url
+    while IFS=$'\t' read -r category class filename _bytes _sha256 _url; do
         [[ -z "${category:-}" || "$category" == \#* || "$category" == category ]] && continue
         if [[ "$FILTER_CATEGORY" != all && "$category" != "$FILTER_CATEGORY" ]]; then
             continue

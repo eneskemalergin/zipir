@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
+# shellcheck disable=SC2034
 # Exact versions. Never silently follow a moving branch.
 
 ZIG_VERSION=0.16.0
