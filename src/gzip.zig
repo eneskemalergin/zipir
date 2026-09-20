@@ -75,6 +75,7 @@ pub const Compressor = struct {
         var size: u64 = 0;
         var lookahead: [1]u8 = undefined;
         var carried: usize = 0;
+        var skip_search = false;
         while (true) {
             if (carried != 0) self.window[history] = lookahead[0];
             const n = carried + try reader.readSliceShort(self.window[history + carried ..][0 .. RING - carried]);
@@ -86,10 +87,12 @@ pub const Compressor = struct {
             // The previous block's final two positions lacked three-byte lookahead.
             if (history != 0) {
                 var p = history - 2;
-                while (p < history and p + 3 <= end) : (p += 1) self.insert(p);
+                while (p < history and p + 3 <= end) : (p += 1) self.insert(p, self.hash(p, end));
             }
-            self.parse(history, end, options);
-            try self.emit(&bits, self.window[history..end], last);
+            self.parse(history, end, options, skip_search);
+            const stored = try self.emit(&bits, self.window[history..end], last);
+            // Stored blocks are a bounded miss signal. Recheck after one skipped block.
+            skip_search = stored and !skip_search and options.level != .fast;
             if (last) break;
             if (history != 0) {
                 @memcpy(self.window[0..RING], self.window[RING..][0..RING]);
@@ -106,25 +109,28 @@ pub const Compressor = struct {
         return size;
     }
 
-    fn hash(self: *const Compressor, p: usize) usize {
-        const v = @as(u32, self.window[p]) | (@as(u32, self.window[p + 1]) << 8) | (@as(u32, self.window[p + 2]) << 16);
-        return (v *% 0x1e35a7bd) >> 18;
+    fn hash(self: *const Compressor, p: usize, end: usize) usize {
+        // The final three-byte tail has no fourth byte for the hot-path key.
+        const v = if (p + 4 <= end)
+            std.mem.readInt(u32, self.window[p..][0..4], .little)
+        else
+            @as(u32, self.window[p]) | (@as(u32, self.window[p + 1]) << 8) | (@as(u32, self.window[p + 2]) << 16);
+        return (v *% 0x1e35a7bd) >> 17;
     }
 
-    fn insert(self: *Compressor, p: usize) void {
-        const h = self.hash(p);
+    fn insert(self: *Compressor, p: usize, h: usize) void {
         self.previous[p & (RING - 1)] = self.head[h];
         self.head[h] = @intCast(p + 1);
     }
 
     const Match = struct { len: usize = 2, dist: usize = 0 };
 
-    fn find(self: *const Compressor, p: usize, end: usize, budget: usize) Match {
+    fn find(self: *const Compressor, p: usize, end: usize, budget: usize, nice: usize, h: usize) Match {
         var best: Match = .{};
         if (p + 3 > end) return best;
         const limit = @min(258, end - p);
         const lower = p -| RING;
-        var entry = self.head[self.hash(p)];
+        var entry = self.head[h];
         var attempts = budget;
         while (entry != 0 and attempts != 0) : (attempts -= 1) {
             const q: usize = entry - 1;
@@ -135,7 +141,7 @@ pub const Compressor = struct {
                 const len = matchLength(self.window[p..][0..limit], self.window[q..][0..limit]);
                 if (len > best.len) {
                     best = .{ .len = len, .dist = p - q };
-                    if (len == limit) break;
+                    if (len >= nice or len == limit) break;
                 }
             }
             const next = self.previous[q & (RING - 1)];
@@ -145,25 +151,63 @@ pub const Compressor = struct {
         return best;
     }
 
-    fn parse(self: *Compressor, start: usize, end: usize, options: CompressOptions) void {
+    fn hasEarlyMatch(self: *const Compressor, start: usize, end: usize) bool {
+        const lower = start -| RING;
+        const stop = @min(end, start + 1024);
+        var p = start;
+        while (p + 4 <= stop) : (p += 1) {
+            const h = self.hash(p, end);
+            const entry = self.head[h];
+            if (entry == 0) continue;
+            const q: usize = entry - 1;
+            if (q < lower or q >= p) continue;
+            if (std.mem.readInt(u32, self.window[p..][0..4], .little) ==
+                std.mem.readInt(u32, self.window[q..][0..4], .little)) return true;
+        }
+        return false;
+    }
+
+    fn parse(self: *Compressor, start: usize, end: usize, options: CompressOptions, skip_search: bool) void {
         @memset(&self.lit_freq, 0);
         @memset(&self.dist_freq, 0);
         self.lit_freq[256] = 1;
         self.token_bytes = 0;
         const budget: usize = switch (options.level) {
-            .fast => 4,
-            .balanced => 32,
+            .fast => 1,
+            .balanced => 12,
+            .dense => 128,
+        };
+        const nice: usize = switch (options.level) {
+            .fast => 8,
+            .balanced => 96,
             .dense => 128,
         };
         var p = start;
         var literal_start = start;
         var pending: Match = .{};
+        var pending_hash: usize = 0;
+        const search_disabled = skip_search and !self.hasEarlyMatch(start, end);
         while (p < end) {
-            var m = if (pending.len >= 3) pending else self.find(p, end, budget);
+            var m: Match = undefined;
+            var m_hash: usize = undefined;
+            if (pending.len >= 3) {
+                m = pending;
+                m_hash = pending_hash;
+            } else if (search_disabled) {
+                if (p + 3 <= end) m_hash = self.hash(p, end) else m_hash = 0;
+                m = .{};
+            } else if (p + 3 <= end) {
+                m_hash = self.hash(p, end);
+                m = self.find(p, end, budget, nice, m_hash);
+            } else {
+                m = .{};
+                m_hash = 0;
+            }
             pending = .{};
-            if (p + 3 <= end) self.insert(p);
-            if (options.level != .fast and m.len >= 3 and m.len < 258 and p + 3 < end) {
-                const next = self.find(p + 1, end, budget);
+            if (p + 3 <= end) self.insert(p, m_hash);
+            if (options.level != .fast and m.len >= 3 and m.len < 16 and p + 3 < end) {
+                pending_hash = self.hash(p + 1, end);
+                const next = self.find(p + 1, end, @min(budget, 8), nice, pending_hash);
                 if (next.len > m.len) {
                     pending = next;
                     m.len = 2;
@@ -179,7 +223,7 @@ pub const Compressor = struct {
                 const stop = p + m.len;
                 p += 1;
                 while (p < stop) : (p += 1) {
-                    if (p + 3 <= end) self.insert(p);
+                    if (options.level != .fast and p + 3 <= end) self.insert(p, self.hash(p, end));
                 }
                 literal_start = p;
             } else {
@@ -203,7 +247,7 @@ pub const Compressor = struct {
         return n;
     }
 
-    fn emit(self: *const Compressor, bits: *Bw, raw: []const u8, last: bool) CompressError!void {
+    fn emit(self: *const Compressor, bits: *Bw, raw: []const u8, last: bool) CompressError!bool {
         var lit: EncodeTree = .{};
         var dist: EncodeTree = .{};
         var code: EncodeTree = .{};
@@ -240,7 +284,7 @@ pub const Compressor = struct {
             std.mem.writeInt(u16, header[2..4], ~len, .little);
             try bits.writer.writeAll(&header);
             try bits.writer.writeAll(raw);
-            return;
+            return true;
         }
         if (dynamic < fixed) {
             try bits.put(4 | @as(u32, @intFromBool(last)), 3);
@@ -258,6 +302,7 @@ pub const Compressor = struct {
             try self.emitTokens(bits, raw, &FIXED_LIT, &FIXED_DIST);
         }
         try bits.drain();
+        return false;
     }
 
     fn emitTokens(self: *const Compressor, bits: *Bw, raw: []const u8, lit: *const EncodeTree, dist: *const EncodeTree) CompressError!void {
@@ -989,7 +1034,7 @@ fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, 
 
 // --- Compression ---
 
-const ENCODE_HASH = 16384;
+const ENCODE_HASH = 32768;
 
 fn rebase(positions: []u16) void {
     const V = @Vector(16, u16);
@@ -1003,9 +1048,12 @@ fn rebase(positions: []u16) void {
 
 fn matchLength(a: []const u8, b: []const u8) usize {
     var n: usize = 0;
-    while (n + 8 <= a.len) : (n += 8) {
-        const x = std.mem.readInt(u64, a[n..][0..8], .little) ^ std.mem.readInt(u64, b[n..][0..8], .little);
-        if (x != 0) return n + @as(usize, @ctz(x)) / 8;
+    while (n + 32 <= a.len) : (n += 32) {
+        const va: @Vector(32, u8) = a[n..][0..32].*;
+        const vb: @Vector(32, u8) = b[n..][0..32].*;
+        const different = va != vb;
+        const mask: u32 = @bitCast(different);
+        if (mask != 0) return n + @ctz(mask);
     }
     while (n < a.len and a[n] == b[n]) : (n += 1) {}
     return n;

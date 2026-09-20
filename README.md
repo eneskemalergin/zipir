@@ -73,7 +73,7 @@ cat input.gz | ./zig-out/bin/z_flate decompress > output
 
 The gzip decoder workspace is 196,608 bytes. With the example's 32 KiB input and 4 KiB output buffers, explicit storage is 233,472 bytes (228 KiB), plus bounded stack, shared tables, and runtime/code residency. Fixed Huffman decoding uses 6 KiB of shared read-only tables generated at compile time.
 
-The encoder workspace is 206,080 bytes. With the same I/O buffers, explicit storage is 242,944 bytes (237.25 KiB), plus bounded Huffman scratch and runtime/code residency. These budgets are identical across the three compression presets and independent of stream size. The CLI allocates only the selected codec's workspace. These are fixed reservations, not total process peak RSS. Neither codec allocates complete input/output buffers or uses application-level memory mapping.
+The encoder workspace is 238,848 bytes. With the same I/O buffers, explicit storage is 275,712 bytes (269.25 KiB), plus bounded Huffman scratch and runtime/code residency. These budgets are identical across the three compression presets and independent of stream size. The CLI allocates only the selected codec's workspace. These are fixed reservations, not total process peak RSS. Neither codec allocates complete input/output buffers or uses application-level memory mapping.
 
 CRC uses a portable implementation with compile-time guarded x86 PCLMUL and AArch64 CRC instructions. CPU selection follows Zig's target options: a native build targets the build machine. Use `-Dcpu=baseline` when distributing to other CPUs, or select a known minimum CPU explicitly. Linux and macOS on x86_64 and AArch64 are the intended targets. Cross-compilation is separate from runtime performance qualification.
 
