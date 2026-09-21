@@ -1,92 +1,117 @@
-# z-flate
+<!-- markdownlint-disable MD033 MD041 -->
 
-Native Zig streaming gzip compression and gzip/zlib decompression. Requires Zig 0.16.0. The library has no external dependencies and does not create threads or allocate during codec operations.
+<div align="center">
+  <img src="assets/logo-readme.svg" alt="Zipir logo" width="170">
+  <h1>ZIPIR</h1>
+  <p><strong>Native Zig gzip compression and bounded streaming gzip/zlib decompression.</strong></p>
+  <p>
+    <img src="https://img.shields.io/badge/version-0.1.2-2C8EBB?style=flat-square" alt="Version 0.1.2">
+    <a href="https://ziglang.org/download/"><img src="https://img.shields.io/badge/Zig-0.16.0-F7A41D?style=flat-square&amp;logo=zig&amp;logoColor=white" alt="Zig 0.16.0"></a>
+    <img src="https://img.shields.io/badge/status-development-4B9D6E?style=flat-square" alt="Status: development">
+    <img src="https://img.shields.io/badge/dependencies-none-2D7D46?style=flat-square" alt="No external dependencies">
+  </p>
+</div>
 
-Gzip compression and gzip/zlib decompression are implemented. Raw DEFLATE and zlib compression are not implemented.
+<!-- Future status links. Replace REPOSITORY with the actual GitHub owner/repository before enabling these links.
+<p align="center">
+  <a href="https://github.com/REPOSITORY/actions/workflows/ci.yml"><img src="https://github.com/REPOSITORY/actions/workflows/ci.yml/badge.svg?style=flat-square" alt="CI status"></a>
+  <a href="https://github.com/REPOSITORY/releases/latest"><img src="https://img.shields.io/github/v/release/REPOSITORY?style=flat-square" alt="Latest release"></a>
+</p>
+<p align="center">
+  <a href="https://github.com/REPOSITORY/wiki"><img height="18" src="https://img.shields.io/badge/wiki-documentation-2563EB?style=flat-square" alt="Wiki"></a>
+  <a href="bench/"><img height="18" src="https://img.shields.io/badge/benchmarks-reports-F59E0B?style=flat-square" alt="Benchmark reports"></a>
+  <a href="CHANGELOG.md"><img height="18" src="https://img.shields.io/badge/changelog-history-7C3AED?style=flat-square" alt="Changelog"></a>
+  <a href="docs/"><img height="18" src="https://img.shields.io/badge/docs-reference-0891B2?style=flat-square" alt="Documentation"></a>
+  <a href="LICENSE"><img height="18" src="https://img.shields.io/badge/license-MIT-4B9D6E?style=flat-square" alt="MIT License"></a>
+</p>
+-->
 
-## Library
+---
 
-`Decompressor(.gzip)` selects the gzip decoder at compile time. The caller owns reusable workspace and `std.Io.Reader` / `std.Io.Writer` buffers:
+> [!NOTE]
+> `zipir` takes its name from the Turkish word `zıpır`, meaning lively, restless, or mischievous. The ASCII spelling also hints at `zip` and keeps the name easy to use in source code and command lines. The playful name does not change the deliberately explicit API names or format terminology.
 
-```zig
-const std = @import("std");
-const z_flate = @import("z_flate");
+## Why zipir exists
 
-pub fn decompressFile(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    input: std.Io.File,
-    output: std.Io.File,
-) !u64 {
-    const decoder = try allocator.create(z_flate.Decompressor(.gzip));
-    defer allocator.destroy(decoder);
-    var input_buffer: [32768]u8 = undefined;
-    var output_buffer: [4096]u8 = undefined;
-    var reader = input.readerStreaming(io, &input_buffer);
-    var writer = output.writerStreaming(io, &output_buffer);
-    const decoded = try decoder.decompress(&reader.interface, &writer.interface, .{});
-    try writer.interface.flush();
-    return decoded;
-}
-```
+I kept reaching for compression in my other projects. Zig's standard library is expansive and gives me a strong starting point, but my workflows keep raising the same questions: how much memory does a stream need, where does checksum work happen, and which hot paths are worth tuning? Calling C libraries is one of Zig's strengths, but it can add a static dependency and another build choice to every project that uses it. Zipir is my attempt to keep the common path in one small Zig package that my projects can share.
 
-Use `gzip.Options.max_output_bytes` to cap decoded output, for example `.{ .max_output_bytes = 64 * 1024 * 1024 }`. Exceeding the limit returns `OutputLimitExceeded`. The result is a `u64` byte count across all members. Workspace can be reused without initialization after success or failure; simultaneous calls need separate workspaces.
+The library has no external dependencies, does not create threads, and does not allocate during codec operations. The goal is not to replace every compression library. The goal is to make the common bounded streaming path pleasant to use and straightforward to measure.
 
-The reader must have at least 16 bytes of buffer capacity; underlying reads may return one byte at a time. Fixed readers and writers work too. Input, output, and workspace must not overlap. The decoder borrows both interfaces and never closes them. The caller flushes the writer after success. Read/write errors abort the operation; externally resuming a failed call is not supported.
+## Supported codecs
 
-Stored, fixed-Huffman, and dynamic-Huffman blocks, optional gzip headers, header CRC, CRC32, ISIZE, and concatenated members are supported. Format references: [DEFLATE](https://www.rfc-editor.org/rfc/rfc1951) and [gzip](https://www.rfc-editor.org/rfc/rfc1952). History availability resets for each member. Malformed or truncated input returns a `gzip.Error`. Empty input is not a valid gzip stream; an empty gzip member is valid. Output is provisional until the call and writer flush succeed, so streaming failures may leave partial output.
+| Format | Compress | Decompress | Position |
+| --- | --- | --- | --- |
+| Gzip | Yes | Yes | Current implementation |
+| zlib | No | Yes | Current decoder |
+| ZIP | No | No | Possible future format |
+| Zstandard | No | No | Possible future format |
+| LZ4 | No | No | Possible future format |
+| XZ | No | No | Possible future format |
+| bzip2 | No | No | Possible future format |
 
-Trailing data is rejected by default, including zero padding. Set `.trailing_data = .leave` to stop before a non-gzip suffix and retain it in the reader. A suffix beginning with gzip magic is parsed as another member and must be valid. Header names/comments are validated or skipped incrementally; they are not retained or exposed.
+The future rows are possibilities, not a delivery order or a promise to support every format. Zipir will stay focused on formats that fit its Zig-first, bounded-streaming goals.
 
-`Decompressor(.zlib)` selects the zlib decoder. It validates the RFC 1950 header, rejects preset dictionaries, checks the Adler-32 trailer, and decodes one zlib stream. Trailing bytes are rejected by default; `.trailing_data = .leave` preserves them in the reader. `zlib.Options.max_output_bytes` limits decoded output and returns `OutputLimitExceeded` before the limit is exceeded. `Compressor(.zlib)` is not available.
+- Gzip compression with fast, balanced, and dense presets.
+- Streaming gzip decompression with header checks, CRC32, ISIZE, and concatenated members.
+- Streaming zlib decompression with RFC 1950 header checks, Adler-32, trailing-data policy, and an output limit.
+- Caller-owned `std.Io.Reader` and `std.Io.Writer` interfaces with reusable bounded workspaces.
 
-`Compressor(.gzip)` selects the gzip encoder. It uses the same borrowed interfaces and reusable workspace convention:
+Raw DEFLATE and zlib compression are not implemented yet.
 
-```zig
-const encoder = try allocator.create(z_flate.Compressor(.gzip));
-defer allocator.destroy(encoder);
-const input_bytes = try encoder.compress(&reader.interface, &writer.interface, .{
-    .level = .balanced,
-});
-try writer.interface.flush();
-```
+## Quick start
 
-`gzip.CompressOptions.level` supports `.fast` (1), `.balanced` (5, the default), and `.dense` (9). These presets increase match-search effort while retaining the same fixed workspace. They are initial tuning choices, not a guarantee that every higher preset produces fewer bytes or matches another encoder's numeric level. Compression remains lossless at every preset.
-
-Each call reads through EOF, writes one gzip member with CRC32 and ISIZE, and returns a `u64` count of input bytes. Empty input produces a valid empty member. Metadata is deterministic, with zero timestamp and no filename. Multiple successful calls to the same writer produce concatenated members. Compressed bytes may change as the implementation improves; gzip compatibility and exact decoded bytes are the contract.
-
-Compression accepts fixed readers and streaming readers with any buffer capacity, including zero. It retains a 32 KiB input block plus at most one byte of lookahead before emitting that block, with a separate bounded history. It chooses stored, fixed-Huffman or dynamic-Huffman coding while the raw block is available. `gzip.CompressError` reports `ReadFailed` or `WriteFailed`; the caller also handles writer-flush errors. Failure may leave partial output, and a new call resets the workspace. Incremental push/resume and explicit sync-flush operations are not exposed.
-
-## Command line
+Requires Zig 0.16.0.
 
 ```sh
 zig build -Doptimize=ReleaseFast
-./zig-out/bin/z_flate decompress input.gz > output
-./zig-out/bin/z_flate compress --level 5 input > output.gz
-cat input | ./zig-out/bin/z_flate compress --level 1 > output.gz
-cat input.gz | ./zig-out/bin/z_flate decompress > output
-./zig-out/bin/z_flate test input.gz
-./zig-out/bin/z_flate decompress --max-output-bytes 67108864 input.gz > output
+./zig-out/bin/zipir compress --level 5 input > output.gz
+./zig-out/bin/zipir decompress input.gz > output
+cat input.gz | ./zig-out/bin/zipir test > /dev/null
 ```
 
-`compress` writes gzip bytes to stdout and accepts `--level 1`, `5`, or `9`, defaulting to 5. `decompress` writes decoded bytes to stdout. `test` verifies and discards decoded output. `--max-output-bytes` applies to decompression and verification. Omit the input path or use `-` for stdin. Use `--` before a path starting with `-`. Input files are preserved. Reported errors print to stderr and exit with status 1; invalid arguments exit with status 2. A closed output pipe retains the default Unix SIGPIPE termination. No arguments or `--version` prints the version; `--help` prints usage.
+## Library
 
-## Memory and CPU targets
+The API borrows the reader and writer, keeps codec storage with the caller, and returns the decoded or consumed byte count.
 
-The gzip and zlib decoder workspaces are each 196,608 bytes. With the example's 32 KiB input and 4 KiB output buffers, explicit storage is 233,472 bytes (228 KiB), plus bounded stack, shared tables, and runtime/code residency. Fixed Huffman decoding uses 6 KiB of shared read-only tables generated at compile time.
+```zig
+const zipir = @import("zipir");
 
-The encoder workspace is 238,848 bytes. With the same I/O buffers, explicit storage is 275,712 bytes (269.25 KiB), plus bounded Huffman scratch and runtime/code residency. These budgets are identical across the three compression presets and independent of stream size. The CLI allocates only the selected codec's workspace. These are fixed reservations, not total process peak RSS. Neither codec allocates complete input/output buffers or uses application-level memory mapping.
+const decoder = try allocator.create(zipir.Decompressor(.zlib));
+defer allocator.destroy(decoder);
 
-CRC uses a portable implementation with compile-time guarded x86 PCLMUL and AArch64 CRC instructions. CPU selection follows Zig's target options: a native build targets the build machine. Use `-Dcpu=baseline` when distributing to other CPUs, or select a known minimum CPU explicitly. Linux and macOS on x86_64 and AArch64 are the intended targets. Cross-compilation is separate from runtime performance qualification.
+const decoded = try decoder.decompress(&reader, &writer, .{});
+try writer.flush();
+```
 
-## Verification
+Use `zipir.gzip.Options.max_output_bytes` or `zipir.zlib.Options.max_output_bytes` when decoded output needs a caller-defined bound. The full format behavior and error contracts will move into the project wiki as they settle.
+
+## Benchmarks
+
+> [!WARNING]
+> Public-facing benchmark reports will live in `bench/` once that directory is ready. It is not ready yet, so the comparisons described here are local development measurements rather than published benchmark results.
+
+Zipir comparisons use the same raw inputs, fixed I/O shape, decoded-byte checks, wall time, and peak RSS. The peer set includes Zig's standard library, system zlib, zlib-ng, and libdeflate. Streaming peers stay together; `libdeflate-zlib` is a full-buffer comparison and remains labeled separately because it answers a different memory question.
+
+The comparison adapters, corpus definitions, qualification checks, and report generation live in [`tools/`](tools/). The README will keep only the small conclusions that remain useful after the benchmark work changes.
+
+## Roadmap
+
+- Keep tuning gzip and zlib against real corpus shapes without losing bounded streaming behavior.
+- Publish compact speed and peak-RSS summaries once the comparison layout settles.
+- Move the complete API, format notes, and benchmark methods into the wiki.
+
+## Development
 
 ```sh
 zig fmt --check src tests build.zig
 zig build test --summary all
 zig build test -Doptimize=ReleaseSafe --summary all
-zig build test -Doptimize=ReleaseFast --summary all
-zig build test -Dcpu=baseline --summary all
 ```
 
-The self-contained tests cover public streaming contracts, independent compression decoding and checksums, corruption, chunk boundaries, output limits, CLI behavior, and scalar/native kernel agreement. Test fixtures and verification outputs may occupy more memory than a standalone codec. Performance and RSS must be measured in separate processes with fixed input/output buffers, without those retained oracle files. Compression speed and size remain active tuning targets; bounded memory does not imply speed parity with other encoders.
+---
+
+<p align="center"><em>
+  Narrow banks hold fast -<br>
+  great rivers fold into mist,<br>
+  no new soil disturbed.
+</em></p>
