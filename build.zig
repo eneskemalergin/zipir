@@ -61,6 +61,16 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(contracts).step);
 
+    const zlib_contracts = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/zlib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "z_flate", .module = mod }},
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(zlib_contracts).step);
+
     const cli_options = b.addOptions();
     cli_options.addOptionPath("executable", exe.getEmittedBin());
     const cli_tests = b.addTest(.{

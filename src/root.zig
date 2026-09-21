@@ -3,18 +3,19 @@
 const std = @import("std");
 
 pub const gzip = @import("gzip.zig");
-pub const Format = enum { gzip };
+pub const zlib = @import("zlib.zig");
+pub const Format = enum { gzip, zlib };
 
 pub fn Decompressor(comptime format: Format) type {
     return switch (format) {
         .gzip => gzip.Decompressor,
+        .zlib => zlib.Decompressor,
     };
 }
 
 pub fn Compressor(comptime format: Format) type {
-    return switch (format) {
-        .gzip => gzip.Compressor,
-    };
+    if (format != .gzip) @compileError("zlib compression is not implemented");
+    return gzip.Compressor;
 }
 
 pub const version: std.SemanticVersion = .{
@@ -31,4 +32,5 @@ test "[unit] - [root]: reports version 0.0.0" {
 
 test {
     _ = gzip;
+    _ = zlib;
 }

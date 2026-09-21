@@ -1,8 +1,8 @@
 # z-flate
 
-Native Zig streaming gzip compression and decompression. Requires Zig 0.16.0. The library has no external dependencies and does not create threads or allocate during codec operations.
+Native Zig streaming gzip compression and gzip/zlib decompression. Requires Zig 0.16.0. The library has no external dependencies and does not create threads or allocate during codec operations.
 
-Gzip compression and decompression are implemented. Other formats are not implemented yet.
+Gzip compression and gzip/zlib decompression are implemented. Raw DEFLATE and zlib compression are not implemented.
 
 ## Library
 
@@ -38,6 +38,8 @@ Stored, fixed-Huffman, and dynamic-Huffman blocks, optional gzip headers, header
 
 Trailing data is rejected by default, including zero padding. Set `.trailing_data = .leave` to stop before a non-gzip suffix and retain it in the reader. A suffix beginning with gzip magic is parsed as another member and must be valid. Header names/comments are validated or skipped incrementally; they are not retained or exposed.
 
+`Decompressor(.zlib)` selects the zlib decoder. It validates the RFC 1950 header, rejects preset dictionaries, checks the Adler-32 trailer, and decodes one zlib stream. Trailing bytes are rejected by default; `.trailing_data = .leave` preserves them in the reader. `zlib.Options.max_output_bytes` limits decoded output and returns `OutputLimitExceeded` before the limit is exceeded. `Compressor(.zlib)` is not available.
+
 `Compressor(.gzip)` selects the gzip encoder. It uses the same borrowed interfaces and reusable workspace convention:
 
 ```zig
@@ -71,7 +73,7 @@ cat input.gz | ./zig-out/bin/z_flate decompress > output
 
 ## Memory and CPU targets
 
-The gzip decoder workspace is 196,608 bytes. With the example's 32 KiB input and 4 KiB output buffers, explicit storage is 233,472 bytes (228 KiB), plus bounded stack, shared tables, and runtime/code residency. Fixed Huffman decoding uses 6 KiB of shared read-only tables generated at compile time.
+The gzip and zlib decoder workspaces are each 196,608 bytes. With the example's 32 KiB input and 4 KiB output buffers, explicit storage is 233,472 bytes (228 KiB), plus bounded stack, shared tables, and runtime/code residency. Fixed Huffman decoding uses 6 KiB of shared read-only tables generated at compile time.
 
 The encoder workspace is 238,848 bytes. With the same I/O buffers, explicit storage is 275,712 bytes (269.25 KiB), plus bounded Huffman scratch and runtime/code residency. These budgets are identical across the three compression presets and independent of stream size. The CLI allocates only the selected codec's workspace. These are fixed reservations, not total process peak RSS. Neither codec allocates complete input/output buffers or uses application-level memory mapping.
 
