@@ -31,7 +31,10 @@ COVERAGE = TOOLS / "coverage.tsv"
 CORPUS = TOOLS / "corpus.tsv"
 LEVELS = TOOLS / "levels.tsv"
 
-GZIP_ORACLE = "gnu-gzip"
+ORACLE_BY_FORMAT = {
+    "gzip": "gnu-gzip",
+    "zlib": "system-zlib",
+}
 STORE_KEPT_PCT = 99.0
 DEFAULT_KEPT_PP = 1.5
 FAST_KEPT_PP = 3.0
@@ -45,6 +48,7 @@ FACTS_HEADER = [
     "tool",
     "tool_version",
     "format",
+    "decode_mode",
     "operation",
     "level",
     "threads",
@@ -79,6 +83,7 @@ HEADLINE_HEADER = [
     "tool",
     "tool_version",
     "format",
+    "decode_mode",
     "level",
     "threads",
     "nthreads",
@@ -122,6 +127,7 @@ MEASURED_TSV_HEADER = [
     "tool",
     "tool_version",
     "format",
+    "decode_mode",
     "level",
     "threads",
     "nthreads",
@@ -155,6 +161,12 @@ MEASURED_TSV_HEADER = [
 
 CLASS_ORDER = {"sanity": 0, "small": 1, "medium": 2, "large": 3}
 CAT_ORDER = {"sequencing": 0, "ms": 1, "generalized": 2}
+
+
+def oracle_for(fmt: str, operation: str = "decompress", decode_mode: str = "streaming") -> str | None:
+    if operation == "decompress" and decode_mode != "streaming":
+        return None
+    return ORACLE_BY_FORMAT.get(fmt)
 
 
 def die(msg: str) -> None:
@@ -346,6 +358,29 @@ def load_coverage() -> list[dict[str, str]]:
     return rows
 
 
+def coverage_for(coverage: list[dict[str, str]], peer: dict[str, str]) -> dict[str, str]:
+    for row in coverage:
+        if (
+            row.get("tool") == peer.get("tool")
+            and row.get("format") == peer.get("format")
+            and row.get("tool_version") == peer.get("tool_version")
+        ):
+            return row
+    return {}
+
+
+def decode_mode_for(coverage: list[dict[str, str]], peer: dict[str, str]) -> str:
+    row = coverage_for(coverage, peer)
+    mode = row.get("decode_mode", "")
+    if mode in ("streaming", "full-buffer"):
+        return mode
+    if row.get("stream") == "yes":
+        return "streaming"
+    if row.get("stream") in ("no", "hint"):
+        return "full-buffer"
+    return "unknown"
+
+
 def load_corpus() -> list[dict[str, str]]:
     return read_tsv(CORPUS)
 
@@ -506,7 +541,7 @@ def parse_json_file(path: Path, tool_dir: Path) -> dict[str, str] | None:
     }
 
 
-def collect_facts(peers: list[dict[str, str]]) -> list[dict[str, str]]:
+def collect_facts(peers: list[dict[str, str]], coverage: list[dict[str, str]]) -> list[dict[str, str]]:
     facts: list[dict[str, str]] = []
     if not ZEBRAC.exists():
         return facts
@@ -516,6 +551,7 @@ def collect_facts(peers: list[dict[str, str]]) -> list[dict[str, str]]:
         if tool not in by_tool_peer:
             continue
         peer = by_tool_peer[tool]
+        decode_mode = decode_mode_for(coverage, peer)
         qmeta = read_meta(QUALIFY / tool / "meta.tsv")
         zmeta = read_meta(tool_dir / "meta.tsv")
         meta = {**qmeta, **zmeta}
@@ -551,6 +587,7 @@ def collect_facts(peers: list[dict[str, str]]) -> list[dict[str, str]]:
                 "tool": tool,
                 "tool_version": matched.get("tool_version") or meta.get("tool_version", ""),
                 "format": parsed["format"],
+                "decode_mode": decode_mode,
                 "operation": parsed["operation"],
                 "level": parsed["level"],
                 "threads": parsed["threads"],
@@ -627,6 +664,7 @@ def wide_rows(facts: list[dict[str, str]], classes: set[str] | None = None) -> l
                 "tool": enc.get("tool", ""),
                 "tool_version": enc.get("tool_version", ""),
                 "format": enc.get("format", ""),
+                "decode_mode": enc.get("decode_mode", "") or dec.get("decode_mode", ""),
                 "level": enc.get("level", ""),
                 "threads": enc.get("threads", ""),
                 "nthreads": enc.get("nthreads", ""),
@@ -669,6 +707,7 @@ def wide_rows(facts: list[dict[str, str]], classes: set[str] | None = None) -> l
                 "tool": dec.get("tool", ""),
                 "tool_version": dec.get("tool_version", ""),
                 "format": dec.get("format", ""),
+                "decode_mode": dec.get("decode_mode", ""),
                 "level": "-",
                 "threads": dec.get("threads", ""),
                 "nthreads": dec.get("nthreads", ""),
@@ -709,21 +748,22 @@ def wide_rows(facts: list[dict[str, str]], classes: set[str] | None = None) -> l
 def oracle_index(facts: list[dict[str, str]]) -> dict[tuple[str, ...], dict[str, str]]:
     idx: dict[tuple[str, ...], dict[str, str]] = {}
     for row in facts:
-        if row["tool"] != GZIP_ORACLE:
+        if row["tool"] != oracle_for(row["format"], row["operation"], row.get("decode_mode", "streaming")):
             continue
-        idx[
-            (
-                row["host"],
-                row["format"],
-                row["threads"],
-                row["nthreads"],
-                row["category"],
-                row["class"],
-                row["file"],
-                row["operation"],
-                row["level"],
-            )
-        ] = row
+        key = (
+            row["host"],
+            row["format"],
+            row["threads"],
+            row["nthreads"],
+            row["category"],
+            row["class"],
+            row["file"],
+            row["operation"],
+            row["level"],
+        )
+        if row["operation"] == "decompress":
+            key += (row.get("decode_mode", "streaming"),)
+        idx[key] = row
     return idx
 
 
@@ -733,19 +773,20 @@ def oracle_get(
     operation: str,
     level: str,
 ) -> dict[str, str] | None:
-    return idx.get(
-        (
-            row["host"],
-            row["format"],
-            row["threads"],
-            row["nthreads"],
-            row["category"],
-            row["class"],
-            row["file"],
-            operation,
-            level,
-        )
+    key = (
+        row["host"],
+        row["format"],
+        row["threads"],
+        row["nthreads"],
+        row["category"],
+        row["class"],
+        row["file"],
+        operation,
+        level,
     )
+    if operation == "decompress":
+        key += (row.get("decode_mode", "streaming"),)
+    return idx.get(key)
 
 
 def annotate_facts(facts: list[dict[str, str]], levels: dict[str, dict[str, str]]) -> None:
@@ -927,6 +968,7 @@ def rss_default_rows(
         rows.append(
             [
                 f"`{tool}`",
+                r.get("decode_mode", ""),
                 default,
                 fmt1(r.get("encode_mbs", "")),
                 fmt1(r.get("decode_mbs", "")),
@@ -993,14 +1035,17 @@ def normalized_markdown(
     decode = sort_gmean([r for r in suite if r["kind"] == "decode"])
     encode_out = sort_gmean([r for r in suite if r["kind"] == "encode_default_out"])
     meta = facts[0]
+    oracle_text = ", ".join(
+        f"{fmt} streaming=`{name}`" for fmt, name in sorted(ORACLE_BY_FORMAT.items())
+    )
     lines = [
-        f"- Host: {meta['host']}. Oracle: `{GZIP_ORACLE}`. `class=small` only.",
+        f"- Host: {meta['host']}. Streaming decode oracles: {oracle_text}. `class=small` only.",
         f"- Store if kept >= {STORE_KEPT_PCT:g}% or this tool's store level. Default band: `|kept - gzip -6 kept| <= {DEFAULT_KEPT_PP:g}` pp. Fast band: `|kept - gzip -1 kept| <= {FAST_KEPT_PP:g}` pp. Closer oracle wins if both match.",
-        "- gzip-rel is this tool's uncompressed MB/s divided by host `gnu-gzip` on the same file, format, threads, and host. Decode has no level. Encode vs `-6` ranks only inside the default band. Encode vs `-1` ranks only inside the fast band.",
+        "- Oracle-relative throughput is this tool's uncompressed MB/s divided by the oracle for the same format, decode mode, file, threads, and host. Full-buffer decode rows have no oracle-relative ranking unless a matching full-buffer oracle is added. Decode has no level. Gzip encode vs `-6` ranks only inside the default band. Gzip encode vs `-1` ranks only inside the fast band.",
         "- Geometric mean is over the small files in that band. Encode ranking tables require the sequencing file in-band; other files can drop out (`n` < 3). Tool defaults whose sequencing kept is not gzip `-6` go to the out table, not the default-ratio ranking.",
         "- RSS / file is peak RSS / uncompressed bytes. Do not rank by MB/s per MiB RSS.",
         "",
-        "#### Decode gzip-rel",
+        "#### Decode oracle-relative throughput",
         "",
     ]
     lines.append(
@@ -1103,6 +1148,7 @@ def normalized_markdown(
         md_table(
             [
                 "Tool",
+                "Decode mode",
                 "Level",
                 "Encode MB/s",
                 "Decode MB/s",
@@ -1113,7 +1159,7 @@ def normalized_markdown(
                 "Bound",
             ],
             rss_default_rows(small, levels, coverage),
-            align_right={1, 2, 3, 4, 5, 6, 7},
+            align_right={2, 3, 4, 5, 6, 7, 8},
         )
     )
     return "\n".join(lines)
@@ -1132,6 +1178,7 @@ def write_per_tool(facts: list[dict[str, str]]) -> None:
                     "class": row["class"],
                     "op": row["operation"],
                     "format": row["format"],
+                    "decode_mode": row["decode_mode"],
                     "level": row["level"],
                     "threads": row["threads"],
                     "samples": row["samples"],
@@ -1148,6 +1195,7 @@ def write_per_tool(facts: list[dict[str, str]]) -> None:
                 "class",
                 "op",
                 "format",
+                "decode_mode",
                 "level",
                 "threads",
                 "samples",
@@ -1190,7 +1238,9 @@ def coverage_tables(coverage: list[dict[str, str]]) -> dict[str, str]:
                 row["mt"],
             ]
         )
-        shape_rows.append([name, row["stream"], row["bound"], row["window"], row["heap"]])
+        shape_rows.append(
+            [name, row["decode_mode"], row["stream"], row["bound"], row["window"], row["heap"]]
+        )
         integ_rows.append(
             [name, row["crc"], row["isize"], row["concat"], row["cap"], row["dict"]]
         )
@@ -1199,7 +1249,9 @@ def coverage_tables(coverage: list[dict[str, str]]) -> dict[str, str]:
             ["Tool", "Format", "Compress", "Decompress", "Level", "ST", "MT"],
             work_rows,
         ),
-        "shape": md_table(["Tool", "Stream", "Bound", "Window", "Heap"], shape_rows),
+        "shape": md_table(
+            ["Tool", "Decode mode", "Stream", "Bound", "Window", "Heap"], shape_rows
+        ),
         "integrity": md_table(
             ["Tool", "CRC", "ISIZE", "Concat", "Cap", "Dict"],
             integ_rows,
@@ -1216,18 +1268,18 @@ def measured_markdown(facts: list[dict[str, str]], peers: list[dict[str, str]]) 
     named = ", ".join(f"`{t}`" for t in tools)
     lines = [
         f"- Host: {meta_row['host']}, {meta_row['cpu']}, {meta_row['kernel']}",
-        f"- Tools: {named}. Format `gzip`, threads ST. Compress levels are per tool in the tables.",
+        f"- Tools: {named}. Formats and threads are shown per row. Compress levels are per tool in the tables.",
         "- Zebrac 0.6.2: `-w 3 -i 25 -a 25`, sink `/dev/null`, no `-f`",
         "- **Encode MB/s** / **Decode MB/s:** uncompressed bytes / median wall seconds / `10^6`. Same work unit for both directions.",
         "- **Ratio:** uncompressed / this tool's compressed bytes. Higher is more compression.",
         "- **Kept:** compressed / uncompressed as a percent. Lower is more compression.",
-        "- **gzip -6 kept:** host `gzip -6` on the same plaintext when format is gzip.",
-        "- **gzip-rel:** this tool's MB/s / `gnu-gzip` MB/s on the same file. Encode vs `-6` is `encode_gzip_rel_l6`. Decode has no level.",
-        "- **RSS / file:** peak RSS / uncompressed bytes. **Band:** store / default / fast / out from kept vs gzip `-6` and gzip `-1`.",
+        "- **gzip -6 kept:** host `gzip -6` on the same plaintext for gzip rows.",
+        "- **Oracle-relative throughput:** this tool's MB/s divided by the oracle for the same format and decode mode on the same file. Full-buffer rows are shown with absolute speed and RSS, but are not ranked with streaming rows.",
+        "- **RSS / file:** peak RSS / uncompressed bytes. **Band:** store / default / fast / out from kept vs gzip `-6` and gzip `-1`; decode-only rows have no band.",
         "- **RSS:** Zebrac peak RSS median.",
         "- Sanity files are tens to hundreds of KiB. Those MB/s numbers are startup-heavy. Small is the class that actually times the codec. Headline views filter `class=small`. Normalized tables above use small only.",
         "",
-        "Machine-readable copies: `tools/.local/report/facts.tsv` (long, one row per key), `headline.tsv` (`class=small`, encode and decode joined), and `gmean.tsv` (suite gzip-rel). Per-tool `summary.tsv` and `measured.tsv` stay under `tools/.local/zebrac/TOOL/`.",
+        "Machine-readable copies: `tools/.local/report/facts.tsv` (long, one row per key), `headline.tsv` (`class=small`, encode and decode joined), and `gmean.tsv` (suite oracle-relative throughput). Per-tool `summary.tsv` and `measured.tsv` stay under `tools/.local/zebrac/TOOL/`.",
         "",
         "#### Headline (`class=small`)",
         "",
@@ -1238,6 +1290,7 @@ def measured_markdown(facts: list[dict[str, str]], peers: list[dict[str, str]]) 
             [
                 "Tool",
                 "Format",
+                "Decode mode",
                 "Level",
                 "Threads",
                 "Category",
@@ -1246,8 +1299,8 @@ def measured_markdown(facts: list[dict[str, str]], peers: list[dict[str, str]]) 
                 "Decode MB/s",
                 "Ratio",
                 "Kept",
-                "gzip-rel vs -6",
-                "Decode gzip-rel",
+                "Oracle-rel vs -6",
+                "Decode oracle-rel",
                 "Enc RSS/file",
                 "Band",
                 "Encode RSS",
@@ -1257,6 +1310,7 @@ def measured_markdown(facts: list[dict[str, str]], peers: list[dict[str, str]]) 
                 [
                     f"`{r['tool']}`",
                     r["format"],
+                    r["decode_mode"],
                     r["level"],
                     r["threads"],
                     r["category"],
@@ -1274,11 +1328,12 @@ def measured_markdown(facts: list[dict[str, str]], peers: list[dict[str, str]]) 
                 ]
                 for r in small
             ],
-            align_right={2, 6, 7, 8, 9, 10, 11, 12, 14, 15},
+            align_right={3, 7, 8, 9, 10, 11, 12, 13, 15, 16},
         )
     )
     thru_headers = [
         "Tool",
+        "Decode mode",
         "Level",
         "Category",
         "Class",
@@ -1299,6 +1354,7 @@ def measured_markdown(facts: list[dict[str, str]], peers: list[dict[str, str]]) 
             rows.append(
                 [
                     f"`{r['tool']}`",
+                    r["decode_mode"],
                     r["level"],
                     r["category"],
                     r["class"],
@@ -1315,15 +1371,15 @@ def measured_markdown(facts: list[dict[str, str]], peers: list[dict[str, str]]) 
         return rows
 
     lines += ["", "#### Codec throughput (`class=small`)", ""]
-    lines.append(md_table(thru_headers, thru_rows(small), align_right={1, 5, 6, 7, 8, 9, 10, 11}))
+    lines.append(md_table(thru_headers, thru_rows(small), align_right={2, 6, 7, 8, 9, 10, 11, 12}))
     sanity = [r for r in wide if r["class"] == "sanity"]
     if sanity:
         lines += ["", "#### Startup throughput (`class=sanity`)", ""]
-        lines.append(md_table(thru_headers, thru_rows(sanity), align_right={1, 5, 6, 7, 8, 9, 10, 11}))
+        lines.append(md_table(thru_headers, thru_rows(sanity), align_right={2, 6, 7, 8, 9, 10, 11, 12}))
     other = [r for r in wide if r["class"] not in ("small", "sanity")]
     if other:
         lines += ["", "#### Other classes", ""]
-        lines.append(md_table(thru_headers, thru_rows(other), align_right={1, 5, 6, 7, 8, 9, 10, 11}))
+        lines.append(md_table(thru_headers, thru_rows(other), align_right={2, 6, 7, 8, 9, 10, 11, 12}))
     lines += ["", "#### Compression", ""]
     comp = []
     for r in wide:
@@ -1462,6 +1518,7 @@ def check(
     allowed_op = {"compress", "decompress"}
     allowed_thr = {"ST", "MT"}
     allowed_cls = {"sanity", "small", "medium", "large"}
+    allowed_decode_mode = {"streaming", "full-buffer"}
     for row in facts:
         if row["operation"] not in allowed_op:
             print(f"error: bad operation {row['operation']}", file=sys.stderr)
@@ -1472,31 +1529,38 @@ def check(
         if row["class"] not in allowed_cls:
             print(f"error: bad class {row['class']}", file=sys.stderr)
             errors += 1
+        if row.get("decode_mode") not in allowed_decode_mode:
+            print(f"error: bad decode mode {row.get('decode_mode')}: {row['json']}", file=sys.stderr)
+            errors += 1
         if row["operation"] == "decompress" and row["level"] != "-":
             print(f"error: decompress level must be -: {row['json']}", file=sys.stderr)
             errors += 1
         if row["operation"] == "compress" and row["level"] == "-":
             print(f"error: compress level must not be -: {row['json']}", file=sys.stderr)
             errors += 1
-        if row["tool"] == GZIP_ORACLE and row["class"] == "small":
+        if (
+            row["tool"]
+            == oracle_for(row["format"], row["operation"], row.get("decode_mode", "streaming"))
+            and row["class"] == "small"
+        ):
             if row["operation"] == "decompress" and row.get("gzip_rel") != "1.0000":
-                print(f"error: {GZIP_ORACLE} decode gzip_rel must be 1.0000: {row['json']}", file=sys.stderr)
+                print(f"error: {row['tool']} {row['format']} decode oracle-relative value must be 1.0000: {row['json']}", file=sys.stderr)
                 errors += 1
-            if row["operation"] == "compress" and row["level"] == "6":
+            if row["format"] == "gzip" and row["operation"] == "compress" and row["level"] == "6":
                 if row.get("gzip_rel") != "1.0000" or row.get("gzip_rel_l6") != "1.0000":
-                    print(f"error: {GZIP_ORACLE} -6 gzip_rel must be 1.0000: {row['json']}", file=sys.stderr)
+                    print(f"error: {row['tool']} gzip -6 oracle-relative value must be 1.0000: {row['json']}", file=sys.stderr)
                     errors += 1
                 if row.get("encode_band") != "default":
-                    print(f"error: {GZIP_ORACLE} -6 band must be default: {row['json']}", file=sys.stderr)
+                    print(f"error: {row['tool']} gzip -6 band must be default: {row['json']}", file=sys.stderr)
                     errors += 1
-            if row["operation"] == "compress" and row["level"] == "1" and row.get("encode_band") != "fast":
-                print(f"error: {GZIP_ORACLE} -1 band must be fast: {row['json']}", file=sys.stderr)
+            if row["format"] == "gzip" and row["operation"] == "compress" and row["level"] == "1" and row.get("encode_band") != "fast":
+                print(f"error: {row['tool']} gzip -1 band must be fast: {row['json']}", file=sys.stderr)
                 errors += 1
     small = wide_rows(facts, {"small"})
     for rec in suite_rows(small, levels):
-        if rec["tool"] == GZIP_ORACLE and rec["kind"] in ("decode", "encode_default", "encode_fast"):
+        if rec["tool"] in ORACLE_BY_FORMAT.values() and rec["kind"] in ("decode", "encode_default", "encode_fast"):
             if rec.get("gmean") != "1.0000":
-                print(f"error: {GZIP_ORACLE} {rec['kind']} gmean must be 1.0000, got {rec.get('gmean')}", file=sys.stderr)
+                print(f"error: {rec['tool']} {rec['kind']} gmean must be 1.0000, got {rec.get('gmean')}", file=sys.stderr)
                 errors += 1
         if rec["kind"] in ("encode_default", "encode_fast"):
             want_band = "default" if rec["kind"] == "encode_default" else "fast"
@@ -1543,7 +1607,7 @@ def main() -> int:
     moved = migrate_legacy(peers)
     if moved:
         print(f"migrated {moved} legacy JSON file(s)")
-    facts = collect_facts(peers)
+    facts = collect_facts(peers, coverage)
     annotate_facts(facts, levels)
     REPORT.mkdir(parents=True, exist_ok=True)
     write_tsv(REPORT / "facts.tsv", FACTS_HEADER, facts)
@@ -1551,19 +1615,21 @@ def main() -> int:
     write_tsv(REPORT / "headline.tsv", HEADLINE_HEADER, small)
     write_tsv(REPORT / "gmean.tsv", GMEAN_HEADER, suite_rows(small, levels))
     write_per_tool(facts)
-    tables = coverage_tables(coverage)
-    measured = measured_markdown(facts, peers)
-    normalized = normalized_markdown(facts, levels, coverage)
-    readme = README.read_text()
-    readme = inject(readme, "work", tables["work"])
-    readme = inject(readme, "shape", tables["shape"])
-    readme = inject(readme, "integrity", tables["integrity"])
-    readme = inject(readme, "normalized", normalized)
-    readme = inject(readme, "measured", measured)
-    README.write_text(readme)
+    if README.exists():
+        tables = coverage_tables(coverage)
+        measured = measured_markdown(facts, peers)
+        normalized = normalized_markdown(facts, levels, coverage)
+        readme = README.read_text()
+        readme = inject(readme, "work", tables["work"])
+        readme = inject(readme, "shape", tables["shape"])
+        readme = inject(readme, "integrity", tables["integrity"])
+        readme = inject(readme, "normalized", normalized)
+        readme = inject(readme, "measured", measured)
+        README.write_text(readme)
     print(f"report: {REPORT / 'facts.tsv'} rows={len(facts)}")
     print(f"report: {REPORT / 'gmean.tsv'}")
-    print(f"report: {README}")
+    if README.exists():
+        print(f"report: {README}")
     return check(peers, coverage, facts, levels, require_json=check_only)
 
 

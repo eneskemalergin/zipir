@@ -5,6 +5,8 @@
 
 ZIG_VERSION=0.16.0
 STD_GZIP_VERSION=0.16.0
+STD_ZLIB_VERSION=0.16.0
+Z_FLATE_VERSION=0.0.0
 
 GNU_GZIP_VERSION=1.14
 GNU_GZIP_BIN=/usr/bin/gzip
@@ -24,3 +26,5 @@ ZLIB_RS_VERSION=0.6.7
 
 ZLIB_NG_VERSION=2.3.3
 ZLIB_NG_URL=https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz
+
+SYSTEM_ZLIB_VERSION=1.3.1.zlib-ng

@@ -19,7 +19,16 @@ tool_engine() {
             ;;
         igzip) printf '%s\n' "$INSTALLS_DIR/igzip/$ISAL_VERSION/bin/igzip" ;;
         zlib-ng) printf '%s\n' "$INSTALLS_DIR/zlib-ng/$ZLIB_NG_VERSION/bin/zlib-ng" ;;
-        std-gzip | flate2-miniz | flate2-zlib-rs)
+        zlib-ng-zlib)
+            printf '%s\n' "$INSTALLS_DIR/zlib-ng-zlib/$ZLIB_NG_VERSION/bin/zlib-ng-zlib"
+            ;;
+        system-zlib)
+            printf '%s\n' "$INSTALLS_DIR/system-zlib/$SYSTEM_ZLIB_VERSION/bin/system-zlib"
+            ;;
+        libdeflate-zlib)
+            printf '%s\n' "$INSTALLS_DIR/libdeflate-zlib/$LIBDEFLATE_VERSION/bin/libdeflate-zlib"
+            ;;
+        std-gzip | z-flate-gzip | std-zlib | z-flate-zlib | flate2-miniz | flate2-zlib-rs)
             printf '%s\n' "$BIN_DIR/$name"
             ;;
         *)
@@ -31,7 +40,7 @@ tool_engine() {
 
 tool_is_adapter() {
     case "${1:-${TOOL:?}}" in
-        std-gzip | flate2-miniz | flate2-zlib-rs) return 0 ;;
+        std-gzip | z-flate-gzip | std-zlib | z-flate-zlib | flate2-miniz | flate2-zlib-rs) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -45,10 +54,20 @@ tool_version_text() {
         libdeflate-gzip) "$engine" -V | awk 'NR==1{v=$NF; sub(/^v/, "", v); print v}' ;;
         igzip) printf '%s\n' "$ISAL_VERSION" ;;
         zlib-ng) printf '%s\n' "$ZLIB_NG_VERSION" ;;
-        std-gzip | flate2-miniz | flate2-zlib-rs)
+        std-gzip | z-flate-gzip | std-zlib | z-flate-zlib | flate2-miniz | flate2-zlib-rs)
+            "$engine" --version | awk '{print $2}'
+            ;;
+        system-zlib | zlib-ng-zlib | libdeflate-zlib)
             "$engine" --version | awk '{print $2}'
             ;;
         *) return 64 ;;
+    esac
+}
+
+tool_decode_mode() {
+    case "$1" in
+        libdeflate-gzip | libdeflate-zlib) printf 'full-buffer\n' ;;
+        *) printf 'streaming\n' ;;
     esac
 }
 
@@ -57,6 +76,9 @@ tool_compress() {
     local level="$1" in_path="$2" out_path="$3"
     local engine
     engine="$(tool_engine)"
+    case "$TOOL" in
+        std-zlib | z-flate-zlib | libdeflate-zlib) return 64 ;;
+    esac
     if tool_is_adapter; then
         "$engine" compress --level "$level" "$in_path" "$out_path"
         return
@@ -103,7 +125,7 @@ tool_compress() {
 
 # Write plaintext from IN to OUT. IN may be - (stdin).
 tool_decompress() {
-    local in_path="$1" out_path="$2"
+    local in_path="$1" out_path="$2" expected_output="${3:-}"
     local engine
     engine="$(tool_engine)"
     if tool_is_adapter; then
@@ -111,6 +133,13 @@ tool_decompress() {
         return
     fi
     case "$TOOL" in
+        libdeflate-zlib)
+            if [[ -n "$expected_output" ]]; then
+                "$engine" decompress --expected-output-bytes "$expected_output" "$in_path" "$out_path"
+            else
+                "$engine" decompress "$in_path" "$out_path"
+            fi
+            ;;
         gnu-gzip)
             if [[ "$in_path" == - ]]; then
                 "$engine" -d -c >"$out_path"
@@ -146,6 +175,9 @@ tool_decompress() {
                 "$engine" -d -c "$in_path" >"$out_path"
             fi
             ;;
+        system-zlib | zlib-ng-zlib)
+            "$engine" decompress "$in_path" "$out_path"
+            ;;
         *) return 64 ;;
     esac
 }
@@ -156,6 +188,9 @@ zebrac_compress_cmd() {
     local level="$1" in_path="$2"
     local engine
     engine="$(tool_engine)"
+    case "$TOOL" in
+        std-zlib | z-flate-zlib | libdeflate-zlib) return 64 ;;
+    esac
     if tool_is_adapter; then
         printf '%s compress --level %s %s /dev/null\n' "$engine" "$level" "$in_path"
         return
@@ -166,12 +201,13 @@ zebrac_compress_cmd() {
         libdeflate-gzip) printf '%s -%s -k -c %s\n' "$engine" "$level" "$in_path" ;;
         igzip) printf '%s -n -%s -c %s\n' "$engine" "$level" "$in_path" ;;
         zlib-ng) printf '%s -%s -c %s\n' "$engine" "$level" "$in_path" ;;
+        std-zlib | z-flate-zlib | system-zlib | zlib-ng-zlib) return 64 ;;
         *) return 64 ;;
     esac
 }
 
 zebrac_decompress_cmd() {
-    local in_path="$1"
+    local in_path="$1" expected_output="${2:-}"
     local engine
     engine="$(tool_engine)"
     if tool_is_adapter; then
@@ -179,11 +215,21 @@ zebrac_decompress_cmd() {
         return
     fi
     case "$TOOL" in
+        libdeflate-zlib)
+            if [[ -n "$expected_output" ]]; then
+                printf '%s decompress --expected-output-bytes %s %s /dev/null\n' "$engine" "$expected_output" "$in_path"
+            else
+                printf '%s decompress %s /dev/null\n' "$engine" "$in_path"
+            fi
+            ;;
         gnu-gzip) printf '%s -d -c %s\n' "$engine" "$in_path" ;;
         pigz) printf '%s -p1 -d -c %s\n' "$engine" "$in_path" ;;
         libdeflate-gzip) printf '%s -d -k -c %s\n' "$engine" "$in_path" ;;
         igzip) printf '%s -d -c %s\n' "$engine" "$in_path" ;;
         zlib-ng) printf '%s -d -c %s\n' "$engine" "$in_path" ;;
+        system-zlib | zlib-ng-zlib)
+            printf '%s decompress %s /dev/null\n' "$engine" "$in_path"
+            ;;
         *) return 64 ;;
     esac
 }

@@ -1,10 +1,9 @@
 # z-flate run matrix
 # One row per tool + format + compress-level + threads we qualify and time.
-# Decompress is not a row: it uses level - at the same format and threads.
-# Decode-only tools have a single row with level -.
+# Compression rows use the tool's native level scale. Decode-only tools have
+# one row with level -. Decode-only peers can be streaming or full-buffer;
+# coverage.tsv records the decode mode. Never rank those modes together.
 # All rows here are ST. Do not add pigz -p32, igzip -T, or pigz -11.
-# Why a tool is live or dropped: tools/LOG.md.
-# Levels are that tool's scale. See tools/levels.tsv.
 tool	tool_version	format	level	threads	nthreads
 std-gzip	0.16.0	gzip	1	ST	1
 std-gzip	0.16.0	gzip	2	ST	1
@@ -15,6 +14,13 @@ std-gzip	0.16.0	gzip	6	ST	1
 std-gzip	0.16.0	gzip	7	ST	1
 std-gzip	0.16.0	gzip	8	ST	1
 std-gzip	0.16.0	gzip	9	ST	1
+z-flate-gzip	0.0.0	gzip	1	ST	1
+z-flate-gzip	0.0.0	gzip	5	ST	1
+z-flate-gzip	0.0.0	gzip	9	ST	1
+std-zlib	0.16.0	zlib	-	ST	1
+z-flate-zlib	0.0.0	zlib	-	ST	1
+system-zlib	1.3.1.zlib-ng	zlib	-	ST	1
+libdeflate-zlib	1.26	zlib	-	ST	1
 gnu-gzip	1.14	gzip	1	ST	1
 gnu-gzip	1.14	gzip	2	ST	1
 gnu-gzip	1.14	gzip	3	ST	1
@@ -80,3 +86,4 @@ zlib-ng	2.3.3	gzip	6	ST	1
 zlib-ng	2.3.3	gzip	7	ST	1
 zlib-ng	2.3.3	gzip	8	ST	1
 zlib-ng	2.3.3	gzip	9	ST	1
+zlib-ng-zlib	2.3.3	zlib	-	ST	1

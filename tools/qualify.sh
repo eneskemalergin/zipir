@@ -161,7 +161,7 @@ load_peer_config() {
 }
 
 load_coverage() {
-    local tool ver fmt _compress _decompress _levels st _mt _stream _bound _window _heap crc isize concat cap _dict _source
+    local tool ver fmt _compress _decompress _levels st _mt _stream _bound _window _heap crc isize concat cap _dict _source _decode_mode
     COV_CRC=""
     COV_ISIZE=""
     COV_CONCAT=""
@@ -204,8 +204,12 @@ each_row() {
     done <"$MANIFEST"
 }
 
-gz_path() {
-    printf '%s/%s/%s/%s/%s\n' "$DATA_DIR" "$1" "$FORMAT" "$2" "$3"
+data_path() {
+    local filename="$3"
+    if [[ "$FORMAT" == zlib ]]; then
+        filename="${filename%.gz}.zlib"
+    fi
+    printf '%s/%s/%s/%s/%s\n' "$DATA_DIR" "$1" "$FORMAT" "$2" "$filename"
 }
 
 record() {
@@ -255,6 +259,51 @@ ensure_plain() {
     fi
 }
 
+zlib_compress_file() {
+    python3 -c 'import pathlib,sys,zlib
+pathlib.Path(sys.argv[2]).write_bytes(zlib.compress(pathlib.Path(sys.argv[1]).read_bytes(), int(sys.argv[3])))
+' "$1" "$2" "$3"
+}
+
+zlib_decompress_file() {
+    python3 -c 'import pathlib,sys,zlib
+pathlib.Path(sys.argv[2]).write_bytes(zlib.decompress(pathlib.Path(sys.argv[1]).read_bytes()))
+' "$1" "$2"
+}
+
+make_dictionary_header() {
+    python3 -c 'import pathlib,sys
+pathlib.Path(sys.argv[1]).write_bytes(bytes((0x78,0x20,0,0,0,1)))
+' "$1"
+}
+
+make_reference() {
+    local level="$1" input="$2" output="$3"
+    case "$FORMAT" in
+        gzip) gzip -n "-$level" -c -- "$input" >"$output" ;;
+        zlib) zlib_compress_file "$input" "$output" "$level" ;;
+        *) return 64 ;;
+    esac
+}
+
+decode_reference() {
+    local input="$1" output="$2"
+    case "$FORMAT" in
+        gzip) gzip -dc -- "$input" >"$output" ;;
+        zlib) zlib_decompress_file "$input" "$output" ;;
+        *) return 64 ;;
+    esac
+}
+
+test_reference() {
+    local input="$1"
+    case "$FORMAT" in
+        gzip) gzip -t -- "$input" ;;
+        zlib) zlib_decompress_file "$input" "$WORK/reference.out" ;;
+        *) return 64 ;;
+    esac
+}
+
 compress_run() {
     local level="$1" in_path="$2" out_path="$3"
     tool_compress "$level" "$in_path" "$out_path"
@@ -264,12 +313,12 @@ qualify_empty() {
     local empty="$WORK/empty" gz="$WORK/empty.gz" out="$WORK/empty.out" st level
     : >"$empty"
     if [[ ${#COMPRESS_LEVELS[@]} -eq 0 ]]; then
-        gzip -n -c -- "$empty" >"$gz"
+        make_reference 6 "$empty" "$gz"
         st="$(status_of tool_decompress "$gz" "$out")"
         if [[ "$st" != 0 ]]; then
             record - - empty.gz decompress empty blocking fail "$(err_text)"
         elif ! cmp -s "$empty" "$out"; then
-            record - - empty.gz decompress empty blocking fail 'gzip -c empty round trip differs'
+            record - - empty.gz decompress empty blocking fail 'reference empty round trip differs'
         else
             record - - empty.gz decompress empty blocking pass ''
         fi
@@ -283,9 +332,9 @@ qualify_empty() {
             record - - empty.gz compress "empty_$level" blocking fail "$(err_text)"
             continue
         fi
-        st="$(status_of gzip -t -- "$gz")"
+        st="$(status_of test_reference "$gz")"
         if [[ "$st" != 0 ]]; then
-            record - - empty.gz compress "empty_$level" blocking fail "gzip -t status $st $(err_text)"
+            record - - empty.gz compress "empty_$level" blocking fail "reference decode status $st $(err_text)"
             continue
         fi
         st="$(status_of tool_decompress "$gz" "$out")"
@@ -301,11 +350,113 @@ qualify_empty() {
     done
 }
 
+zlib_must_reject() {
+    local category="$1" class="$2" filename="$3" check="$4" input="$5" output="$6" st
+    st="$(status_of tool_decompress "$input" "$output")"
+    if [[ "$st" == 0 ]]; then
+        record "$category" "$class" "$filename" decompress "$check" blocking fail 'accepted invalid zlib stream'
+    else
+        record "$category" "$class" "$filename" decompress "$check" blocking pass "status $st $(err_text)"
+    fi
+    rm -f -- "$output"
+}
+
+qualify_zlib_file() {
+    local category="$1" class="$2" filename="$3"
+    local input tmp plain reference out trunc tail bad_method bad_check bad_payload bad_adler dictionary st
+    local uncomp_bytes corpus_bytes expected_output_bytes
+    input="$(data_path "$category" "$class" "$filename")"
+    tmp="$WORK/$category/$class"
+    mkdir -p "$tmp"
+    plain="$tmp/plain"
+    reference="$tmp/reference.zlib"
+    out="$tmp/tool.plain"
+    trunc="$tmp/truncated.zlib"
+    tail="$tmp/trailing.zlib"
+    bad_method="$tmp/bad-method.zlib"
+    bad_check="$tmp/bad-check.zlib"
+    bad_payload="$tmp/bad-payload.zlib"
+    bad_adler="$tmp/bad-adler.zlib"
+    dictionary="$tmp/dictionary.zlib"
+
+    st="$(status_of zlib_decompress_file "$input" "$plain")"
+    if [[ "$st" != 0 ]]; then
+        record "$category" "$class" "$filename" decompress corpus_test blocking fail "status $st $(err_text)"
+        rm -rf -- "$tmp"
+        return
+    fi
+    record "$category" "$class" "$filename" decompress corpus_test blocking pass ''
+    make_reference 6 "$plain" "$reference"
+    expected_output_bytes="$(stat -c '%s' "$plain")"
+
+    st="$(status_of tool_decompress "$reference" "$out" "$expected_output_bytes")"
+    if [[ "$st" != 0 ]]; then
+        record "$category" "$class" "$filename" decompress plaintext blocking fail "status $st $(err_text)"
+    elif cmp -s "$out" "$plain"; then
+        record "$category" "$class" "$filename" decompress plaintext blocking pass "$(stat -c '%s' "$out") bytes"
+    else
+        record "$category" "$class" "$filename" decompress plaintext blocking fail 'decoded bytes differ from reference plaintext'
+    fi
+    rm -f -- "$out"
+
+    if [[ "$class" == sanity ]]; then
+        set +e
+        tool_decompress - "$out" "$expected_output_bytes" <"$reference" >/dev/null 2>"$WORK/err"
+        st=$?
+        set -e
+        if [[ "$st" != 0 ]]; then
+            record "$category" "$class" "$filename" decompress stdin blocking fail "status $st $(err_text)"
+        elif cmp -s "$out" "$plain"; then
+            record "$category" "$class" "$filename" decompress stdin blocking pass ''
+        else
+            record "$category" "$class" "$filename" decompress stdin blocking fail 'stdin decoded bytes differ from reference plaintext'
+        fi
+        rm -f -- "$out"
+
+        head -c "$(($(stat -c '%s' "$reference") - 1))" "$reference" >"$trunc"
+        zlib_must_reject "$category" "$class" "$filename" truncated "$trunc" "$out"
+
+        cat "$reference" >"$tail"
+        printf 'tail' >>"$tail"
+        zlib_must_reject "$category" "$class" "$filename" trailing "$tail" "$out"
+
+        xor_byte "$reference" 0 "$bad_method"
+        zlib_must_reject "$category" "$class" "$filename" bad_method "$bad_method" "$out"
+
+        xor_byte "$reference" 1 "$bad_check"
+        zlib_must_reject "$category" "$class" "$filename" bad_fcheck "$bad_check" "$out"
+
+        xor_byte "$reference" 2 "$bad_payload"
+        zlib_must_reject "$category" "$class" "$filename" bad_payload "$bad_payload" "$out"
+
+        xor_byte "$reference" -1 "$bad_adler"
+        zlib_must_reject "$category" "$class" "$filename" bad_adler "$bad_adler" "$out"
+
+        make_dictionary_header "$dictionary"
+        zlib_must_reject "$category" "$class" "$filename" dictionary "$dictionary" "$out"
+
+        record "$category" "$class" "$filename" decompress bounds skip skip 'adapter CLI has no output cap flag'
+    fi
+
+    uncomp_bytes="$(stat -c '%s' "$plain")"
+    corpus_bytes="$(stat -c '%s' "$input")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$category" "$class" "$filename" \
+        "$FORMAT" "-" "$THREADS" \
+        "$uncomp_bytes" "$corpus_bytes" "" "" \
+        >>"$SIZES"
+    rm -rf -- "$tmp"
+}
+
 qualify_file() {
     local category="$1" class="$2" filename="$3"
+    if [[ "$FORMAT" == zlib ]]; then
+        qualify_zlib_file "$category" "$class" "$filename"
+        return
+    fi
     local gz plain tmp out trunc concat body crc isize newgz peer_gz st level
     local uncomp_bytes corpus_bytes tool_bytes gzip6_bytes doubled
-    gz="$(gz_path "$category" "$class" "$filename")"
+    gz="$(data_path "$category" "$class" "$filename")"
     tmp="$WORK/$category/$class"
     mkdir -p "$tmp"
     plain="$tmp/plain"
@@ -333,7 +484,7 @@ qualify_file() {
     if [[ "$st" != 0 ]]; then
         record "$category" "$class" "$filename" decompress plaintext blocking fail "status $st $(err_text)"
     elif ! cmp -s "$out" "$plain"; then
-        record "$category" "$class" "$filename" decompress plaintext blocking fail 'cmp differs from gzip -dc'
+        record "$category" "$class" "$filename" decompress plaintext blocking fail 'cmp differs from reference decode'
     else
         record "$category" "$class" "$filename" decompress plaintext blocking pass "$(stat -c '%s' "$out") bytes"
     fi
@@ -347,7 +498,7 @@ qualify_file() {
         if [[ "$st" != 0 ]]; then
             record "$category" "$class" "$filename" decompress stdin blocking fail "status $st $(err_text)"
         elif ! cmp -s "$out" "$plain"; then
-            record "$category" "$class" "$filename" decompress stdin blocking fail 'cmp differs from gzip -dc'
+            record "$category" "$class" "$filename" decompress stdin blocking fail 'cmp differs from reference decode'
         else
             record "$category" "$class" "$filename" decompress stdin blocking pass ''
         fi
@@ -462,7 +613,7 @@ qualify_file() {
     if [[ "$st" != 0 ]]; then
         record "$category" "$class" "$filename" compress peer_encode blocking fail "status $st $(err_text)"
     elif ! cmp -s "$out" "$plain"; then
-        record "$category" "$class" "$filename" compress peer_encode blocking fail "$TOOL decompress of gzip -6 differs"
+        record "$category" "$class" "$filename" compress peer_encode blocking fail "$TOOL decompress of reference level 6 differs"
     else
         record "$category" "$class" "$filename" compress peer_encode blocking pass "$gzip6_bytes bytes"
     fi
@@ -480,16 +631,16 @@ qualify_file() {
         tool_bytes="$(stat -c '%s' "$newgz")"
         record "$category" "$class" "$filename" compress "write_$level" blocking pass "$tool_bytes bytes"
 
-        st="$(status_of gzip -t -- "$newgz")"
+        st="$(status_of test_reference "$newgz")"
         if [[ "$st" != 0 ]]; then
-            record "$category" "$class" "$filename" compress "integrity_$level" blocking fail "gzip -t status $st $(err_text)"
+            record "$category" "$class" "$filename" compress "integrity_$level" blocking fail "reference decode status $st $(err_text)"
         else
             record "$category" "$class" "$filename" compress "integrity_$level" blocking pass ''
         fi
 
-        gzip -dc -- "$newgz" >"$out"
+        decode_reference "$newgz" "$out"
         if ! cmp -s "$out" "$plain"; then
-            record "$category" "$class" "$filename" compress "peer_decode_$level" blocking fail "gzip -dc of $TOOL output differs"
+            record "$category" "$class" "$filename" compress "peer_decode_$level" blocking fail "reference decode of $TOOL output differs"
         else
             record "$category" "$class" "$filename" compress "peer_decode_$level" blocking pass ''
         fi
@@ -529,13 +680,20 @@ write_meta() {
         printf 'tool\t%s\n' "$TOOL"
         printf 'tool_version\t%s\n' "$(tool_version_text)"
         printf 'format\t%s\n' "$FORMAT"
+        printf 'decode_mode\t%s\n' "$(tool_decode_mode "$TOOL")"
         printf 'compress_levels\t%s\n' "${COMPRESS_LEVELS[*]}"
         printf 'decompress_level\t-\n'
         printf 'threads\t%s\n' "$THREADS"
         printf 'nthreads\t%s\n' "$NTHREADS"
         printf 'classes\t%s\n' "$FILTER_CLASSES"
-        printf 'oracle\tgzip\n'
-        printf 'oracle_version\t%s\n' "$(gzip --version | awk 'NR==1{print $2}')"
+        if [[ "$FORMAT" == gzip ]]; then
+            printf 'oracle\tgnu-gzip\n'
+            printf 'oracle_version\t%s\n' "$(gzip --version | awk 'NR==1{print $2}')"
+        else
+            printf 'oracle\tsystem-zlib\n'
+            printf 'reference_generator\tpython-zlib\n'
+            printf 'reference_generator_version\t%s\n' "$(python3 --version 2>&1 | awk '{print $2}')"
+        fi
         printf 'host\t%s\n' "$(uname -n)"
         printf 'kernel\t%s\n' "$(uname -srm)"
         printf 'cpu\t%s\n' "$cpu"

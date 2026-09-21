@@ -11,8 +11,8 @@ usage() {
         '' \
         'Reads tools/peers.tsv, tools/coverage.tsv, tools/levels.tsv,' \
         'tools/.local/qualify/, and tools/.local/zebrac/. Writes' \
-        'tools/.local/report/ (facts.tsv, headline.tsv, gmean.tsv) and fills' \
-        'generated sections in tools/README.md.' \
+        'tools/.local/report/ (facts.tsv, headline.tsv, gmean.tsv). If' \
+        'tools/README.md exists, generated sections are updated there.' \
         'JSON layout: zebrac/TOOL/FORMAT/LEVEL/THREADS/category.class.op.json' \
         'Decompress LEVEL is -.'
 }

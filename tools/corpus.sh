@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch public gzip files into gitignored data/{category}/gzip/{class}/.
+# Fetch public gzip files and generate matching zlib streams in gitignored data/.
 
 set -euo pipefail
 
@@ -18,7 +18,7 @@ usage() {
         '' \
         'categories: sequencing, ms, generalized' \
         '' \
-        'Reads tools/corpus.tsv. Writes gitignored data/. Requires curl, gzip, sha256sum.'
+        'Reads tools/corpus.tsv. Writes gitignored data/. Requires curl, gzip, sha256sum, python3.'
 }
 
 require_command() {
@@ -70,6 +70,11 @@ dest_for() {
     printf '%s/%s/gzip/%s/%s\n' "$DATA_DIR" "$1" "$2" "$3"
 }
 
+zlib_dest_for() {
+    local filename="${3%.gz}.zlib"
+    printf '%s/%s/zlib/%s/%s\n' "$DATA_DIR" "$1" "$2" "$filename"
+}
+
 verify_file() {
     local path="$1" bytes="$2" sha256="$3"
     local actual
@@ -92,12 +97,89 @@ verify_file() {
     fi
 }
 
+verify_zlib_file() {
+    python3 - "$1" "$2" <<'PY'
+import gzip
+import sys
+import zlib
+
+
+def read_exact(stream, size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = stream.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+gzip_path, zlib_path = sys.argv[1:]
+decoder = zlib.decompressobj()
+with gzip.open(gzip_path, "rb") as expected, open(zlib_path, "rb") as encoded:
+    while True:
+        chunk = encoded.read(1024 * 1024)
+        if not chunk:
+            break
+        decoded = decoder.decompress(chunk)
+        if decoded != read_exact(expected, len(decoded)):
+            raise SystemExit("zlib companion plaintext differs from gzip source")
+    decoded = decoder.flush()
+    if decoded != read_exact(expected, len(decoded)):
+        raise SystemExit("zlib companion trailer output differs from gzip source")
+    if not decoder.eof or decoder.unused_data:
+        raise SystemExit("zlib companion is incomplete or has trailing data")
+    if expected.read(1):
+        raise SystemExit("zlib companion is shorter than gzip source")
+PY
+}
+
+make_zlib_companion() {
+    local gzip_path="$1" zlib_path="$2" part="$2.part"
+    mkdir -p "$(dirname "$zlib_path")"
+    rm -f -- "$part"
+    python3 - "$gzip_path" "$part" <<'PY' || {
+import gzip
+import sys
+import zlib
+
+
+gzip_path, zlib_path = sys.argv[1:]
+compressor = zlib.compressobj(6, zlib.DEFLATED, zlib.MAX_WBITS)
+with gzip.open(gzip_path, "rb") as source, open(zlib_path, "wb") as output:
+    while True:
+        chunk = source.read(1024 * 1024)
+        if not chunk:
+            break
+        output.write(compressor.compress(chunk))
+    output.write(compressor.flush())
+PY
+        rm -f -- "$part"
+        return 1
+    }
+    mv -f -- "$part" "$zlib_path"
+}
+
+ensure_zlib_companion() {
+    local category="$1" class="$2" filename="$3" gzip_path="$4" zlib_path
+    zlib_path="$(zlib_dest_for "$category" "$class" "$filename")"
+    if [[ "$FORCE" != 1 && -f "$zlib_path" ]] && verify_zlib_file "$gzip_path" "$zlib_path"; then
+        return
+    fi
+    printf 'generate: %s\n' "$zlib_path"
+    make_zlib_companion "$gzip_path" "$zlib_path"
+    verify_zlib_file "$gzip_path" "$zlib_path"
+}
+
 fetch_row() {
     local category="$1" class="$2" filename="$3" bytes="$4" sha256="$5" url="$6"
     local dest part actual digest
     dest="$(dest_for "$category" "$class" "$filename")"
     mkdir -p "$(dirname "$dest")"
     if [[ "$FORCE" != 1 && -f "$dest" ]] && verify_file "$dest" "$bytes" "$sha256"; then
+        ensure_zlib_companion "$category" "$class" "$filename" "$dest"
         printf 'ok: %s\n' "$dest"
         return
     fi
@@ -125,6 +207,7 @@ fetch_row() {
         return 1
     fi
     mv -f -- "$part" "$dest"
+    ensure_zlib_companion "$category" "$class" "$filename" "$dest"
     if [[ "$sha256" == - ]]; then
         printf 'fetched: %s sha256=%s (record in corpus.tsv)\n' "$dest" "$digest"
     else
@@ -133,14 +216,15 @@ fetch_row() {
 }
 
 list_rows() {
-    local category class filename bytes sha256 url dest state
+    local category class filename bytes sha256 url dest zlib_dest state
     printf '%-12s %-8s %-12s %s\n' 'category' 'class' 'state' 'path'
     while IFS=$'\t' read -r category class filename bytes sha256 url; do
         [[ -z "${category:-}" || "$category" == \#* || "$category" == category ]] && continue
         dest="$(dest_for "$category" "$class" "$filename")"
-        if [[ -f "$dest" ]] && verify_file "$dest" "$bytes" "$sha256" >/dev/null 2>&1; then
+        zlib_dest="$(zlib_dest_for "$category" "$class" "$filename")"
+        if [[ -f "$dest" && -f "$zlib_dest" ]] && verify_file "$dest" "$bytes" "$sha256" >/dev/null 2>&1 && verify_zlib_file "$dest" "$zlib_dest" >/dev/null 2>&1; then
             state=ok
-        elif [[ -f "$dest" ]]; then
+        elif [[ -f "$dest" || -f "$zlib_dest" ]]; then
             state=bad
         else
             state=missing
@@ -154,6 +238,7 @@ main() {
     require_command curl
     require_command gzip
     require_command sha256sum
+    require_command python3
     case "${1:-}" in
         --help | -h)
             usage
@@ -192,11 +277,13 @@ main() {
             }
             ;;
     esac
-    local category class filename bytes sha256 url dest
+    local category class filename bytes sha256 url dest zlib_dest
     while IFS=$'\t' read -r category class filename bytes sha256 url; do
         dest="$(dest_for "$category" "$class" "$filename")"
+        zlib_dest="$(zlib_dest_for "$category" "$class" "$filename")"
         if [[ "$mode" == check ]]; then
             verify_file "$dest" "$bytes" "$sha256"
+            verify_zlib_file "$dest" "$zlib_dest"
             printf 'ok: %s\n' "$dest"
         else
             fetch_row "$category" "$class" "$filename" "$bytes" "$sha256" "$url"

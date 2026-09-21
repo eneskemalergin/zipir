@@ -35,7 +35,7 @@ usage() {
         'Requires a passing tools/qualify.sh receipt for TOOL.' \
         'Writes keyed JSON under tools/.local/zebrac/TOOL/FORMAT/LEVEL/THREADS/.' \
         'Decompress LEVEL is -. Then runs tools/report.sh.' \
-        'Decompresses each file to /tmp for compress timing, then deletes it.' \
+        'Prepares plaintext and zlib reference inputs under /tmp when needed, then deletes them.' \
         'Sampling: --warmup 3 --min-samples 25 --max-samples 25. No --allow-failures.' \
         'Skips JSON that already has 25 samples and 0 failures. --force re-times those.'
 }
@@ -176,8 +176,30 @@ each_row() {
     done <"$MANIFEST"
 }
 
-gz_path() {
-    printf '%s/%s/%s/%s/%s\n' "$DATA_DIR" "$1" "$FORMAT" "$2" "$3"
+data_path() {
+    local filename="$3"
+    if [[ "$FORMAT" == zlib ]]; then
+        filename="${filename%.gz}.zlib"
+    fi
+    printf '%s/%s/%s/%s/%s\n' "$DATA_DIR" "$1" "$FORMAT" "$2" "$filename"
+}
+
+make_zlib_reference() {
+    python3 -c 'import pathlib,sys,zlib
+pathlib.Path(sys.argv[2]).write_bytes(zlib.compress(pathlib.Path(sys.argv[1]).read_bytes(), 6))
+' "$1" "$2"
+}
+
+make_plain() {
+    case "$FORMAT" in
+        gzip) gzip -dc -- "$1" >"$2" ;;
+        zlib)
+            python3 -c 'import pathlib,sys,zlib
+pathlib.Path(sys.argv[2]).write_bytes(zlib.decompress(pathlib.Path(sys.argv[1]).read_bytes()))
+' "$1" "$2"
+            ;;
+        *) return 64 ;;
+    esac
 }
 
 json_path() {
@@ -320,6 +342,7 @@ main() {
         printf 'tool\t%s\n' "$TOOL"
         printf 'tool_version\t%s\n' "$PEER_VERSION"
         printf 'format\t%s\n' "$FORMAT"
+        printf 'decode_mode\t%s\n' "$(tool_decode_mode "$TOOL")"
         printf 'compress_levels\t%s\n' "${COMPRESS_LEVELS[*]}"
         printf 'decompress_level\t-\n'
         printf 'threads\t%s\n' "$THREADS"
@@ -336,10 +359,12 @@ main() {
     printf 'bench %s format=%s levels=%s threads=%s classes: %s\n' \
         "$TOOL" "$FORMAT" "${COMPRESS_LEVELS[*]}" "$THREADS" "$FILTER_CLASSES"
     WORK="$(mktemp -d /tmp/z-flate-bench.XXXXXX)"
-    local category class filename gz plain json level need_plain need_decomp
+    local category class filename input plain reference json level need_plain need_decomp
     while IFS=$'\t' read -r category class filename; do
-        gz="$(gz_path "$category" "$class" "$filename")"
+        input="$(data_path "$category" "$class" "$filename")"
         plain="$WORK/plain"
+        reference="$WORK/reference.zlib"
+
         need_plain=0
         need_decomp=0
         json="$(json_path decompress "$category" "$class" -)"
@@ -348,16 +373,26 @@ main() {
             json="$(json_path compress "$category" "$class" "$level")"
             json_complete "$json" || need_plain=1
         done
+        if [[ "$FORMAT" == zlib && "$need_decomp" == 1 ]]; then
+            need_plain=1
+        fi
         if [[ "$need_plain" == 0 && "$need_decomp" == 0 ]]; then
             printf 'skip file: %s (complete)\n' "$filename"
             continue
         fi
         if [[ "$need_plain" == 1 ]]; then
-            gzip -dc -- "$gz" >"$plain"
+            make_plain "$input" "$plain"
+        fi
+        if [[ "$FORMAT" == zlib && "$need_decomp" == 1 ]]; then
+            make_zlib_reference "$plain" "$reference"
         fi
         json="$(json_path decompress "$category" "$class" -)"
         if [[ "$need_decomp" == 1 ]]; then
-            run_zebrac "$json" "$(zebrac_decompress_cmd "$gz")"
+            if [[ "$FORMAT" == zlib ]]; then
+                run_zebrac "$json" "$(zebrac_decompress_cmd "$reference" "$(stat -c '%s' "$plain")")"
+            else
+                run_zebrac "$json" "$(zebrac_decompress_cmd "$input")"
+            fi
         else
             printf 'skip: %s\n' "$json"
         fi
