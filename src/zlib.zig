@@ -1,6 +1,7 @@
 //! Bounded zlib decompression through caller-owned readers and writers.
 
 const std = @import("std");
+const adler32 = @import("adler32.zig");
 const copy = @import("match.zig");
 
 pub const Error = error{
@@ -355,7 +356,7 @@ const Ctx = struct {
     writer: *std.Io.Writer,
     out_pos: usize = RING,
     produced: u64 = 0,
-    adler: std.hash.Adler32 = .{},
+    adler: adler32.Stream = .init(),
     adler_pos: usize = RING,
     stream_start: u64 = 0,
     max_output_bytes: u64,
@@ -620,7 +621,7 @@ fn decodeHuff(ctx: *Ctx, lit: []const Entry, dist: []const Entry) !void {
 fn inflateStream(ctx: *Ctx) !void {
     const start = ctx.position();
     ctx.stream_start = start;
-    ctx.adler = .{};
+    ctx.adler = .init();
     ctx.adler_pos = ctx.out_pos;
     try skipZlibHeader(ctx.br);
     var bfinal: u32 = 0;
@@ -673,7 +674,7 @@ fn inflateStream(ctx: *Ctx) !void {
     ctx.adlerCatchup();
     const footer = try ctx.br.getBytes(4);
     const trailer_adler = std.mem.readInt(u32, footer[0..4], .big);
-    if (ctx.adler.adler != trailer_adler) return error.BadAdler;
+    if (ctx.adler.final() != trailer_adler) return error.BadAdler;
 }
 
 fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) Error!u64 {

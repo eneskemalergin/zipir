@@ -33,21 +33,21 @@
 
 ## Why zipir exists
 
-I kept reaching for compression in my other projects. Zig's standard library is expansive and gives me a strong starting point, but my workflows keep raising the same questions: how much memory does a stream need, where does checksum work happen, and which hot paths are worth tuning? Calling C libraries is one of Zig's strengths, but it can add a static dependency and another build choice to every project that uses it. Zipir is my attempt to keep the common path in one small Zig package that my projects can share.
+I kept reaching for compression in my other projects. Zig's standard library already provides most commonly used algorithms and gives me a strong starting point, but my workflows keep raising the same questions: how much memory does a stream need, where does checksum work happen, and which hot paths are worth tuning? Calling C libraries is one of Zig's strengths, but it can add a static dependency and another build choice to every project that uses it. Zipir is my attempt to keep the common path in one small Zig package that my projects can share.
 
 The library has no external dependencies, does not create threads, and does not allocate during codec operations. The goal is not to replace every compression library. The goal is to make the common bounded streaming path pleasant to use and straightforward to measure.
 
 ## Supported codecs
 
-| Format | Compress | Decompress | Position |
-| --- | --- | --- | --- |
-| Gzip | Yes | Yes | Current implementation |
-| zlib | No | Yes | Current decoder |
-| ZIP | No | No | Possible future format |
-| Zstandard | No | No | Possible future format |
-| LZ4 | No | No | Possible future format |
-| XZ | No | No | Possible future format |
-| bzip2 | No | No | Possible future format |
+| Format    | Compress | Decompress | Note                   |
+| --------- | -------- | ---------- | ---------------------- |
+| Gzip      | Yes      | Yes        | n/a                    |
+| zlib      | No       | Yes        | only decoder (for now) |
+| ZIP       | No       | No         | Possible future format |
+| Zstandard | No       | No         | Possible future format |
+| LZ4       | No       | No         | Possible future format |
+| XZ        | No       | No         | Possible future format |
+| bzip2     | No       | No         | Possible future format |
 
 The future rows are possibilities, not a delivery order or a promise to support every format. Zipir will stay focused on formats that fit its Zig-first, bounded-streaming goals.
 
@@ -57,6 +57,9 @@ The future rows are possibilities, not a delivery order or a promise to support 
 - Caller-owned `std.Io.Reader` and `std.Io.Writer` interfaces with reusable bounded workspaces.
 
 Raw DEFLATE and zlib compression are not implemented yet.
+
+> [!Info]
+> `zipir` will slowly build its accelerators in the form of hand-rolled SIMD tested on specific architecture. Currently I cannot promise a full and comprehensive support. I am building things that specifically suits my needs and will target my computer and my os first. I always keep in mind portability, and compatibility but for the work for actually pushing performance they are extremely time consuming to build for across a wide range of cpu, os archtectures. So I wanted to mention I will always keep fallbacks so the there won't be missing functionality, but speed and memory optimizations might be missing. My first target is `linux, x86-64, axv2`. I have test environments for various others but they will have to come later.
 
 ## Quick start
 
