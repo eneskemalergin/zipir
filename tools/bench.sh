@@ -57,7 +57,7 @@ require_linux_x64() {
 cleanup() {
     if [[ -n "$WORK" && -d "$WORK" ]]; then
         case "$WORK" in
-            /tmp/z-flate-bench.*)
+            /tmp/zipir-bench.*)
                 if [[ "$KEEP_TOOL_WORK" == 1 ]]; then
                     printf 'keep: %s\n' "$WORK"
                 else
@@ -338,7 +338,7 @@ main() {
     local zdir="$LOCAL_DIR/zebrac/$TOOL"
     mkdir -p "$zdir"
     {
-        printf 'schema\tz-flate-zebrac-v2\n'
+        printf 'schema\tzipir-zebrac-v2\n'
         printf 'tool\t%s\n' "$TOOL"
         printf 'tool_version\t%s\n' "$PEER_VERSION"
         printf 'format\t%s\n' "$FORMAT"
@@ -358,7 +358,7 @@ main() {
 
     printf 'bench %s format=%s levels=%s threads=%s classes: %s\n' \
         "$TOOL" "$FORMAT" "${COMPRESS_LEVELS[*]}" "$THREADS" "$FILTER_CLASSES"
-    WORK="$(mktemp -d /tmp/z-flate-bench.XXXXXX)"
+    WORK="$(mktemp -d /tmp/zipir-bench.XXXXXX)"
     local category class filename input plain reference json level need_plain need_decomp
     while IFS=$'\t' read -r category class filename; do
         input="$(data_path "$category" "$class" "$filename")"

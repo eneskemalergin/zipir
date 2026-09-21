@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const support = @import("support.zig");
-const zlib = @import("z_flate").zlib;
+const zlib = @import("zipir").zlib;
 
 fn wrapGzip(
     allocator: std.mem.Allocator,

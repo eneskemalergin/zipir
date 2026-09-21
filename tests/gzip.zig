@@ -1,8 +1,8 @@
 //! Checks the public gzip streaming API at refill, output and failure boundaries.
 
 const std = @import("std");
-const z_flate = @import("z_flate");
-const Decoder = z_flate.Decompressor(.gzip);
+const zipir = @import("zipir");
+const Decoder = zipir.Decompressor(.gzip);
 const support = @import("support.zig");
 
 test "[integration] - [gzip]: bounded refills and partial drains preserve members and long headers" {
@@ -286,7 +286,7 @@ test "[regression] - [gzip]: fixed tables preserve all slots across dynamic memb
 
 // --- Compression ---
 
-fn encodeRoundtrip(encoder: *z_flate.gzip.Compressor, plain: []const u8, options: z_flate.gzip.CompressOptions, chunk: usize, capacity: usize) !usize {
+fn encodeRoundtrip(encoder: *zipir.gzip.Compressor, plain: []const u8, options: zipir.gzip.CompressOptions, chunk: usize, capacity: usize) !usize {
     var in_buffer: [17]u8 = undefined;
     var source = support.Source.init(plain, in_buffer[0..capacity], chunk);
     const encoded = try std.testing.allocator.alloc(u8, plain.len + 64);
@@ -312,7 +312,7 @@ fn encodeRoundtrip(encoder: *z_flate.gzip.Compressor, plain: []const u8, options
 test "[integration] - [gzip compressor]: empty and repeated calls produce independent members" {
     const empty = "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00";
     const one = "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x73\x04\x00\x8b\x9e\xd9\xd3\x01\x00\x00\x00";
-    const encoder = try std.testing.allocator.create(z_flate.Compressor(.gzip));
+    const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(encoder);
     const decoder = try std.testing.allocator.create(Decoder);
     defer std.testing.allocator.destroy(decoder);
@@ -331,12 +331,12 @@ test "[integration] - [gzip compressor]: empty and repeated calls produce indepe
 }
 
 test "[property] - [gzip compressor]: block and window boundaries survive short I/O" {
-    const encoder = try std.testing.allocator.create(z_flate.Compressor(.gzip));
+    const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(encoder);
     var plain: [131073]u8 = undefined;
     var rng = std.Random.DefaultPrng.init(904);
     rng.random().bytes(&plain);
-    for ([_]z_flate.gzip.CompressOptions{ .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| {
+    for ([_]zipir.gzip.CompressOptions{ .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| {
         for ([_]usize{ 0, 1, 2, 3, 257, 258, 259, 32767, 32768, 32769, 65535, 65536, 65537, 131073 }) |n| {
             const size = try encodeRoundtrip(encoder, plain[0..n], options, 997, 17);
             if (n == 0) try std.testing.expectEqual(@as(usize, 20), size);
@@ -350,19 +350,19 @@ test "[property] - [gzip compressor]: block and window boundaries survive short 
 }
 
 test "[property] - [gzip compressor]: periodic overlap and maximum history preserve bytes" {
-    const encoder = try std.testing.allocator.create(z_flate.Compressor(.gzip));
+    const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(encoder);
     var plain: [131073]u8 = undefined;
     for ([_]usize{ 1, 2, 3, 7, 16, 257, 32767, 32768 }) |period| {
         var rng = std.Random.DefaultPrng.init(880);
         rng.random().bytes(plain[0..period]);
         for (period..plain.len) |i| plain[i] = plain[i - period];
-        for ([_]z_flate.gzip.CompressOptions{ .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| _ = try encodeRoundtrip(encoder, &plain, options, 8191, 17);
+        for ([_]zipir.gzip.CompressOptions{ .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| _ = try encodeRoundtrip(encoder, &plain, options, 8191, 17);
     }
 }
 
 test "[failure] - [gzip compressor]: I/O errors propagate and workspace resets" {
-    const encoder = try std.testing.allocator.create(z_flate.Compressor(.gzip));
+    const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(encoder);
     var plain: [65537]u8 = undefined;
     var rng = std.Random.DefaultPrng.init(144);

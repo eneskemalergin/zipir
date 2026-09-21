@@ -1,7 +1,7 @@
 .{
-    .name = .z_flate,
-    .version = "0.0.0",
-    .fingerprint = 0x70b0a85dd3f5b430,
+    .name = .zipir,
+    .version = "0.1.2",
+    .fingerprint = 0x6dab1f5439f1aeff,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
@@ -10,5 +10,6 @@
         "src",
         "tests",
         "README.md",
+        "assets/logo-readme.svg",
     },
 }

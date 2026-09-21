@@ -1,14 +1,14 @@
-//! Streams gzip files and standard input through z_flate.
+//! Streams gzip files and standard input through zipir.
 
 const std = @import("std");
-const z_flate = @import("z_flate");
+const zipir = @import("zipir");
 
 const USAGE =
-    \\Usage: z_flate compress [--level 1|5|9] [--] [FILE|-]
-    \\       z_flate decompress [--max-output-bytes N] [--] [FILE|-]
-    \\       z_flate test [--max-output-bytes N] [--] [FILE|-]
-    \\       z_flate --version
-    \\       z_flate --help
+    \\Usage: zipir compress [--level 1|5|9] [--] [FILE|-]
+    \\       zipir decompress [--max-output-bytes N] [--] [FILE|-]
+    \\       zipir test [--max-output-bytes N] [--] [FILE|-]
+    \\       zipir --version
+    \\       zipir --help
     \\
     \\compress writes gzip to stdout; default level is 5.
     \\decompress writes to stdout; test verifies and discards output.
@@ -24,7 +24,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     const status = run(io, init.args) catch |err| failed: {
         var buffer: [256]u8 = undefined;
         var stderr = std.Io.File.stderr().writer(io, &buffer);
-        stderr.interface.print("z_flate: {s}\n", .{@errorName(err)}) catch {};
+        stderr.interface.print("zipir: {s}\n", .{@errorName(err)}) catch {};
         stderr.interface.flush() catch {};
         break :failed @as(u8, 1);
     };
@@ -38,8 +38,8 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     var output_buffer: [4096]u8 = undefined;
     var stdout = std.Io.File.stdout().writer(io, &output_buffer);
     if (args.len == 1 or (args.len == 2 and std.mem.eql(u8, args[1], "--version"))) {
-        try stdout.interface.print("z_flate {d}.{d}.{d}\n", .{
-            z_flate.version.major, z_flate.version.minor, z_flate.version.patch,
+        try stdout.interface.print("zipir {d}.{d}.{d}\n", .{
+            zipir.version.major, zipir.version.minor, zipir.version.patch,
         });
         try stdout.interface.flush();
         return 0;
@@ -53,8 +53,8 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     const compress = std.mem.eql(u8, args[1], "compress");
     if (!compress and !verify and !std.mem.eql(u8, args[1], "decompress")) return usage(io);
     var path: ?[]const u8 = null;
-    var options: z_flate.gzip.Options = .{};
-    var compress_options: z_flate.gzip.CompressOptions = .{};
+    var options: zipir.gzip.Options = .{};
+    var compress_options: zipir.gzip.CompressOptions = .{};
     var literal = false;
     var has_limit = false;
     var has_level = false;
@@ -76,7 +76,7 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
             if (!compress or has_level or i + 1 == args.len) return usage(io);
             i += 1;
             const level = std.fmt.parseInt(u8, args[i], 10) catch return usage(io);
-            compress_options.level = std.enums.fromInt(@FieldType(z_flate.gzip.CompressOptions, "level"), level) orelse return usage(io);
+            compress_options.level = std.enums.fromInt(@FieldType(zipir.gzip.CompressOptions, "level"), level) orelse return usage(io);
             has_level = true;
             continue;
         }
@@ -90,13 +90,13 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     var input_buffer: [32768]u8 = undefined;
     var reader = file.readerStreaming(io, &input_buffer);
     if (compress) {
-        const encoder = try allocator.create(z_flate.Compressor(.gzip));
+        const encoder = try allocator.create(zipir.Compressor(.gzip));
         defer allocator.destroy(encoder);
         _ = try encoder.compress(&reader.interface, &stdout.interface, compress_options);
         try stdout.interface.flush();
         return 0;
     }
-    const decoder = try allocator.create(z_flate.Decompressor(.gzip));
+    const decoder = try allocator.create(zipir.Decompressor(.gzip));
     defer allocator.destroy(decoder);
     if (verify) {
         var discard: std.Io.Writer.Discarding = .init(&.{});

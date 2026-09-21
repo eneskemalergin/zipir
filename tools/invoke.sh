@@ -28,7 +28,7 @@ tool_engine() {
         libdeflate-zlib)
             printf '%s\n' "$INSTALLS_DIR/libdeflate-zlib/$LIBDEFLATE_VERSION/bin/libdeflate-zlib"
             ;;
-        std-gzip | z-flate-gzip | std-zlib | z-flate-zlib | flate2-miniz | flate2-zlib-rs)
+        std-gzip | zipir-gzip | std-zlib | zipir-zlib | flate2-miniz | flate2-zlib-rs)
             printf '%s\n' "$BIN_DIR/$name"
             ;;
         *)
@@ -40,7 +40,7 @@ tool_engine() {
 
 tool_is_adapter() {
     case "${1:-${TOOL:?}}" in
-        std-gzip | z-flate-gzip | std-zlib | z-flate-zlib | flate2-miniz | flate2-zlib-rs) return 0 ;;
+        std-gzip | zipir-gzip | std-zlib | zipir-zlib | flate2-miniz | flate2-zlib-rs) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -54,7 +54,7 @@ tool_version_text() {
         libdeflate-gzip) "$engine" -V | awk 'NR==1{v=$NF; sub(/^v/, "", v); print v}' ;;
         igzip) printf '%s\n' "$ISAL_VERSION" ;;
         zlib-ng) printf '%s\n' "$ZLIB_NG_VERSION" ;;
-        std-gzip | z-flate-gzip | std-zlib | z-flate-zlib | flate2-miniz | flate2-zlib-rs)
+        std-gzip | zipir-gzip | std-zlib | zipir-zlib | flate2-miniz | flate2-zlib-rs)
             "$engine" --version | awk '{print $2}'
             ;;
         system-zlib | zlib-ng-zlib | libdeflate-zlib)
@@ -77,7 +77,7 @@ tool_compress() {
     local engine
     engine="$(tool_engine)"
     case "$TOOL" in
-        std-zlib | z-flate-zlib | libdeflate-zlib) return 64 ;;
+        std-zlib | zipir-zlib | libdeflate-zlib) return 64 ;;
     esac
     if tool_is_adapter; then
         "$engine" compress --level "$level" "$in_path" "$out_path"
@@ -189,7 +189,7 @@ zebrac_compress_cmd() {
     local engine
     engine="$(tool_engine)"
     case "$TOOL" in
-        std-zlib | z-flate-zlib | libdeflate-zlib) return 64 ;;
+        std-zlib | zipir-zlib | libdeflate-zlib) return 64 ;;
     esac
     if tool_is_adapter; then
         printf '%s compress --level %s %s /dev/null\n' "$engine" "$level" "$in_path"
@@ -201,7 +201,7 @@ zebrac_compress_cmd() {
         libdeflate-gzip) printf '%s -%s -k -c %s\n' "$engine" "$level" "$in_path" ;;
         igzip) printf '%s -n -%s -c %s\n' "$engine" "$level" "$in_path" ;;
         zlib-ng) printf '%s -%s -c %s\n' "$engine" "$level" "$in_path" ;;
-        std-zlib | z-flate-zlib | system-zlib | zlib-ng-zlib) return 64 ;;
+        std-zlib | zipir-zlib | system-zlib | zlib-ng-zlib) return 64 ;;
         *) return 64 ;;
     esac
 }

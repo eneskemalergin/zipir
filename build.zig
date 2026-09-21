@@ -1,4 +1,4 @@
-//! Build z_flate.
+//! Build zipir.
 
 const std = @import("std");
 
@@ -6,14 +6,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const mod = b.addModule("z_flate", .{
+    const mod = b.addModule("zipir", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     const exe = b.addExecutable(.{
-        .name = "z_flate",
+        .name = "zipir",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -21,14 +21,14 @@ pub fn build(b: *std.Build) void {
             .single_threaded = true,
             .strip = optimize == .ReleaseFast,
             .imports = &.{
-                .{ .name = "z_flate", .module = mod },
+                .{ .name = "zipir", .module = mod },
             },
         }),
     });
 
     b.installArtifact(exe);
 
-    const run_step = b.step("run", "Run z_flate");
+    const run_step = b.step("run", "Run zipir");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -56,7 +56,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/gzip.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "z_flate", .module = mod }},
+            .imports = &.{.{ .name = "zipir", .module = mod }},
         }),
     });
     test_step.dependOn(&b.addRunArtifact(contracts).step);
@@ -66,7 +66,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/zlib.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "z_flate", .module = mod }},
+            .imports = &.{.{ .name = "zipir", .module = mod }},
         }),
     });
     test_step.dependOn(&b.addRunArtifact(zlib_contracts).step);

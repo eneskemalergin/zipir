@@ -5,9 +5,9 @@
 # full is every level we qualify and time. Decompress is always -.
 tool	scale	default	full	store	fast	notes
 std-gzip	1-9	6	1 2 3 4 5 6 7 8 9	no	1	Zig std has no 0
-z-flate-gzip	1|5|9	5	1 5 9	no	1	z-flate gzip presets: fast 1, balanced 5, dense 9
+zipir-gzip	1|5|9	5	1 5 9	no	1	zipir gzip presets: fast 1, balanced 5, dense 9
 std-zlib	-	-	-	no	-	Zig std zlib decode-only adapter
-z-flate-zlib	-	-	-	no	-	z-flate zlib decode-only adapter
+zipir-zlib	-	-	-	no	-	zipir zlib decode-only adapter
 system-zlib	-	-	-	no	-	system libz zlib decode-only adapter
 libdeflate-zlib	-	-	-	no	-	libdeflate zlib full-buffer decode-only adapter; known output size path
 gnu-gzip	1-9	6	1 2 3 4 5 6 7 8 9	no	1	GNU gzip has no -0

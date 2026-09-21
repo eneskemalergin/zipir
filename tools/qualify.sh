@@ -65,7 +65,7 @@ require_linux_x64() {
 cleanup() {
     if [[ -n "$WORK" && -d "$WORK" ]]; then
         case "$WORK" in
-            /tmp/z-flate-qualify.*)
+            /tmp/zipir-qualify.*)
                 if [[ "$KEEP_TOOL_WORK" == 1 ]]; then
                     printf 'keep: %s\n' "$WORK"
                 else
@@ -676,7 +676,7 @@ write_meta() {
     local cpu
     cpu="$(awk -F: '/^model name/{gsub(/^ /,"",$2); print $2; exit}' /proc/cpuinfo)"
     {
-        printf 'schema\tz-flate-qualify-v2\n'
+        printf 'schema\tzipir-qualify-v2\n'
         printf 'tool\t%s\n' "$TOOL"
         printf 'tool_version\t%s\n' "$(tool_version_text)"
         printf 'format\t%s\n' "$FORMAT"
@@ -710,7 +710,7 @@ write_meta() {
 
 write_receipt() {
     {
-        printf 'schema\tz-flate-qualify-receipt-v1\n'
+        printf 'schema\tzipir-qualify-receipt-v1\n'
         printf 'tool\t%s\n' "$TOOL"
         printf 'classes\t%s\n' "$FILTER_CLASSES"
         printf 'blocking_fails\t%s\n' "$BLOCKING_FAILS"
@@ -789,7 +789,7 @@ main() {
         'category	class	filename	format	level	threads	uncompressed_bytes	corpus_bytes	tool_bytes	peer_gzip6_bytes' \
         >"$SIZES"
     write_meta
-    WORK="$(mktemp -d /tmp/z-flate-qualify.XXXXXX)"
+    WORK="$(mktemp -d /tmp/zipir-qualify.XXXXXX)"
     printf 'qualify %s levels: %s classes: %s\n' "$TOOL" "${COMPRESS_LEVELS[*]}" "$FILTER_CLASSES"
 
     qualify_empty

@@ -1,4 +1,4 @@
-//! Public library root for z_flate.
+//! Public library root for zipir.
 
 const std = @import("std");
 
@@ -20,14 +20,14 @@ pub fn Compressor(comptime format: Format) type {
 
 pub const version: std.SemanticVersion = .{
     .major = 0,
-    .minor = 0,
-    .patch = 0,
+    .minor = 1,
+    .patch = 2,
 };
 
-test "[unit] - [root]: reports version 0.0.0" {
+test "[unit] - [root]: reports version 0.1.2" {
     try std.testing.expectEqual(@as(usize, 0), version.major);
-    try std.testing.expectEqual(@as(usize, 0), version.minor);
-    try std.testing.expectEqual(@as(usize, 0), version.patch);
+    try std.testing.expectEqual(@as(usize, 1), version.minor);
+    try std.testing.expectEqual(@as(usize, 2), version.patch);
 }
 
 test {

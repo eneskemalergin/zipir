@@ -15,18 +15,18 @@ test "[cli] - [gzip]: command status and byte streams preserve source files" {
     try tmp.dir.writeFile(io, .{ .sub_path = "-plain with spaces", .data = "A" });
     const compressed = "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x73\x04\x00\x8b\x9e\xd9\xd3\x01\x00\x00\x00";
     const cases = .{
-        .{ &.{executable}, @as(u8, 0), "z_flate 0.0.0\n", "" },
-        .{ &.{ executable, "--version" }, @as(u8, 0), "z_flate 0.0.0\n", "" },
+        .{ &.{executable}, @as(u8, 0), "zipir 0.1.2\n", "" },
+        .{ &.{ executable, "--version" }, @as(u8, 0), "zipir 0.1.2\n", "" },
         .{ &.{ executable, "decompress", "--", "-input with spaces.gz" }, @as(u8, 0), "A", "" },
         .{ &.{ executable, "test", "--", "-input with spaces.gz" }, @as(u8, 0), "", "" },
-        .{ &.{ executable, "decompress", "--max-output-bytes", "0", "--", "-input with spaces.gz" }, @as(u8, 1), "", "z_flate: OutputLimitExceeded\n" },
-        .{ &.{ executable, "decompress", "truncated.gz" }, @as(u8, 1), "", "z_flate: Truncated\n" },
-        .{ &.{ executable, "decompress", "missing.gz" }, @as(u8, 1), "", "z_flate: FileNotFound\n" },
+        .{ &.{ executable, "decompress", "--max-output-bytes", "0", "--", "-input with spaces.gz" }, @as(u8, 1), "", "zipir: OutputLimitExceeded\n" },
+        .{ &.{ executable, "decompress", "truncated.gz" }, @as(u8, 1), "", "zipir: Truncated\n" },
+        .{ &.{ executable, "decompress", "missing.gz" }, @as(u8, 1), "", "zipir: FileNotFound\n" },
         .{ &.{ executable, "compress", "--", "-plain with spaces" }, @as(u8, 0), compressed, "" },
         .{ &.{ executable, "compress", "--level", "1", "--", "-plain with spaces" }, @as(u8, 0), compressed, "" },
         .{ &.{ executable, "compress", "--level", "5", "--", "-plain with spaces" }, @as(u8, 0), compressed, "" },
         .{ &.{ executable, "compress", "--level", "9", "--", "-plain with spaces" }, @as(u8, 0), compressed, "" },
-        .{ &.{ executable, "compress", "missing.plain" }, @as(u8, 1), "", "z_flate: FileNotFound\n" },
+        .{ &.{ executable, "compress", "missing.plain" }, @as(u8, 1), "", "zipir: FileNotFound\n" },
     };
     inline for (cases) |case| {
         const result = try std.process.run(allocator, io, .{ .argv = case[0], .cwd = .{ .dir = tmp.dir } });

@@ -1,17 +1,17 @@
-//! Streaming peer adapter for z-flate's gzip and zlib codecs.
+//! Streaming peer adapter for zipir's gzip and zlib codecs.
 
 const std = @import("std");
 const build_options = @import("build_options");
 const Io = std.Io;
 const args = @import("args");
-const z_flate = @import("z_flate");
+const zipir = @import("zipir");
 
-const format: z_flate.Format = blk: {
+const format: zipir.Format = blk: {
     if (std.mem.eql(u8, build_options.format, "gzip")) break :blk .gzip;
     if (std.mem.eql(u8, build_options.format, "zlib")) break :blk .zlib;
-    @compileError("unsupported z-flate adapter format");
+    @compileError("unsupported zipir adapter format");
 };
-const name = if (format == .gzip) "z-flate-gzip" else "z-flate-zlib";
+const name = if (format == .gzip) "zipir-gzip" else "zipir-zlib";
 const IO_BUFFER_LEN = 64 * 1024;
 
 pub fn main(init: std.process.Init.Minimal) !void {
@@ -37,9 +37,9 @@ fn printVersion(io: Io) !void {
     var stdout = std.Io.File.stdout().writer(io, &buffer);
     try stdout.interface.print("{s} {d}.{d}.{d}\n", .{
         name,
-        z_flate.version.major,
-        z_flate.version.minor,
-        z_flate.version.patch,
+        zipir.version.major,
+        zipir.version.minor,
+        zipir.version.patch,
     });
     try stdout.interface.flush();
 }
@@ -47,15 +47,15 @@ fn printVersion(io: Io) !void {
 fn usage() error{InvalidArguments} {
     if (format == .gzip) {
         std.debug.print(
-            \\usage: z-flate-gzip --version
-            \\       z-flate-gzip compress --level N IN OUT
-            \\       z-flate-gzip decompress IN OUT
+            \\usage: zipir-gzip --version
+            \\       zipir-gzip compress --level N IN OUT
+            \\       zipir-gzip decompress IN OUT
             \\
         , .{});
     } else {
         std.debug.print(
-            \\usage: z-flate-zlib --version
-            \\       z-flate-zlib decompress IN OUT
+            \\usage: zipir-zlib --version
+            \\       zipir-zlib decompress IN OUT
             \\
         , .{});
     }
@@ -63,9 +63,9 @@ fn usage() error{InvalidArguments} {
 }
 
 fn compressPath(io: Io, paths: args.Paths) !void {
-    const level = std.enums.fromInt(@FieldType(z_flate.gzip.CompressOptions, "level"), paths.level) orelse
+    const level = std.enums.fromInt(@FieldType(zipir.gzip.CompressOptions, "level"), paths.level) orelse
         return error.InvalidArguments;
-    const compressor = try std.heap.page_allocator.create(z_flate.Compressor(.gzip));
+    const compressor = try std.heap.page_allocator.create(zipir.Compressor(.gzip));
     defer std.heap.page_allocator.destroy(compressor);
 
     const in_file = try openIn(io, paths.in_path);
@@ -82,8 +82,8 @@ fn compressPath(io: Io, paths: args.Paths) !void {
     try out_writer.interface.flush();
 }
 
-fn decompressPath(comptime codec_format: z_flate.Format, io: Io, paths: args.Paths) !void {
-    const decoder = try std.heap.page_allocator.create(z_flate.Decompressor(codec_format));
+fn decompressPath(comptime codec_format: zipir.Format, io: Io, paths: args.Paths) !void {
+    const decoder = try std.heap.page_allocator.create(zipir.Decompressor(codec_format));
     defer std.heap.page_allocator.destroy(decoder);
 
     const in_file = try openIn(io, paths.in_path);

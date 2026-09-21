@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keyed comparison report for z-flate tools.
+"""Keyed comparison report for zipir tools.
 
 Fact row key:
   host, tool, tool_version, format, operation, level, threads, nthreads,

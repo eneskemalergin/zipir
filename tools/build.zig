@@ -21,20 +21,20 @@ pub fn build(b: *std.Build) void {
         installZig(b, target, optimize, strip, "std-zlib", b.path("zig/std_zlib.zig"), &.{
             .{ .name = "args", .module = argsModule(b, target, optimize) },
         });
-    } else if (std.mem.eql(u8, adapter, "z-flate-gzip") or
-        std.mem.eql(u8, adapter, "z-flate-zlib"))
+    } else if (std.mem.eql(u8, adapter, "zipir-gzip") or
+        std.mem.eql(u8, adapter, "zipir-zlib"))
     {
-        const format = if (std.mem.eql(u8, adapter, "z-flate-gzip")) "gzip" else "zlib";
-        const z_flate = b.createModule(.{
+        const format = if (std.mem.eql(u8, adapter, "zipir-gzip")) "gzip" else "zlib";
+        const zipir = b.createModule(.{
             .root_source_file = b.path("../src/root.zig"),
             .target = target,
             .optimize = optimize,
         });
         const options = b.addOptions();
         options.addOption([]const u8, "format", format);
-        installZigWithOptions(b, target, optimize, strip, adapter, b.path("zig/z_flate.zig"), &.{
+        installZigWithOptions(b, target, optimize, strip, adapter, b.path("zig/zipir.zig"), &.{
             .{ .name = "args", .module = argsModule(b, target, optimize) },
-            .{ .name = "z_flate", .module = z_flate },
+            .{ .name = "zipir", .module = zipir },
         }, options);
     } else {
         std.debug.panic("unknown adapter: {s}", .{adapter});

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build comparison tools into repository-local, ignored storage.
-# C/host CLIs stay native programs. Zig supplies the standard-library and z-flate format adapters.
+# C/host CLIs stay native programs. Zig supplies the standard-library and zipir format adapters.
 # Rust adapters are those languages' CLIs. Host gzip and pigz are not copied.
 # libdeflate, ISA-L, and zlib-ng are built into tools/.local with a cmake
-# prefix under /tmp/z-flate-tools.*. No global prefix. Local engines must not
+# prefix under /tmp/zipir-tools.*. No global prefix. Local engines must not
 # link Fedora libdeflate, ISA-L, or zlib.
 
 set -euo pipefail
@@ -22,7 +22,7 @@ ACTIVE_STAGE=""
 # shellcheck source=tools/versions.sh
 source "$TOOLS_DIR/versions.sh"
 
-PEERS=(std-gzip z-flate-gzip std-zlib z-flate-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib)
+PEERS=(std-gzip zipir-gzip std-zlib zipir-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib)
 ALL_TARGETS=("${PEERS[@]}")
 
 usage() {
@@ -32,7 +32,7 @@ usage() {
         '       tools/install.sh --check [NAME|all]' \
         '       tools/install.sh --list' \
         '' \
-        'names: std-gzip z-flate-gzip std-zlib z-flate-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib' \
+        'names: std-gzip zipir-gzip std-zlib zipir-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib' \
         '' \
         'Linux x86_64 only. Host gzip and pigz stay at /usr/bin. libdeflate,' \
         'igzip, and zlib-ng are native CLIs under ignored tools/.local/. Zig' \
@@ -48,7 +48,7 @@ cleanup() {
     fi
     if [[ -n "$ACTIVE_WORK" && -d "$ACTIVE_WORK" ]]; then
         case "$ACTIVE_WORK" in
-            /tmp/z-flate-tools.*)
+            /tmp/zipir-tools.*)
                 if [[ "$KEEP_TOOL_WORK" == 1 ]]; then
                     printf 'keep: %s\n' "$ACTIVE_WORK"
                 else
@@ -105,7 +105,7 @@ validate_settings() {
 version_for() {
     case "$1" in
         std-gzip) printf '%s\n' "$STD_GZIP_VERSION" ;;
-        z-flate-gzip | z-flate-zlib) printf '%s\n' "$Z_FLATE_VERSION" ;;
+        zipir-gzip | zipir-zlib) printf '%s\n' "$ZIPIR_VERSION" ;;
         std-zlib) printf '%s\n' "$STD_ZLIB_VERSION" ;;
         system-zlib) printf '%s\n' "$SYSTEM_ZLIB_VERSION" ;;
         libdeflate-zlib) printf '%s\n' "$LIBDEFLATE_VERSION" ;;
@@ -124,7 +124,7 @@ version_for() {
 expand_target() {
     case "$1" in
         all | peers) printf '%s\n' "${ALL_TARGETS[@]}" ;;
-        std-gzip | z-flate-gzip | std-zlib | z-flate-zlib | system-zlib | libdeflate-zlib | gnu-gzip | libdeflate-gzip | igzip | pigz | flate2-miniz | flate2-zlib-rs | zlib-ng | zlib-ng-zlib)
+        std-gzip | zipir-gzip | std-zlib | zipir-zlib | system-zlib | libdeflate-zlib | gnu-gzip | libdeflate-gzip | igzip | pigz | flate2-miniz | flate2-zlib-rs | zlib-ng | zlib-ng-zlib)
             printf '%s\n' "$1"
             ;;
         *)
@@ -136,7 +136,7 @@ expand_target() {
 
 start_work() {
     if [[ -z "$ACTIVE_WORK" ]]; then
-        ACTIVE_WORK="$(mktemp -d /tmp/z-flate-tools.XXXXXX)"
+        ACTIVE_WORK="$(mktemp -d /tmp/zipir-tools.XXXXXX)"
     fi
 }
 
@@ -212,7 +212,7 @@ write_receipt() {
         suite_dirty=false
     fi
     {
-        printf 'schema\tz-flate-tool-receipt-v1\n'
+        printf 'schema\tzipir-tool-receipt-v1\n'
         printf 'name\t%s\nversion\t%s\nsource\t%s\n' "$name" "$version" "$source"
         printf 'compiler\t%s\njobs\t%s\n' "$compiler" "$TOOL_JOBS"
         printf 'build_profile\t%s\n' "$build_profile"
@@ -280,7 +280,7 @@ check_target() {
         printf 'missing: %s %s\n' "$name" "$version" >&2
         return 1
     fi
-    grep -Fqx "schema"$'\t'"z-flate-tool-receipt-v1" "$receipt" || return 1
+    grep -Fqx "schema"$'\t'"zipir-tool-receipt-v1" "$receipt" || return 1
     grep -Fqx "version"$'\t'"$version" "$receipt" || return 1
     case "$name" in
         gnu-gzip)
@@ -353,7 +353,7 @@ check_target() {
             "$path" --version | grep -Fq 'unknown version' || return 1
             assert_not_linked "$path" 'libdeflate|libisal|libigzip' "$name" || return 1
             ;;
-        std-gzip | z-flate-gzip | std-zlib | z-flate-zlib | flate2-miniz | flate2-zlib-rs)
+        std-gzip | zipir-gzip | std-zlib | zipir-zlib | flate2-miniz | flate2-zlib-rs)
             [[ -x "$path" ]] || {
                 printf 'missing: %s %s\n' "$name" "$version" >&2
                 return 1
@@ -447,19 +447,19 @@ build_std_zlib() {
         'ReleaseFast;strip;single_threaded;cpu=native;x86_64-linux'
 }
 
-build_z_flate() {
+build_zipir() {
     local name="$1" format="$2" work
     require_zig
     start_work
     work="$ACTIVE_WORK/$name"
     mkdir -p "$work/global-cache" "$work/local-cache" "$work/prefix"
-    printf 'build: z-flate %s adapter\n' "$format"
+    printf 'build: zipir %s adapter\n' "$format"
     ZIG_GLOBAL_CACHE_DIR="$work/global-cache" ZIG_LOCAL_CACHE_DIR="$work/local-cache" \
         zig build --build-file "$TOOLS_DIR/build.zig" -Dadapter="$name" \
         -Doptimize=ReleaseFast -Dstrip=true -Dcpu=native \
         --prefix "$work/prefix" -j"$TOOL_JOBS"
-    publish "$name" "$Z_FLATE_VERSION" "$work/prefix/bin/$name" \
-        "local z-flate src/root.zig $format adapter" "$(zig version)" \
+    publish "$name" "$ZIPIR_VERSION" "$work/prefix/bin/$name" \
+        "local zipir src/root.zig $format adapter" "$(zig version)" \
         "ReleaseFast;strip;single_threaded;cpu=native;x86_64-linux;$format"
 }
 
@@ -763,7 +763,7 @@ install_target() {
     case "$name" in
         std-gzip) build_std_gzip ;;
         std-zlib) build_std_zlib ;;
-        z-flate-gzip | z-flate-zlib) build_z_flate "$name" "${name#z-flate-}" ;;
+        zipir-gzip | zipir-zlib) build_zipir "$name" "${name#zipir-}" ;;
         system-zlib) build_system_zlib ;;
         libdeflate-zlib) build_libdeflate_zlib ;;
         gnu-gzip) build_gnu_gzip ;;
