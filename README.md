@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="assets/logo-readme.svg" alt="Zipir logo" width="170">
-  <h1>ZIPIR</h1>
+  <!-- <h1>ZIPIR</h1> -->
   <p><strong>Native Zig gzip compression and bounded streaming gzip/zlib decompression.</strong></p>
   <p>
     <img src="https://img.shields.io/badge/version-0.1.2-2C8EBB?style=flat-square" alt="Version 0.1.2">
@@ -58,7 +58,7 @@ The future rows are possibilities, not a delivery order or a promise to support 
 
 Raw DEFLATE and zlib compression are not implemented yet.
 
-> [!Info]
+> [!INFO]
 > `zipir` will slowly build its accelerators in the form of hand-rolled SIMD tested on specific architecture. Currently I cannot promise a full and comprehensive support. I am building things that specifically suits my needs and will target my computer and my os first. I always keep in mind portability, and compatibility but for the work for actually pushing performance they are extremely time consuming to build for across a wide range of cpu, os archtectures. So I wanted to mention I will always keep fallbacks so the there won't be missing functionality, but speed and memory optimizations might be missing. My first target is `linux, x86-64, axv2`. I have test environments for various others but they will have to come later.
 
 ## Quick start
@@ -92,8 +92,6 @@ Use `zipir.gzip.Options.max_output_bytes` or `zipir.zlib.Options.max_output_byte
 
 > [!WARNING]
 > Public-facing benchmark reports will live in `bench/` once that directory is ready. It is not ready yet, so the comparisons described here are local development measurements rather than published benchmark results.
-
-Zipir comparisons use the same raw inputs, fixed I/O shape, decoded-byte checks, wall time, and peak RSS. The peer set includes Zig's standard library, system zlib, zlib-ng, and libdeflate. Streaming peers stay together; `libdeflate-zlib` is a full-buffer comparison and remains labeled separately because it answers a different memory question.
 
 The comparison adapters, corpus definitions, qualification checks, and report generation live in [`tools/`](tools/). The README will keep only the small conclusions that remain useful after the benchmark work changes.
 

@@ -4,6 +4,17 @@ const std = @import("std");
 const support = @import("support.zig");
 const zlib = @import("zipir").zlib;
 
+// Only the first gzip member is rewrapped: copy-boundaries repeats one member and
+// final-stored-concat ends with the short6 member.
+const copy_gzip = @embedFile("data/synthetic/copy-boundaries.gz");
+const copy_plain = @embedFile("data/synthetic/copy-boundaries.plain");
+const copy_member = copy_gzip[0 .. copy_gzip.len / 2];
+const copy_member_plain = copy_plain[0 .. copy_plain.len / 2];
+const stored_gzip = @embedFile("data/synthetic/final-stored-concat.gz");
+const stored_plain = @embedFile("data/synthetic/final-stored-concat.plain");
+const stored_member = stored_gzip[0 .. stored_gzip.len - @embedFile("data/synthetic/short6.gz").len];
+const stored_member_plain = stored_plain[0 .. stored_plain.len - @embedFile("data/synthetic/short.plain").len];
+
 fn wrapGzip(
     allocator: std.mem.Allocator,
     gzip_bytes: []const u8,
@@ -50,6 +61,8 @@ test "[integration] - [zlib decoder]: valid streams decode through short input a
         .{ @embedFile("data/synthetic/short6.gz"), @embedFile("data/synthetic/short.plain") },
         .{ @embedFile("data/synthetic/fixed-codes.gz"), @embedFile("data/synthetic/fixed-codes.plain") },
         .{ @embedFile("data/synthetic/long-codes.gz"), @embedFile("data/synthetic/long-codes.plain") },
+        .{ stored_member, stored_member_plain },
+        .{ copy_member, copy_member_plain },
     };
     const decoder = try std.testing.allocator.create(zlib.Decompressor);
     defer std.testing.allocator.destroy(decoder);
@@ -81,13 +94,21 @@ test "[failure] - [zlib decoder]: malformed wrapper, payload, trailer, and trunc
     var bad_adler = try std.testing.allocator.dupe(u8, valid);
     defer std.testing.allocator.free(bad_adler);
     bad_adler[bad_adler.len - 1] ^= 1;
+    var bad_window = try std.testing.allocator.dupe(u8, valid);
+    defer std.testing.allocator.free(bad_window);
+    bad_window[0] = 0x88;
     const bad_stored = [_]u8{ 0x78, 0x9c, 0x01, 0, 0, 0, 0, 0, 0, 0, 1 };
+    const bad_block = [_]u8{ 0x78, 0x9c, 0x07 };
     const dictionary_header = [_]u8{ 0x78, 0x20, 0, 0, 0, 1 };
     const cases = .{
+        .{ "", error.Truncated },
+        .{ valid[0..1], error.Truncated },
         .{ truncated, error.Truncated },
         .{ bad_method[0..], error.UnsupportedMethod },
+        .{ bad_window[0..], error.WindowTooLarge },
         .{ bad_check[0..], error.BadHeader },
         .{ bad_stored[0..], error.BadStored },
+        .{ bad_block[0..], error.BadBlock },
         .{ bad_adler[0..], error.BadAdler },
         .{ dictionary_header[0..], error.DictionaryUnsupported },
     };
@@ -100,6 +121,99 @@ test "[failure] - [zlib decoder]: malformed wrapper, payload, trailer, and trunc
         var scratch: [13]u8 = undefined;
         var sink = support.Sink{ .output = &scratch, .sink = &output, .max_drain = 7 };
         try std.testing.expectError(case[1], decoder.decompress(&source.reader, &sink.writer, .{}));
+    }
+}
+
+test "[failure] - [zlib decoder]: invalid history, trees, and fixed symbols fail" {
+    const cases = .{
+        .{ "invalid-history", error.BadDistance },
+        .{ "incomplete-literal", error.BadHuffman },
+        .{ "incomplete-distance", error.BadHuffman },
+        .{ "incomplete-code-length", error.BadHuffman },
+        .{ "oversubscribed-literal", error.BadHuffman },
+        .{ "fixed-invalid-286", error.BadSymbol },
+        .{ "fixed-invalid-287", error.BadSymbol },
+        .{ "fixed-invalid-30", error.BadSymbol },
+        .{ "fixed-invalid-31", error.BadSymbol },
+    };
+    const decoder = try std.testing.allocator.create(zlib.Decompressor);
+    defer std.testing.allocator.destroy(decoder);
+    var input_buffer: [17]u8 = undefined;
+    inline for (cases) |case| {
+        const stream = try wrapGzip(std.testing.allocator, @embedFile("data/synthetic/" ++ case[0] ++ ".gz"), "");
+        defer std.testing.allocator.free(stream);
+        for ([_]usize{ 1, 17 }) |chunk| {
+            var source = support.Source.init(stream, &input_buffer, chunk);
+            var sink: std.Io.Writer.Discarding = .init(&.{});
+            try std.testing.expectError(case[1], decoder.decompress(&source.reader, &sink.writer, .{}));
+        }
+    }
+}
+
+test "[failure] - [zlib decoder]: I/O errors propagate and the workspace decodes again" {
+    const stream = try wrapGzip(std.testing.allocator, stored_member, stored_member_plain);
+    defer std.testing.allocator.free(stream);
+    const decoder = try std.testing.allocator.create(zlib.Decompressor);
+    defer std.testing.allocator.destroy(decoder);
+    var input_buffer: [17]u8 = undefined;
+    var output: [4096]u8 = undefined;
+    for ([_]usize{ 0, 1, 2, 20, stream.len - 3 }) |offset| {
+        var source = support.Source.init(stream, &input_buffer, 3);
+        source.fail_at = offset;
+        var sink: support.Sink = .{ .output = &output };
+        try std.testing.expectError(error.ReadFailed, decoder.decompress(&source.reader, &sink.writer, .{}));
+    }
+    for ([_]usize{ 0, 4096, 131072 }) |offset| {
+        var source = support.Source.init(stream, &input_buffer, 17);
+        var sink: support.Sink = .{ .output = &output, .fail_at = offset };
+        try std.testing.expectError(error.WriteFailed, decoder.decompress(&source.reader, &sink.writer, .{}));
+    }
+    var source = support.Source.init(stream, &input_buffer, 17);
+    var sink: support.Sink = .{ .output = &output };
+    try std.testing.expectEqual(@as(u64, stored_member_plain.len), try decoder.decompress(&source.reader, &sink.writer, .{}));
+}
+
+test "[property] - [zlib decoder]: splits pass while truncations and bit flips stay bounded" {
+    const decoder = try std.testing.allocator.create(zlib.Decompressor);
+    defer std.testing.allocator.destroy(decoder);
+    const small = try wrapGzip(std.testing.allocator, @embedFile("data/synthetic/repeat-zero.gz"), "A");
+    defer std.testing.allocator.free(small);
+    var input_buffer: [16]u8 = undefined;
+    var one: [1]u8 = undefined;
+    for (0..small.len + 1) |split| {
+        var source = support.Source.init(small, &input_buffer, 65536);
+        source.split_at = split;
+        var sink: support.Sink = .{ .output = &one };
+        try std.testing.expectEqual(@as(u64, 1), try decoder.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectEqual(@as(u8, 'A'), one[0]);
+    }
+
+    var random = std.Random.DefaultPrng.init(0x2179);
+    const seeds = .{
+        .{ @embedFile("data/synthetic/repeat-zero.gz"), "A" },
+        .{ @embedFile("data/synthetic/short6.gz"), @embedFile("data/synthetic/short.plain") },
+        .{ @embedFile("data/synthetic/long-codes.gz"), @embedFile("data/synthetic/long-codes.plain") },
+    };
+    inline for (seeds) |seed| {
+        const stream = try wrapGzip(std.testing.allocator, seed[0], seed[1]);
+        defer std.testing.allocator.free(stream);
+        const mutated = try std.testing.allocator.dupe(u8, stream);
+        defer std.testing.allocator.free(mutated);
+        const first_cut = if (stream.len > 64) stream.len - 32 else 0;
+        for (first_cut..stream.len) |cut| {
+            var source = support.Source.init(stream[0..cut], &input_buffer, 3);
+            var sink: std.Io.Writer.Discarding = .init(&.{});
+            try std.testing.expectError(error.Truncated, decoder.decompress(&source.reader, &sink.writer, .{}));
+        }
+        for (0..256) |_| {
+            @memcpy(mutated, stream);
+            const position = random.random().uintLessThan(usize, stream.len);
+            mutated[position] ^= @as(u8, 1) << random.random().int(u3);
+            var reader = std.Io.Reader.fixed(mutated);
+            var sink: std.Io.Writer.Discarding = .init(&.{});
+            _ = decoder.decompress(&reader, &sink.writer, .{ .max_output_bytes = 262144 }) catch {};
+            try std.testing.expect(sink.fullCount() <= 262144);
+        }
     }
 }
 
@@ -142,21 +256,30 @@ test "[edge] - [zlib decoder]: strict and leaving trailing bytes preserve the re
     for (stream) |byte| try std.testing.expectEqual(byte, try source.reader.takeByte());
 }
 
-test "[failure] - [zlib decoder]: output cap stops before exceeding the caller limit" {
-    const gzip_bytes = @embedFile("data/synthetic/short6.gz");
-    const expected = @embedFile("data/synthetic/short.plain");
-    const stream = try wrapGzip(std.testing.allocator, gzip_bytes, expected);
-    defer std.testing.allocator.free(stream);
+test "[failure] - [zlib decoder]: output limits cover matches, stored blocks, and staging edges" {
+    const cases = .{
+        .{ @embedFile("data/synthetic/short6.gz"), @embedFile("data/synthetic/short.plain") },
+        .{ stored_member, stored_member_plain },
+        .{ copy_member, copy_member_plain },
+    };
     const decoder = try std.testing.allocator.create(zlib.Decompressor);
     defer std.testing.allocator.destroy(decoder);
-    var input_buffer: [17]u8 = undefined;
-    var source = support.Source.init(stream, &input_buffer, 3);
-    var output: [expected.len]u8 = undefined;
-    var scratch: [13]u8 = undefined;
-    var sink = support.Sink{ .output = &scratch, .sink = &output, .max_drain = 7 };
-    const limit: u64 = expected.len - 1;
-    try std.testing.expectError(error.OutputLimitExceeded, decoder.decompress(&source.reader, &sink.writer, .{ .max_output_bytes = limit }));
-    try std.testing.expect(sink.count <= limit);
+    inline for (cases) |case| {
+        const stream = try wrapGzip(std.testing.allocator, case[0], case[1]);
+        defer std.testing.allocator.free(stream);
+        const size: u64 = case[1].len;
+        for ([_]u64{ 0, 1, 257, 32768, 131071, 131072, 131073, size - 1, size, size + 1 }) |limit| {
+            var reader = std.Io.Reader.fixed(stream);
+            var sink: std.Io.Writer.Discarding = .init(&.{});
+            if (limit < size) {
+                try std.testing.expectError(error.OutputLimitExceeded, decoder.decompress(&reader, &sink.writer, .{ .max_output_bytes = limit }));
+                try std.testing.expect(sink.fullCount() <= limit);
+            } else {
+                try std.testing.expectEqual(size, try decoder.decompress(&reader, &sink.writer, .{ .max_output_bytes = limit }));
+                try std.testing.expectEqual(size, sink.fullCount());
+            }
+        }
+    }
 }
 
 test "[failure] - [zlib decoder]: rejects undersized input buffers and preset dictionaries" {
