@@ -330,6 +330,30 @@ test "[integration] - [gzip compressor]: empty and repeated calls produce indepe
     try std.testing.expectEqualSlices(u8, "A", decoded.buffered());
 }
 
+test "[property] - [gzip compressor]: reused workspaces match fresh output across level changes" {
+    const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
+    defer std.testing.allocator.destroy(encoder);
+    const fresh = try std.testing.allocator.create(zipir.Compressor(.gzip));
+    defer std.testing.allocator.destroy(fresh);
+    // A four-letter alphabet gives long hash chains and lazy decisions in every block.
+    var plain: [98305]u8 = undefined;
+    var rng = std.Random.DefaultPrng.init(611);
+    for (&plain) |*b| b.* = 'a' + rng.random().uintLessThan(u8, 4);
+    var expected: [100000]u8 = undefined;
+    var actual: [100000]u8 = undefined;
+    for ([_]zipir.gzip.CompressOptions{ .{ .level = .fast }, .{ .level = .dense }, .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| {
+        var reader = std.Io.Reader.fixed(&plain);
+        var writer = std.Io.Writer.fixed(&expected);
+        _ = try fresh.compress(&reader, &writer, options);
+        const want = writer.buffered();
+        fresh.* = undefined;
+        reader = .fixed(&plain);
+        writer = .fixed(&actual);
+        _ = try encoder.compress(&reader, &writer, options);
+        try std.testing.expectEqualSlices(u8, want, writer.buffered());
+    }
+}
+
 test "[property] - [gzip compressor]: block and window boundaries survive short I/O" {
     const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(encoder);

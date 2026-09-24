@@ -67,7 +67,7 @@ pub const Compressor = struct {
     /// Reader capacity may be zero. A failed call cannot be resumed.
     pub fn compress(self: *Compressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: CompressOptions) CompressError!u64 {
         @memset(&self.head, 0);
-        @memset(&self.previous, 0);
+        if (options.level != .fast) @memset(&self.previous, 0);
         try writer.writeAll(&.{ 31, 139, 8, 0, 0, 0, 0, 0, 0, 255 });
         var bits: Bw = .{ .writer = writer };
         var history: usize = 0;
@@ -87,9 +87,12 @@ pub const Compressor = struct {
             // The previous block's final two positions lacked three-byte lookahead.
             if (history != 0) {
                 var p = history - 2;
-                while (p < history and p + 3 <= end) : (p += 1) self.insert(p, self.hash(p, end));
+                while (p < history and p + 3 <= end) : (p += 1) {
+                    if (options.level == .fast) self.insert(p, self.hash(p, end), false) else self.insert(p, self.hash(p, end), true);
+                }
             }
-            self.parse(history, end, options, skip_search);
+            // Fast searches one head candidate, so its parse keeps no chain.
+            if (options.level == .fast) self.parse(history, end, options, skip_search, false) else self.parse(history, end, options, skip_search, true);
             const stored = try self.emit(&bits, self.window[history..end], last);
             // Stored blocks are a bounded miss signal. Recheck after one skipped block.
             skip_search = stored and !skip_search and options.level != .fast;
@@ -97,7 +100,7 @@ pub const Compressor = struct {
             if (history != 0) {
                 @memcpy(self.window[0..RING], self.window[RING..][0..RING]);
                 rebase(&self.head);
-                rebase(&self.previous);
+                if (options.level != .fast) rebase(&self.previous);
             }
             history = RING;
         }
@@ -118,14 +121,14 @@ pub const Compressor = struct {
         return (v *% 0x1e35a7bd) >> 17;
     }
 
-    fn insert(self: *Compressor, p: usize, h: usize) void {
-        self.previous[p & (RING - 1)] = self.head[h];
+    fn insert(self: *Compressor, p: usize, h: usize, comptime chain: bool) void {
+        if (chain) self.previous[p & (RING - 1)] = self.head[h];
         self.head[h] = @intCast(p + 1);
     }
 
     const Match = struct { len: usize = 2, dist: usize = 0 };
 
-    fn find(self: *const Compressor, p: usize, end: usize, budget: usize, nice: usize, h: usize) Match {
+    fn find(self: *const Compressor, p: usize, end: usize, budget: usize, nice: usize, h: usize, comptime chain: bool) Match {
         var best: Match = .{};
         if (p + 3 > end) return best;
         const limit = @min(258, end - p);
@@ -144,6 +147,7 @@ pub const Compressor = struct {
                     if (len >= nice or len == limit) break;
                 }
             }
+            if (!chain) break;
             const next = self.previous[q & (RING - 1)];
             if (next >= entry) break;
             entry = next;
@@ -167,7 +171,7 @@ pub const Compressor = struct {
         return false;
     }
 
-    fn parse(self: *Compressor, start: usize, end: usize, options: CompressOptions, skip_search: bool) void {
+    fn parse(self: *Compressor, start: usize, end: usize, options: CompressOptions, skip_search: bool, comptime chain: bool) void {
         @memset(&self.lit_freq, 0);
         @memset(&self.dist_freq, 0);
         self.lit_freq[256] = 1;
@@ -198,16 +202,16 @@ pub const Compressor = struct {
                 m = .{};
             } else if (p + 3 <= end) {
                 m_hash = self.hash(p, end);
-                m = self.find(p, end, budget, nice, m_hash);
+                m = self.find(p, end, budget, nice, m_hash, chain);
             } else {
                 m = .{};
                 m_hash = 0;
             }
             pending = .{};
-            if (p + 3 <= end) self.insert(p, m_hash);
-            if (options.level != .fast and m.len >= 3 and m.len < 16 and p + 3 < end) {
+            if (p + 3 <= end) self.insert(p, m_hash, chain);
+            if (chain and m.len >= 3 and m.len < 16 and p + 3 < end) {
                 pending_hash = self.hash(p + 1, end);
-                const next = self.find(p + 1, end, @min(budget, 8), nice, pending_hash);
+                const next = self.find(p + 1, end, @min(budget, 8), nice, pending_hash, chain);
                 if (next.len > m.len) {
                     pending = next;
                     m.len = 2;
@@ -223,7 +227,7 @@ pub const Compressor = struct {
                 const stop = p + m.len;
                 p += 1;
                 while (p < stop) : (p += 1) {
-                    if (options.level != .fast and p + 3 <= end) self.insert(p, self.hash(p, end));
+                    if (chain and p + 3 <= end) self.insert(p, self.hash(p, end), chain);
                 }
                 literal_start = p;
             } else {
@@ -306,6 +310,18 @@ pub const Compressor = struct {
     }
 
     fn emitTokens(self: *const Compressor, bits: *Bw, raw: []const u8, lit: *const EncodeTree, dist: *const EncodeTree) CompressError!void {
+        var lit_tab: [256]u64 = undefined;
+        for (&lit_tab, 0..) |*e, s| e.* = lit.codes[s] | (@as(u64, lit.lens[s]) << 32);
+        var len_tab: [256]u64 = undefined;
+        for (&len_tab, 0..) |*e, v| {
+            const l = LEN_CODE[v];
+            const code_len: u6 = lit.lens[257 + @as(usize, l)];
+            const extra = @as(u64, v) + 3 - LEN_BASE[l];
+            e.* = (lit.codes[257 + @as(usize, l)] | (extra << code_len)) | (@as(u64, code_len + LEN_EXTRA[l]) << 32);
+        }
+        var dist_tab: [30]u64 = undefined;
+        for (&dist_tab, 0..) |*e, c| e.* = dist.codes[c] | (@as(u64, dist.lens[c]) << 32);
+        try bits.drain();
         var t: usize = 0;
         var p: usize = 0;
         while (t < self.token_bytes) {
@@ -313,18 +329,23 @@ pub const Compressor = struct {
             t += 2;
             if (word & 0x8000 == 0) {
                 const end = p + @as(usize, word) + 1;
-                for (raw[p..end]) |v| try bits.symbol(lit, v);
-                p = end;
+                while (p + 3 <= end) : (p += 3) {
+                    bits.add(lit_tab[raw[p]]);
+                    bits.add(lit_tab[raw[p + 1]]);
+                    bits.add(lit_tab[raw[p + 2]]);
+                    try bits.drain();
+                }
+                while (p < end) : (p += 1) bits.add(lit_tab[raw[p]]);
+                try bits.drain();
             } else {
                 const v = self.tokens[t];
                 t += 1;
                 const d = @as(usize, word & 0x7fff) + 1;
-                const l = LEN_CODE[v];
                 const dc = distCode(d);
-                try bits.symbol(lit, 257 + @as(usize, l));
-                try bits.put(@as(u32, v) + 3 - LEN_BASE[l], LEN_EXTRA[l]);
-                try bits.symbol(dist, dc);
-                try bits.put(@intCast(d - DIST_BASE[dc]), DIST_EXTRA[dc]);
+                bits.add(len_tab[v]);
+                bits.add(dist_tab[dc]);
+                bits.add(@as(u64, d - DIST_BASE[dc]) | (@as(u64, DIST_EXTRA[dc]) << 32));
+                try bits.drain();
                 p += @as(usize, v) + 3;
             }
         }
@@ -1068,13 +1089,13 @@ fn distCode(d: usize) usize {
 const Bw = struct {
     writer: *std.Io.Writer,
     value: u64 = 0,
-    count: u6 = 0,
+    count: u32 = 0,
 
     fn put(self: *Bw, value: u32, n: u5) CompressError!void {
         std.debug.assert(n <= 16 and (n == 0 or value < (@as(u32, 1) << n)));
         if (n == 0) return;
         if (self.count > 47) try self.drain();
-        self.value |= @as(u64, value) << self.count;
+        self.value |= @as(u64, value) << @intCast(self.count);
         self.count += n;
     }
 
@@ -1092,6 +1113,11 @@ const Bw = struct {
         }
         self.value >>= @intCast(n * 8);
         self.count &= 7;
+    }
+
+    inline fn add(self: *Bw, entry: u64) void {
+        self.value |= (entry & 0xffffffff) << @intCast(self.count);
+        self.count += @intCast(entry >> 32);
     }
 
     fn symbol(self: *Bw, tree: *const EncodeTree, s: usize) CompressError!void {
@@ -1150,11 +1176,61 @@ const EncodeTree = struct {
             var depth: u8 = 0;
             while (nodes[p].parent != 0) {
                 depth += 1;
-                if (depth > max_bits) return false;
+                if (depth > max_bits) return self.limit(freq, &nodes, max_bits);
                 p = nodes[p].parent;
             }
             self.lens[i] = @intCast(@max(1, depth));
         }
+        return self.canonical();
+    }
+
+    // JPEG Annex K.3: each step lifts two deepest leaves and splits a shallower one, so the
+    // Kraft sum stays 1 and a shallower leaf always exists while depth exceeds max_bits.
+    noinline fn limit(self: *EncodeTree, freq: []const u32, nodes: *const [576]Node, max_bits: u4) bool {
+        var depths: [288]u16 = @splat(0);
+        var count: [288]u32 = @splat(0);
+        var max_depth: usize = 0;
+        var order: [288]u16 = undefined;
+        var n: usize = 0;
+        for (freq, 0..) |f, i| {
+            if (f == 0) continue;
+            var p = i;
+            var depth: u16 = 0;
+            while (nodes[p].parent != 0) : (p = nodes[p].parent) depth += 1;
+            depths[i] = @max(1, depth);
+            count[depths[i]] += 1;
+            max_depth = @max(max_depth, depths[i]);
+            order[n] = @intCast(i);
+            n += 1;
+        }
+        var len = max_depth;
+        while (len > max_bits) : (len -= 1) {
+            while (count[len] > 0) {
+                var j = len - 2;
+                while (count[j] == 0) j -= 1;
+                count[len] -= 2;
+                count[len - 1] += 1;
+                count[j + 1] += 2;
+                count[j] -= 1;
+            }
+        }
+        // Shallowest original depth, then highest frequency, receives the shortest new length.
+        for (1..n) |i| {
+            const x = order[i];
+            var j = i;
+            while (j > 0) : (j -= 1) {
+                const y = order[j - 1];
+                if (depths[x] > depths[y] or (depths[x] == depths[y] and freq[x] <= freq[y])) break;
+                order[j] = y;
+            }
+            order[j] = x;
+        }
+        var k: usize = 0;
+        for (1..@as(usize, max_bits) + 1) |l| {
+            for (order[k..][0..count[l]]) |s| self.lens[s] = @intCast(l);
+            k += count[l];
+        }
+        std.debug.assert(k == n);
         return self.canonical();
     }
 
@@ -1537,12 +1613,27 @@ test "[edge] - [gzip]: lookahead retains unread bits after a maximum-width match
     }
 }
 
-test "[edge] - [gzip]: over-depth encoding trees select the fallback" {
+test "[edge] - [gzip]: over-depth encoding trees are shortened to complete limited codes" {
     var tree: EncodeTree = .{};
-    var freq: [25]u32 = @splat(1);
-    for (2..freq.len) |i| freq[i] = freq[i - 1] + freq[i - 2];
-    try std.testing.expect(!tree.build(&freq, 15));
-    @memset(&freq, 0);
+    // Fibonacci weights give an unlimited Huffman depth of symbols - 1.
+    var fib: [25]u32 = @splat(1);
+    for (2..fib.len) |i| fib[i] = fib[i - 1] + fib[i - 2];
+    for ([_]struct { symbols: usize, limit: u4 }{ .{ .symbols = 25, .limit = 15 }, .{ .symbols = 19, .limit = 7 } }) |case| {
+        const freq = fib[0..case.symbols];
+        try std.testing.expect(tree.build(freq, case.limit));
+        var kraft: u32 = 0;
+        for (freq, 0..) |f, i| {
+            const len = tree.lens[i];
+            try std.testing.expect(len >= 1 and len <= case.limit);
+            kraft += @as(u32, 1) << @as(u5, case.limit - len);
+            for (freq, 0..) |g, k| {
+                if (f > g) try std.testing.expect(len <= tree.lens[k]);
+            }
+        }
+        try std.testing.expectEqual(@as(u32, 1) << @as(u5, case.limit), kraft);
+        for (tree.lens[case.symbols..]) |len| try std.testing.expectEqual(@as(u4, 0), len);
+    }
+    var freq: [25]u32 = @splat(0);
     freq[9] = 1;
     try std.testing.expect(tree.build(&freq, 15));
     try std.testing.expectEqual(@as(u4, 1), tree.lens[9]);
