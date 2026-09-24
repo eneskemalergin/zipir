@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build comparison tools into repository-local, ignored storage.
 # C/host CLIs stay native programs. Zig supplies the standard-library and zipir format adapters.
+# htslib bgzip is a BGZF format oracle, not a timed peer.
 # Rust adapters are those languages' CLIs. Host gzip and pigz are not copied.
 # libdeflate, ISA-L, and zlib-ng are built into tools/.local with a cmake
 # prefix under /tmp/zipir-tools.*. No global prefix. Local engines must not
@@ -23,7 +24,8 @@ ACTIVE_STAGE=""
 source "$TOOLS_DIR/versions.sh"
 
 PEERS=(std-gzip zipir-gzip std-zlib zipir-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib)
-ALL_TARGETS=("${PEERS[@]}")
+ORACLES=(bgzip)
+ALL_TARGETS=("${PEERS[@]}" "${ORACLES[@]}")
 
 usage() {
     printf '%s\n' \
@@ -32,7 +34,7 @@ usage() {
         '       tools/install.sh --check [NAME|all]' \
         '       tools/install.sh --list' \
         '' \
-        'names: std-gzip zipir-gzip std-zlib zipir-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib' \
+        'names: std-gzip zipir-gzip std-zlib zipir-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib bgzip' \
         '' \
         'Linux x86_64 only. Host gzip and pigz stay at /usr/bin. libdeflate,' \
         'igzip, and zlib-ng are native CLIs under ignored tools/.local/. Zig' \
@@ -117,6 +119,7 @@ version_for() {
         flate2-zlib-rs) printf '%s\n' "$FLATE2_ZLIB_RS_VERSION" ;;
         zlib-ng) printf '%s\n' "$ZLIB_NG_VERSION" ;;
         zlib-ng-zlib) printf '%s\n' "$ZLIB_NG_VERSION" ;;
+        bgzip) printf '%s\n' "$HTSLIB_VERSION" ;;
         *) return 64 ;;
     esac
 }
@@ -124,7 +127,7 @@ version_for() {
 expand_target() {
     case "$1" in
         all | peers) printf '%s\n' "${ALL_TARGETS[@]}" ;;
-        std-gzip | zipir-gzip | std-zlib | zipir-zlib | system-zlib | libdeflate-zlib | gnu-gzip | libdeflate-gzip | igzip | pigz | flate2-miniz | flate2-zlib-rs | zlib-ng | zlib-ng-zlib)
+        std-gzip | zipir-gzip | std-zlib | zipir-zlib | system-zlib | libdeflate-zlib | gnu-gzip | libdeflate-gzip | igzip | pigz | flate2-miniz | flate2-zlib-rs | zlib-ng | zlib-ng-zlib | bgzip)
             printf '%s\n' "$1"
             ;;
         *)
@@ -150,7 +153,7 @@ download_archive() {
 extract_archive() {
     local archive="$1" destination="$2"
     mkdir -p "$destination"
-    tar -xzf "$archive" -C "$destination" --strip-components=1
+    tar -xf "$archive" -C "$destination" --strip-components=1
 }
 
 switch_link() {
@@ -395,6 +398,14 @@ check_target() {
             }
             "$path" --version | grep -Fq "$version" || return 1
             assert_not_linked "$path" 'libz\.so|libdeflate|libisal' "$name" || return 1
+            ;;
+        bgzip)
+            [[ -x "$path" ]] || {
+                printf 'missing: %s %s\n' "$name" "$version" >&2
+                return 1
+            }
+            [[ "$("$path" --version | awk 'NR==1{print $3}')" == "$version" ]] || return 1
+            assert_not_linked "$path" 'libdeflate|libisal|libhts\.so' "$name" || return 1
             ;;
         *) return 64 ;;
     esac
@@ -749,6 +760,34 @@ build_zlib_ng_zlib() {
         'Release;static;zlib-ng-native-api;WITH_NATIVE_INSTRUCTIONS;NO_NEW_STRATEGIES;ST;march=native'
 }
 
+build_bgzip() {
+    local work archive source
+    require_command make
+    require_command cc
+    start_work
+    work="$ACTIVE_WORK/htslib"
+    archive="$work/htslib.tar.bz2"
+    source="$work/source"
+    mkdir -p "$work"
+    download_archive "$HTSLIB_URL" "$archive"
+    extract_archive "$archive" "$source"
+    printf 'build: htslib %s bgzip (static libhts, host libz, no libdeflate)\n' "$HTSLIB_VERSION"
+    # configure links libdeflate whenever its headers are installed; that would make
+    # bgzip output depend on the host, so it is always disabled.
+    (
+        cd "$source"
+        ./configure --disable-bz2 --disable-lzma --disable-libcurl --without-libdeflate >/dev/null
+        make -j"$TOOL_JOBS" bgzip >/dev/null
+    )
+    [[ -x "$source/bgzip" ]] || {
+        printf 'error: bgzip missing after build\n' >&2
+        return 1
+    }
+    publish bgzip "$HTSLIB_VERSION" "$source/bgzip" \
+        "$HTSLIB_URL" "$(cc --version | awk 'NR==1{print $1, $NF}')" \
+        'configure;static-libhts;host-libz;no-libdeflate;no-bz2;no-lzma;no-libcurl;ST'
+}
+
 install_target() {
     local name="$1"
     if [[ "$REBUILD" != 1 ]] && already_installed "$name"; then
@@ -774,6 +813,7 @@ install_target() {
         flate2-zlib-rs) build_flate2_zlib_rs ;;
         zlib-ng) build_zlib_ng ;;
         zlib-ng-zlib) build_zlib_ng_zlib ;;
+        bgzip) build_bgzip ;;
         *) return 64 ;;
     esac
     check_target "$name"
