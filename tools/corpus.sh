@@ -8,7 +8,11 @@ TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
 MANIFEST="$TOOLS_DIR/corpus.tsv"
 DATA_DIR="$ROOT_DIR/data"
+BGZIP="$TOOLS_DIR/bin/bgzip"
 FORCE=0
+
+# shellcheck source=tools/versions.sh
+source "$TOOLS_DIR/versions.sh"
 
 usage() {
     printf '%s\n' \
@@ -18,9 +22,10 @@ usage() {
         '       tools/corpus.sh --force [CATEGORY|all]' \
         '' \
         'categories: sequencing, ms, generalized' \
-        'formats: gzip, zlib' \
+        'formats: gzip, zlib, bgzf' \
         '' \
-        'Reads tools/corpus.tsv. Writes gitignored data/. Requires curl, gzip, sha256sum, python3.'
+        'Reads tools/corpus.tsv. Writes gitignored data/. Requires curl, gzip, sha256sum, python3.' \
+        'Rows derived with bgzip-6 also need tools/bin/bgzip (tools/install.sh bgzip).'
 }
 
 require_command() {
@@ -59,7 +64,7 @@ each_row() {
                 ;;
         esac
         case "$format" in
-            gzip | zlib) ;;
+            gzip | zlib | bgzf) ;;
             *)
                 printf 'error: unknown format in manifest: %s\n' "$format" >&2
                 return 1
@@ -72,9 +77,11 @@ each_row() {
         }
         seen[$key]=1
         case "$source" in
-            derive:zlib-6)
-                [[ "$bytes" == - && "$sha256" == - && "$format" == zlib ]] || {
-                    printf 'error: derived row needs - for bytes and sha256 and format zlib: %s\n' "$key" >&2
+            derive:zlib-6 | derive:bgzip-6)
+                local recipe_format=zlib
+                [[ "$source" == derive:bgzip-6 ]] && recipe_format=bgzf
+                [[ "$bytes" == - && "$sha256" == - && "$format" == "$recipe_format" ]] || {
+                    printf 'error: derived row needs - for bytes and sha256 and format %s: %s\n' "$recipe_format" "$key" >&2
                     return 1
                 }
                 ;;
@@ -167,6 +174,72 @@ with gzip.open(gzip_path, "rb") as expected, open(zlib_path, "rb") as encoded:
 PY
 }
 
+# Independent BGZF structure check (no zipir code). With a gzip source path, also
+# compares every decoded byte with that source's plaintext.
+verify_bgzf_file() {
+    python3 - "$1" "${2:-}" <<'PY'
+import gzip
+import struct
+import sys
+import zlib
+
+EOF_MARKER = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+
+
+def fail(message):
+    raise SystemExit(f"{sys.argv[1]}: {message}")
+
+
+path, source = sys.argv[1], sys.argv[2]
+expected = gzip.open(source, "rb") if source else None
+blocks = 0
+last = b""
+with open(path, "rb") as stream:
+    while True:
+        offset = stream.tell()
+        header = stream.read(12)
+        if not header:
+            break
+        if len(header) < 12 or header[:4] != b"\x1f\x8b\x08\x04":
+            fail(f"not a BGZF block at offset {offset}")
+        xlen = struct.unpack_from("<H", header, 10)[0]
+        extra = stream.read(xlen)
+        if len(extra) != xlen:
+            fail(f"truncated extra field at offset {offset}")
+        bsize = None
+        at = 0
+        while at + 4 <= xlen:
+            si, length = extra[at:at + 2], struct.unpack_from("<H", extra, at + 2)[0]
+            if at + 4 + length > xlen:
+                fail(f"subfield overruns XLEN at offset {offset}")
+            if si == b"BC" and length == 2:
+                bsize = struct.unpack_from("<H", extra, at + 4)[0]
+            at += 4 + length
+        if at != xlen:
+            fail(f"partial subfield in extra field at offset {offset}")
+        if bsize is None:
+            fail(f"no BC subfield at offset {offset}")
+        rest = stream.read(bsize + 1 - 12 - xlen)
+        if len(rest) != bsize + 1 - 12 - xlen or len(rest) < 8:
+            fail(f"truncated block at offset {offset}")
+        inflater = zlib.decompressobj(-15)
+        data = inflater.decompress(rest[:-8])
+        if not inflater.eof or inflater.unused_data:
+            fail(f"DEFLATE stream does not end at BSIZE at offset {offset}")
+        crc, isize = struct.unpack_from("<II", rest, len(rest) - 8)
+        if zlib.crc32(data) != crc or len(data) != isize or isize > 65536:
+            fail(f"CRC32 or ISIZE mismatch at offset {offset}")
+        if expected is not None and expected.read(len(data)) != data:
+            fail(f"decoded bytes differ from {source} in block at offset {offset}")
+        last = header + extra + rest
+        blocks += 1
+if blocks == 0 or last != EOF_MARKER:
+    fail("missing BGZF EOF marker")
+if expected is not None and expected.read(1):
+    fail(f"shorter than {source}")
+PY
+}
+
 # Content check of one file. Derived rows pass their gzip source so decoded bytes are compared.
 verify_format() {
     local format="$1" path="$2" source="${3:-}"
@@ -179,6 +252,7 @@ verify_format() {
             }
             verify_zlib_file "$path" "$source"
             ;;
+        bgzf) gzip -t "$path" && verify_bgzf_file "$path" "$source" ;;
         *) return 64 ;;
     esac
 }
@@ -186,6 +260,13 @@ verify_format() {
 recipe_tool() {
     case "$1" in
         derive:zlib-6) python3 -c 'import zlib; print("python-zlib", zlib.ZLIB_RUNTIME_VERSION)' ;;
+        derive:bgzip-6)
+            [[ -x "$BGZIP" && "$("$BGZIP" --version | awk 'NR==1{print $3}')" == "$HTSLIB_VERSION" ]] || {
+                printf 'error: %s needs bgzip %s; run tools/install.sh bgzip\n' "$1" "$HTSLIB_VERSION" >&2
+                return 1
+            }
+            printf 'bgzip %s\n' "$HTSLIB_VERSION"
+            ;;
         *) return 64 ;;
     esac
 }
@@ -242,6 +323,16 @@ PY
                 return 1
             }
             verify_format zlib "$part" "$source" || {
+                rm -f -- "$part"
+                return 1
+            }
+            ;;
+        derive:bgzip-6)
+            gzip -dc -- "$source" | "$BGZIP" -l 6 -@ 1 -c >"$part" || {
+                rm -f -- "$part"
+                return 1
+            }
+            verify_format bgzf "$part" "$source" || {
                 rm -f -- "$part"
                 return 1
             }
