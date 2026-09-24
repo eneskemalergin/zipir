@@ -7,7 +7,7 @@ TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     printf '%s\n' \
-        'usage: tools/report.sh [--check]' \
+        'usage: tools/report.sh [--check] [--peers prime|extended|all] [--levels lanes|all]' \
         '' \
         'Reads tools/peers.tsv, tools/coverage.tsv, tools/levels.tsv,' \
         'tools/.local/qualify/, and tools/.local/zebrac/. Writes' \

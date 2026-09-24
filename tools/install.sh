@@ -22,6 +22,8 @@ ACTIVE_STAGE=""
 
 # shellcheck source=tools/versions.sh
 source "$TOOLS_DIR/versions.sh"
+# shellcheck source=tools/select.sh
+source "$TOOLS_DIR/select.sh"
 
 PEERS=(std-gzip zipir-gzip std-zlib zipir-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib)
 ORACLES=(bgzip)
@@ -29,9 +31,9 @@ ALL_TARGETS=("${PEERS[@]}" "${ORACLES[@]}")
 
 usage() {
     printf '%s\n' \
-        'usage: tools/install.sh [NAME|all]' \
-        '       tools/install.sh --rebuild [NAME|all]' \
-        '       tools/install.sh --check [NAME|all]' \
+        'usage: tools/install.sh [NAME|prime|extended|all]' \
+        '       tools/install.sh --rebuild [NAME|prime|extended|all]' \
+        '       tools/install.sh --check [NAME|prime|extended|all]' \
         '       tools/install.sh --list' \
         '' \
         'names: std-gzip zipir-gzip std-zlib zipir-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib bgzip' \
@@ -127,6 +129,10 @@ version_for() {
 expand_target() {
     case "$1" in
         all | peers) printf '%s\n' "${ALL_TARGETS[@]}" ;;
+        prime | extended)
+            PEER_SET="$1" selected_tools
+            printf '%s\n' "${ORACLES[@]}"
+            ;;
         std-gzip | zipir-gzip | std-zlib | zipir-zlib | system-zlib | libdeflate-zlib | gnu-gzip | libdeflate-gzip | igzip | pigz | flate2-miniz | flate2-zlib-rs | zlib-ng | zlib-ng-zlib | bgzip)
             printf '%s\n' "$1"
             ;;

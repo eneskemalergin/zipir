@@ -343,11 +343,15 @@ def load_peers() -> list[dict[str, str]]:
     if not rows:
         die(f"empty run matrix: {PEERS}")
     for row in rows:
-        for key in ("tool", "tool_version", "format", "level", "threads", "nthreads"):
+        for key in ("tool", "tool_version", "format", "level", "threads", "nthreads", "tier", "lane"):
             if not row.get(key):
                 die(f"{PEERS}: missing {key}")
         if row["threads"] not in ("ST", "MT"):
             die(f"{PEERS}: threads must be ST or MT, got {row['threads']}")
+        if row["tier"] not in TIERS:
+            die(f"{PEERS}: tier must be prime, extended, or all, got {row['tier']}")
+        if row["lane"] not in ("fast", "balanced", "dense", "-"):
+            die(f"{PEERS}: lane must be fast, balanced, dense, or -, got {row['lane']}")
     return rows
 
 
@@ -1588,20 +1592,42 @@ def check(
     return 0
 
 
+USAGE = "usage: tools/report.py [--check] [--peers prime|extended|all] [--levels lanes|all]"
+TIERS = {"prime": {"prime"}, "extended": {"prime", "extended"}, "all": {"prime", "extended", "all"}}
+
+
+def select_peers(peers: list[dict[str, str]], peer_set: str, level_set: str) -> list[dict[str, str]]:
+    """Same rule as tools/select.sh: nested tiers; decode rows always; lanes keep fast/balanced/dense."""
+    out = []
+    for row in peers:
+        if row.get("tier") not in TIERS[peer_set]:
+            continue
+        if row["level"] != "-" and level_set == "lanes" and row.get("lane", "-") == "-":
+            continue
+        out.append(row)
+    return out
+
+
 def main() -> int:
     args = sys.argv[1:]
     check_only = False
-    if args in ([],):
-        pass
-    elif args == ["--check"]:
-        check_only = True
-    elif args in (["--help"], ["-h"]):
-        print("usage: tools/report.py [--check]")
-        return 0
-    else:
-        die("usage: tools/report.py [--check]")
+    peer_set, level_set = "prime", "lanes"
+    while args:
+        arg = args.pop(0)
+        if arg == "--check":
+            check_only = True
+        elif arg in ("--help", "-h"):
+            print(USAGE)
+            return 0
+        elif arg == "--peers" and args and args[0] in TIERS:
+            peer_set = args.pop(0)
+        elif arg == "--levels" and args and args[0] in ("lanes", "all"):
+            level_set = args.pop(0)
+        else:
+            die(USAGE)
 
-    peers = load_peers()
+    peers = select_peers(load_peers(), peer_set, level_set)
+    print(f"report: --peers {peer_set} --levels {level_set}, {len(peers)} peer rows")
     coverage = load_coverage()
     levels = load_levels()
     moved = migrate_legacy(peers)
@@ -1615,7 +1641,9 @@ def main() -> int:
     write_tsv(REPORT / "headline.tsv", HEADLINE_HEADER, small)
     write_tsv(REPORT / "gmean.tsv", GMEAN_HEADER, suite_rows(small, levels))
     write_per_tool(facts)
-    if README.exists():
+    # tools/README.md is the publication view: only the full selection may rewrite it.
+    publish = README.exists() and peer_set == "all" and level_set == "all"
+    if publish:
         tables = coverage_tables(coverage)
         measured = measured_markdown(facts, peers)
         normalized = normalized_markdown(facts, levels, coverage)
@@ -1628,8 +1656,10 @@ def main() -> int:
         README.write_text(readme)
     print(f"report: {REPORT / 'facts.tsv'} rows={len(facts)}")
     print(f"report: {REPORT / 'gmean.tsv'}")
-    if README.exists():
+    if publish:
         print(f"report: {README}")
+    elif README.exists():
+        print(f"report: {README} unchanged (written only by --peers all --levels all)")
     return check(peers, coverage, facts, levels, require_json=check_only)
 
 

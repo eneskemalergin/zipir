@@ -4,86 +4,93 @@
 # one row with level -. Decode-only peers can be streaming or full-buffer;
 # coverage.tsv records the decode mode. Never rank those modes together.
 # All rows here are ST. Do not add pigz -p32, igzip -T, or pigz -11.
-tool	tool_version	format	level	threads	nthreads
-std-gzip	0.16.0	gzip	1	ST	1
-std-gzip	0.16.0	gzip	2	ST	1
-std-gzip	0.16.0	gzip	3	ST	1
-std-gzip	0.16.0	gzip	4	ST	1
-std-gzip	0.16.0	gzip	5	ST	1
-std-gzip	0.16.0	gzip	6	ST	1
-std-gzip	0.16.0	gzip	7	ST	1
-std-gzip	0.16.0	gzip	8	ST	1
-std-gzip	0.16.0	gzip	9	ST	1
-zipir-gzip	0.1.2	gzip	1	ST	1
-zipir-gzip	0.1.2	gzip	5	ST	1
-zipir-gzip	0.1.2	gzip	9	ST	1
-std-zlib	0.16.0	zlib	-	ST	1
-zipir-zlib	0.1.2	zlib	-	ST	1
-system-zlib	1.3.1.zlib-ng	zlib	-	ST	1
-libdeflate-zlib	1.26	zlib	-	ST	1
-gnu-gzip	1.14	gzip	1	ST	1
-gnu-gzip	1.14	gzip	2	ST	1
-gnu-gzip	1.14	gzip	3	ST	1
-gnu-gzip	1.14	gzip	4	ST	1
-gnu-gzip	1.14	gzip	5	ST	1
-gnu-gzip	1.14	gzip	6	ST	1
-gnu-gzip	1.14	gzip	7	ST	1
-gnu-gzip	1.14	gzip	8	ST	1
-gnu-gzip	1.14	gzip	9	ST	1
-libdeflate-gzip	1.26	gzip	1	ST	1
-libdeflate-gzip	1.26	gzip	2	ST	1
-libdeflate-gzip	1.26	gzip	3	ST	1
-libdeflate-gzip	1.26	gzip	4	ST	1
-libdeflate-gzip	1.26	gzip	5	ST	1
-libdeflate-gzip	1.26	gzip	6	ST	1
-libdeflate-gzip	1.26	gzip	7	ST	1
-libdeflate-gzip	1.26	gzip	8	ST	1
-libdeflate-gzip	1.26	gzip	9	ST	1
-libdeflate-gzip	1.26	gzip	10	ST	1
-libdeflate-gzip	1.26	gzip	11	ST	1
-libdeflate-gzip	1.26	gzip	12	ST	1
-igzip	2.32.1	gzip	0	ST	1
-igzip	2.32.1	gzip	1	ST	1
-igzip	2.32.1	gzip	2	ST	1
-igzip	2.32.1	gzip	3	ST	1
-pigz	2.8	gzip	0	ST	1
-pigz	2.8	gzip	1	ST	1
-pigz	2.8	gzip	2	ST	1
-pigz	2.8	gzip	3	ST	1
-pigz	2.8	gzip	4	ST	1
-pigz	2.8	gzip	5	ST	1
-pigz	2.8	gzip	6	ST	1
-pigz	2.8	gzip	7	ST	1
-pigz	2.8	gzip	8	ST	1
-pigz	2.8	gzip	9	ST	1
-flate2-miniz	1.1.10	gzip	0	ST	1
-flate2-miniz	1.1.10	gzip	1	ST	1
-flate2-miniz	1.1.10	gzip	2	ST	1
-flate2-miniz	1.1.10	gzip	3	ST	1
-flate2-miniz	1.1.10	gzip	4	ST	1
-flate2-miniz	1.1.10	gzip	5	ST	1
-flate2-miniz	1.1.10	gzip	6	ST	1
-flate2-miniz	1.1.10	gzip	7	ST	1
-flate2-miniz	1.1.10	gzip	8	ST	1
-flate2-miniz	1.1.10	gzip	9	ST	1
-flate2-zlib-rs	1.1.10	gzip	0	ST	1
-flate2-zlib-rs	1.1.10	gzip	1	ST	1
-flate2-zlib-rs	1.1.10	gzip	2	ST	1
-flate2-zlib-rs	1.1.10	gzip	3	ST	1
-flate2-zlib-rs	1.1.10	gzip	4	ST	1
-flate2-zlib-rs	1.1.10	gzip	5	ST	1
-flate2-zlib-rs	1.1.10	gzip	6	ST	1
-flate2-zlib-rs	1.1.10	gzip	7	ST	1
-flate2-zlib-rs	1.1.10	gzip	8	ST	1
-flate2-zlib-rs	1.1.10	gzip	9	ST	1
-zlib-ng	2.3.3	gzip	0	ST	1
-zlib-ng	2.3.3	gzip	1	ST	1
-zlib-ng	2.3.3	gzip	2	ST	1
-zlib-ng	2.3.3	gzip	3	ST	1
-zlib-ng	2.3.3	gzip	4	ST	1
-zlib-ng	2.3.3	gzip	5	ST	1
-zlib-ng	2.3.3	gzip	6	ST	1
-zlib-ng	2.3.3	gzip	7	ST	1
-zlib-ng	2.3.3	gzip	8	ST	1
-zlib-ng	2.3.3	gzip	9	ST	1
-zlib-ng-zlib	2.3.3	zlib	-	ST	1
+#
+# tier: prime (daily work), extended (wider context), all (publication runs).
+#   Selections nest: --peers prime < extended < all (tools/select.sh).
+# lane: fast, balanced, dense marks the three representative levels per tool
+#   (--levels lanes, the default); - is used only by --levels all. Decode rows
+#   use lane -. igzip lanes follow tmp/gzip/compress/PEER-MAPPING.md; libdeflate
+#   1/6/12 (fastest, default, densest) is provisional until its frontier is measured.
+tool	tool_version	format	level	threads	nthreads	tier	lane
+std-gzip	0.16.0	gzip	1	ST	1	prime	fast
+std-gzip	0.16.0	gzip	2	ST	1	prime	-
+std-gzip	0.16.0	gzip	3	ST	1	prime	-
+std-gzip	0.16.0	gzip	4	ST	1	prime	-
+std-gzip	0.16.0	gzip	5	ST	1	prime	balanced
+std-gzip	0.16.0	gzip	6	ST	1	prime	-
+std-gzip	0.16.0	gzip	7	ST	1	prime	-
+std-gzip	0.16.0	gzip	8	ST	1	prime	-
+std-gzip	0.16.0	gzip	9	ST	1	prime	dense
+zipir-gzip	0.1.2	gzip	1	ST	1	prime	fast
+zipir-gzip	0.1.2	gzip	5	ST	1	prime	balanced
+zipir-gzip	0.1.2	gzip	9	ST	1	prime	dense
+std-zlib	0.16.0	zlib	-	ST	1	prime	-
+zipir-zlib	0.1.2	zlib	-	ST	1	prime	-
+system-zlib	1.3.1.zlib-ng	zlib	-	ST	1	extended	-
+libdeflate-zlib	1.26	zlib	-	ST	1	extended	-
+gnu-gzip	1.14	gzip	1	ST	1	extended	fast
+gnu-gzip	1.14	gzip	2	ST	1	extended	-
+gnu-gzip	1.14	gzip	3	ST	1	extended	-
+gnu-gzip	1.14	gzip	4	ST	1	extended	-
+gnu-gzip	1.14	gzip	5	ST	1	extended	balanced
+gnu-gzip	1.14	gzip	6	ST	1	extended	-
+gnu-gzip	1.14	gzip	7	ST	1	extended	-
+gnu-gzip	1.14	gzip	8	ST	1	extended	-
+gnu-gzip	1.14	gzip	9	ST	1	extended	dense
+libdeflate-gzip	1.26	gzip	1	ST	1	extended	fast
+libdeflate-gzip	1.26	gzip	2	ST	1	extended	-
+libdeflate-gzip	1.26	gzip	3	ST	1	extended	-
+libdeflate-gzip	1.26	gzip	4	ST	1	extended	-
+libdeflate-gzip	1.26	gzip	5	ST	1	extended	-
+libdeflate-gzip	1.26	gzip	6	ST	1	extended	balanced
+libdeflate-gzip	1.26	gzip	7	ST	1	extended	-
+libdeflate-gzip	1.26	gzip	8	ST	1	extended	-
+libdeflate-gzip	1.26	gzip	9	ST	1	extended	-
+libdeflate-gzip	1.26	gzip	10	ST	1	extended	-
+libdeflate-gzip	1.26	gzip	11	ST	1	extended	-
+libdeflate-gzip	1.26	gzip	12	ST	1	extended	dense
+igzip	2.32.1	gzip	0	ST	1	prime	fast
+igzip	2.32.1	gzip	1	ST	1	prime	balanced
+igzip	2.32.1	gzip	2	ST	1	prime	dense
+igzip	2.32.1	gzip	3	ST	1	prime	-
+pigz	2.8	gzip	0	ST	1	all	-
+pigz	2.8	gzip	1	ST	1	all	fast
+pigz	2.8	gzip	2	ST	1	all	-
+pigz	2.8	gzip	3	ST	1	all	-
+pigz	2.8	gzip	4	ST	1	all	-
+pigz	2.8	gzip	5	ST	1	all	balanced
+pigz	2.8	gzip	6	ST	1	all	-
+pigz	2.8	gzip	7	ST	1	all	-
+pigz	2.8	gzip	8	ST	1	all	-
+pigz	2.8	gzip	9	ST	1	all	dense
+flate2-miniz	1.1.10	gzip	0	ST	1	all	-
+flate2-miniz	1.1.10	gzip	1	ST	1	all	fast
+flate2-miniz	1.1.10	gzip	2	ST	1	all	-
+flate2-miniz	1.1.10	gzip	3	ST	1	all	-
+flate2-miniz	1.1.10	gzip	4	ST	1	all	-
+flate2-miniz	1.1.10	gzip	5	ST	1	all	balanced
+flate2-miniz	1.1.10	gzip	6	ST	1	all	-
+flate2-miniz	1.1.10	gzip	7	ST	1	all	-
+flate2-miniz	1.1.10	gzip	8	ST	1	all	-
+flate2-miniz	1.1.10	gzip	9	ST	1	all	dense
+flate2-zlib-rs	1.1.10	gzip	0	ST	1	all	-
+flate2-zlib-rs	1.1.10	gzip	1	ST	1	all	fast
+flate2-zlib-rs	1.1.10	gzip	2	ST	1	all	-
+flate2-zlib-rs	1.1.10	gzip	3	ST	1	all	-
+flate2-zlib-rs	1.1.10	gzip	4	ST	1	all	-
+flate2-zlib-rs	1.1.10	gzip	5	ST	1	all	balanced
+flate2-zlib-rs	1.1.10	gzip	6	ST	1	all	-
+flate2-zlib-rs	1.1.10	gzip	7	ST	1	all	-
+flate2-zlib-rs	1.1.10	gzip	8	ST	1	all	-
+flate2-zlib-rs	1.1.10	gzip	9	ST	1	all	dense
+zlib-ng	2.3.3	gzip	0	ST	1	prime	-
+zlib-ng	2.3.3	gzip	1	ST	1	prime	fast
+zlib-ng	2.3.3	gzip	2	ST	1	prime	-
+zlib-ng	2.3.3	gzip	3	ST	1	prime	-
+zlib-ng	2.3.3	gzip	4	ST	1	prime	-
+zlib-ng	2.3.3	gzip	5	ST	1	prime	balanced
+zlib-ng	2.3.3	gzip	6	ST	1	prime	-
+zlib-ng	2.3.3	gzip	7	ST	1	prime	-
+zlib-ng	2.3.3	gzip	8	ST	1	prime	-
+zlib-ng	2.3.3	gzip	9	ST	1	prime	dense
+zlib-ng-zlib	2.3.3	zlib	-	ST	1	prime	-

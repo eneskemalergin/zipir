@@ -10,6 +10,8 @@ DATA_DIR="$ROOT_DIR/data"
 LOCAL_DIR="$TOOLS_DIR/.local"
 # shellcheck source=tools/invoke.sh
 source "$TOOLS_DIR/invoke.sh"
+# shellcheck source=tools/select.sh
+source "$TOOLS_DIR/select.sh"
 KEEP_TOOL_WORK="${KEEP_TOOL_WORK:-0}"
 BLOCKING_FAILS=0
 TOOL=""
@@ -32,11 +34,13 @@ COV_CAP=""
 
 usage() {
     printf '%s\n' \
-        'usage: tools/qualify.sh [TOOL]' \
-        '       tools/qualify.sh TOOL CATEGORY [CLASS]' \
-        '       tools/qualify.sh --full [TOOL]' \
+        'usage: tools/qualify.sh [--peers SET] [--levels SET] [--full] [--list] [TOOL]' \
+        '       tools/qualify.sh [--levels SET] [--list] TOOL CATEGORY [CLASS]' \
         '' \
-        'tools: names in tools/peers.tsv' \
+        'Without TOOL, qualifies every tool in the selected peer set.' \
+        '--peers prime|extended|all   peer tiers from tools/peers.tsv (default prime)' \
+        '--levels lanes|all           fast/balanced/dense lanes or every level (default lanes)' \
+        '--list                       print the planned tool/level matrix and corpus size; run nothing' \
         'categories: sequencing, ms, generalized' \
         'classes: sanity, small, medium, large' \
         '' \
@@ -81,11 +85,24 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 known_tools() {
-    local tool ver fmt level threads nthreads
-    while IFS=$'\t' read -r tool ver fmt level threads nthreads; do
+    local tool ver fmt level threads nthreads _tier _lane
+    while IFS=$'\t' read -r tool ver fmt level threads nthreads _tier _lane; do
         [[ -z "${tool:-}" || "$tool" == \#* || "$tool" == tool ]] && continue
         printf '%s\n' "$tool"
     done <"$TOOLS_DIR/peers.tsv" | sort -u
+}
+
+# Prints the planned matrix for the selection (one tool or the whole set) and its size.
+list_selection() {
+    local only="$1" tool fmt level lane rows=0 files
+    printf '%-16s %-6s %-6s %s\n' tool format level lane
+    while IFS=$'\t' read -r tool fmt level lane; do
+        printf '%-16s %-6s %-6s %s\n' "$tool" "$fmt" "$level" "$lane"
+        rows=$((rows + 1))
+    done < <(selected_rows "$only")
+    files="$(awk -F'\t' -v classes=" $FILTER_CLASSES " '!/^#/ && $1 != "category" && index(classes, " " $2 " ") { n[$3]++ } END { for (f in n) printf "%s %s files; ", f, n[f] }' "$MANIFEST")"
+    printf 'selection: --peers %s --levels %s, %s rows; classes: %s; corpus per format: %s\n' \
+        "$PEER_SET" "$LEVEL_SET" "$rows" "$FILTER_CLASSES" "$files"
 }
 
 expand_tool() {
@@ -123,13 +140,13 @@ expand_classes() {
 }
 
 load_peer_config() {
-    local tool ver fmt level threads nthreads found=0
+    local tool ver fmt level threads nthreads _tier lane found=0
     COMPRESS_LEVELS=()
     FORMAT=""
     THREADS=""
     NTHREADS=""
     PEER_VERSION=""
-    while IFS=$'\t' read -r tool ver fmt level threads nthreads; do
+    while IFS=$'\t' read -r tool ver fmt level threads nthreads _tier lane; do
         [[ -z "${tool:-}" || "$tool" == \#* || "$tool" == tool ]] && continue
         if [[ "$tool" != "$TOOL" ]]; then
             continue
@@ -149,7 +166,7 @@ load_peer_config() {
             NTHREADS="$nthreads"
             PEER_VERSION="$ver"
         fi
-        if [[ "$level" != - ]]; then
+        if [[ "$level" != - ]] && row_selected "$level" "$lane"; then
             COMPRESS_LEVELS+=("$level")
         fi
         found=1
@@ -723,23 +740,60 @@ main() {
     require_linux_x64
     require_command gzip
     require_command python3
-    local full=0
-    case "${1:-}" in
-        --help | -h)
-            usage
+    local full=0 list=0 tool status=0
+    local -a pass=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help | -h)
+                usage
+                return
+                ;;
+            --full)
+                full=1
+                pass+=(--full)
+                shift
+                ;;
+            --peers | --levels)
+                [[ $# -ge 2 ]] || {
+                    usage >&2
+                    return 64
+                }
+                if [[ "$1" == --peers ]]; then PEER_SET="$2"; else LEVEL_SET="$2"; fi
+                shift 2
+                ;;
+            --list)
+                list=1
+                shift
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -*)
+                usage >&2
+                return 64
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    check_selection
+    if [[ $# -eq 0 ]]; then
+        if [[ "$full" == 1 ]]; then
+            FILTER_CLASSES="$(expand_classes all)"
+        fi
+        if [[ "$list" == 1 ]]; then
+            list_selection ""
             return
-            ;;
-        --full)
-            full=1
-            shift
-            ;;
-    esac
-    case "${1:-}" in
-        '') TOOL=std-gzip ;;
-        *)
-            TOOL="$(expand_tool "$1")"
-            ;;
-    esac
+        fi
+        # The whole selected set, one tool per run; every tool runs even after a failure.
+        while IFS= read -r tool; do
+            "$TOOLS_DIR/qualify.sh" "${pass[@]}" --peers "$PEER_SET" --levels "$LEVEL_SET" "$tool" || status=1
+        done < <(selected_tools)
+        return "$status"
+    fi
+    TOOL="$(expand_tool "$1")"
     if [[ $# -ge 2 ]]; then
         FILTER_CATEGORY="$(expand_category "$2")"
         [[ $# -le 3 ]] || {
@@ -761,6 +815,10 @@ main() {
     fi
     if [[ "$full" == 1 ]]; then
         FILTER_CLASSES="$(expand_classes all)"
+    fi
+    if [[ "$list" == 1 ]]; then
+        list_selection "$TOOL"
+        return
     fi
 
     "$TOOLS_DIR/install.sh" --check "$TOOL"
