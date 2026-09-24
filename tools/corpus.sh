@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fetch public gzip files and generate matching zlib streams in gitignored data/.
+# Fetch or derive every corpus file listed in tools/corpus.tsv into gitignored data/.
+# One row per category, class, and format; data/{category}/{format}/{class}/{filename}.
 
 set -euo pipefail
 
@@ -17,6 +18,7 @@ usage() {
         '       tools/corpus.sh --force [CATEGORY|all]' \
         '' \
         'categories: sequencing, ms, generalized' \
+        'formats: gzip, zlib' \
         '' \
         'Reads tools/corpus.tsv. Writes gitignored data/. Requires curl, gzip, sha256sum, python3.'
 }
@@ -39,17 +41,16 @@ expand_filter() {
     esac
 }
 
+# Prints valid rows as: category class format filename bytes sha256 source.
 each_row() {
-    local filter="$1" category class filename bytes sha256 url
+    local filter="$1" category class format filename bytes sha256 source key
+    local -A seen=()
     [[ -f "$MANIFEST" ]] || {
         printf 'error: missing manifest: %s\n' "$MANIFEST" >&2
         return 1
     }
-    while IFS=$'\t' read -r category class filename bytes sha256 url; do
+    while IFS=$'\t' read -r category class format filename bytes sha256 source; do
         [[ -z "${category:-}" || "$category" == \#* || "$category" == category ]] && continue
-        if [[ "$filter" != all && "$category" != "$filter" ]]; then
-            continue
-        fi
         case "$class" in
             sanity | small | medium | large) ;;
             *)
@@ -57,44 +58,74 @@ each_row() {
                 return 1
                 ;;
         esac
-        [[ "$bytes" =~ ^[1-9][0-9]*$ ]] || {
-            printf 'error: invalid byte size for %s: %s\n' "$filename" "$bytes" >&2
+        case "$format" in
+            gzip | zlib) ;;
+            *)
+                printf 'error: unknown format in manifest: %s\n' "$format" >&2
+                return 1
+                ;;
+        esac
+        key="$category/$class/$format"
+        [[ -z "${seen[$key]:-}" ]] || {
+            printf 'error: more than one manifest row for %s\n' "$key" >&2
             return 1
         }
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$category" "$class" "$filename" "$bytes" "$sha256" "$url"
+        seen[$key]=1
+        case "$source" in
+            derive:zlib-6)
+                [[ "$bytes" == - && "$sha256" == - && "$format" == zlib ]] || {
+                    printf 'error: derived row needs - for bytes and sha256 and format zlib: %s\n' "$key" >&2
+                    return 1
+                }
+                ;;
+            derive:*)
+                printf 'error: unknown derive recipe for %s: %s\n' "$key" "$source" >&2
+                return 1
+                ;;
+            *)
+                [[ "$bytes" =~ ^[1-9][0-9]*$ && "$sha256" =~ ^[0-9a-f]{64}$ ]] || {
+                    printf 'error: fetched row needs bytes and sha256: %s\n' "$key" >&2
+                    return 1
+                }
+                ;;
+        esac
+        if [[ "$filter" != all && "$category" != "$filter" ]]; then
+            continue
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$category" "$class" "$format" "$filename" "$bytes" "$sha256" "$source"
     done <"$MANIFEST"
 }
 
 dest_for() {
-    printf '%s/%s/gzip/%s/%s\n' "$DATA_DIR" "$1" "$2" "$3"
+    printf '%s/%s/%s/%s/%s\n' "$DATA_DIR" "$1" "$3" "$2" "$4"
 }
 
-zlib_dest_for() {
-    local filename="${3%.gz}.zlib"
-    printf '%s/%s/zlib/%s/%s\n' "$DATA_DIR" "$1" "$2" "$filename"
+# The gzip row of a category and class supplies the plaintext for derived rows.
+gzip_source_for() {
+    local category class format filename _rest
+    while IFS=$'\t' read -r category class format filename _rest; do
+        if [[ "$category" == "$1" && "$class" == "$2" && "$format" == gzip ]]; then
+            dest_for "$category" "$class" gzip "$filename"
+            return
+        fi
+    done < <(each_row all)
+    printf 'error: no gzip row for %s/%s\n' "$1" "$2" >&2
+    return 1
 }
 
-verify_file() {
-    local path="$1" bytes="$2" sha256="$3"
-    local actual
+verify_size_sha() {
+    local path="$1" bytes="$2" sha256="$3" actual
     [[ -f "$path" ]] || return 1
     actual="$(stat -c '%s' "$path")"
     if [[ "$actual" != "$bytes" ]]; then
-        printf 'error: size mismatch %s: got %s expected %s\n' \
-            "$path" "$actual" "$bytes" >&2
+        printf 'error: size mismatch %s: got %s expected %s\n' "$path" "$actual" "$bytes" >&2
         return 1
     fi
-    gzip -t "$path" || {
-        printf 'error: gzip -t failed: %s\n' "$path" >&2
+    printf '%s  %s\n' "$sha256" "$path" | sha256sum -c --status || {
+        printf 'error: sha256 mismatch: %s\n' "$path" >&2
         return 1
     }
-    if [[ "$sha256" != - ]]; then
-        printf '%s  %s\n' "$sha256" "$path" | sha256sum -c --status || {
-            printf 'error: sha256 mismatch: %s\n' "$path" >&2
-            return 1
-        }
-    fi
 }
 
 verify_zlib_file() {
@@ -116,7 +147,7 @@ def read_exact(stream, size):
     return b"".join(chunks)
 
 
-gzip_path, zlib_path = sys.argv[1:]
+zlib_path, gzip_path = sys.argv[1:]
 decoder = zlib.decompressobj()
 with gzip.open(gzip_path, "rb") as expected, open(zlib_path, "rb") as encoded:
     while True:
@@ -125,26 +156,77 @@ with gzip.open(gzip_path, "rb") as expected, open(zlib_path, "rb") as encoded:
             break
         decoded = decoder.decompress(chunk)
         if decoded != read_exact(expected, len(decoded)):
-            raise SystemExit("zlib companion plaintext differs from gzip source")
+            raise SystemExit(f"{zlib_path}: plaintext differs from {gzip_path}")
     decoded = decoder.flush()
     if decoded != read_exact(expected, len(decoded)):
-        raise SystemExit("zlib companion trailer output differs from gzip source")
+        raise SystemExit(f"{zlib_path}: trailer output differs from {gzip_path}")
     if not decoder.eof or decoder.unused_data:
-        raise SystemExit("zlib companion is incomplete or has trailing data")
+        raise SystemExit(f"{zlib_path}: incomplete or has trailing data")
     if expected.read(1):
-        raise SystemExit("zlib companion is shorter than gzip source")
+        raise SystemExit(f"{zlib_path}: shorter than {gzip_path}")
 PY
 }
 
-make_zlib_companion() {
-    local gzip_path="$1" zlib_path="$2" part="$2.part"
-    mkdir -p "$(dirname "$zlib_path")"
-    rm -f -- "$part"
-    python3 - "$gzip_path" "$part" <<'PY' || {
+# Content check of one file. Derived rows pass their gzip source so decoded bytes are compared.
+verify_format() {
+    local format="$1" path="$2" source="${3:-}"
+    case "$format" in
+        gzip) gzip -t "$path" ;;
+        zlib)
+            [[ -n "$source" ]] || {
+                printf 'error: zlib rows are derived and need their gzip source\n' >&2
+                return 1
+            }
+            verify_zlib_file "$path" "$source"
+            ;;
+        *) return 64 ;;
+    esac
+}
+
+recipe_tool() {
+    case "$1" in
+        derive:zlib-6) python3 -c 'import zlib; print("python-zlib", zlib.ZLIB_RUNTIME_VERSION)' ;;
+        *) return 64 ;;
+    esac
+}
+
+sidecar_for() {
+    printf '%s.derive.tsv\n' "$1"
+}
+
+# Identity of a derived file: recipe, tool, and the size and mtime of its source and itself.
+sidecar_text() {
+    local dest="$1" source="$2" recipe="$3"
+    printf 'recipe\t%s\n' "$recipe"
+    printf 'tool\t%s\n' "$(recipe_tool "$recipe")"
+    printf 'source\t%s\n' "${source#"$DATA_DIR"/}"
+    printf 'source_bytes\t%s\nsource_mtime\t%s\n' "$(stat -c '%s' "$source")" "$(stat -c '%Y' "$source")"
+    printf 'bytes\t%s\nmtime\t%s\n' "$(stat -c '%s' "$dest")" "$(stat -c '%Y' "$dest")"
+}
+
+derived_current() {
+    local dest="$1" source="$2" recipe="$3" sidecar
+    sidecar="$(sidecar_for "$dest")"
+    [[ -f "$dest" && -f "$source" && -f "$sidecar" ]] || return 1
+    [[ "$(cat "$sidecar")" == "$(sidecar_text "$dest" "$source" "$recipe")" ]]
+}
+
+derive_file() {
+    local dest="$1" source="$2" recipe="$3" part="$1.part"
+    recipe_tool "$recipe" >/dev/null
+    [[ -f "$source" ]] || {
+        printf 'error: missing gzip source %s\n' "$source" >&2
+        return 1
+    }
+    mkdir -p "$(dirname "$dest")"
+    rm -f -- "$part" "$(sidecar_for "$dest")"
+    printf 'derive: %s (%s)\n' "$dest" "${recipe#derive:}"
+    case "$recipe" in
+        derive:zlib-6)
+            python3 - "$source" "$part" <<'PY' || {
 import gzip
 import sys
 import zlib
-
 
 gzip_path, zlib_path = sys.argv[1:]
 compressor = zlib.compressobj(6, zlib.DEFLATED, zlib.MAX_WBITS)
@@ -156,81 +238,106 @@ with gzip.open(gzip_path, "rb") as source, open(zlib_path, "wb") as output:
         output.write(compressor.compress(chunk))
     output.write(compressor.flush())
 PY
-        rm -f -- "$part"
-        return 1
-    }
-    mv -f -- "$part" "$zlib_path"
-}
-
-ensure_zlib_companion() {
-    local category="$1" class="$2" filename="$3" gzip_path="$4" zlib_path
-    zlib_path="$(zlib_dest_for "$category" "$class" "$filename")"
-    if [[ "$FORCE" != 1 && -f "$zlib_path" ]] && verify_zlib_file "$gzip_path" "$zlib_path"; then
-        return
-    fi
-    printf 'generate: %s\n' "$zlib_path"
-    make_zlib_companion "$gzip_path" "$zlib_path"
-    verify_zlib_file "$gzip_path" "$zlib_path"
+                rm -f -- "$part"
+                return 1
+            }
+            verify_format zlib "$part" "$source" || {
+                rm -f -- "$part"
+                return 1
+            }
+            ;;
+        *) return 64 ;;
+    esac
+    mv -f -- "$part" "$dest"
+    sidecar_text "$dest" "$source" "$recipe" >"$(sidecar_for "$dest")"
 }
 
 fetch_row() {
-    local category="$1" class="$2" filename="$3" bytes="$4" sha256="$5" url="$6"
-    local dest part actual digest
-    dest="$(dest_for "$category" "$class" "$filename")"
+    local category="$1" class="$2" format="$3" filename="$4" bytes="$5" sha256="$6" source="$7"
+    local dest part actual digest gzip_source
+    dest="$(dest_for "$category" "$class" "$format" "$filename")"
+    if [[ "$source" == derive:* ]]; then
+        gzip_source="$(gzip_source_for "$category" "$class")"
+        if [[ "$FORCE" != 1 ]] && derived_current "$dest" "$gzip_source" "$source"; then
+            printf 'ok: %s\n' "$dest"
+            return
+        fi
+        # Adopt a file made by an earlier corpus.sh when it still verifies, so its bytes stay stable.
+        if [[ "$FORCE" != 1 && -f "$dest" && ! -f "$(sidecar_for "$dest")" ]] &&
+            verify_format "$format" "$dest" "$gzip_source"; then
+            sidecar_text "$dest" "$gzip_source" "$source" >"$(sidecar_for "$dest")"
+            printf 'adopted: %s\n' "$dest"
+            return
+        fi
+        derive_file "$dest" "$gzip_source" "$source"
+        printf 'derived: %s\n' "$dest"
+        return
+    fi
     mkdir -p "$(dirname "$dest")"
-    if [[ "$FORCE" != 1 && -f "$dest" ]] && verify_file "$dest" "$bytes" "$sha256"; then
-        ensure_zlib_companion "$category" "$class" "$filename" "$dest"
+    if [[ "$FORCE" != 1 && -f "$dest" ]] && verify_size_sha "$dest" "$bytes" "$sha256" && verify_format "$format" "$dest"; then
         printf 'ok: %s\n' "$dest"
         return
     fi
     part="$dest.part"
     rm -f -- "$part"
     printf 'fetch: %s (%s bytes)\n' "$dest" "$bytes"
-    curl -fL --retry 5 --retry-delay 2 --progress-bar -o "$part" "$url"
+    curl -fL --retry 5 --retry-delay 2 --progress-bar -o "$part" "$source"
     actual="$(stat -c '%s' "$part")"
-    if [[ "$actual" != "$bytes" ]]; then
-        printf 'error: download size mismatch %s: got %s expected %s\n' \
-            "$url" "$actual" "$bytes" >&2
+    digest="$(sha256sum "$part" | awk '{print $1}')"
+    if [[ "$actual" != "$bytes" || "$digest" != "$sha256" ]]; then
+        printf 'error: size or sha256 mismatch for %s: got %s %s\n' "$source" "$actual" "$digest" >&2
         rm -f -- "$part"
         return 1
     fi
-    gzip -t "$part" || {
-        printf 'error: downloaded file is not valid gzip: %s\n' "$url" >&2
+    verify_format "$format" "$part" || {
         rm -f -- "$part"
         return 1
     }
-    digest="$(sha256sum "$part" | awk '{print $1}')"
-    if [[ "$sha256" != - && "$digest" != "$sha256" ]]; then
-        printf 'error: sha256 mismatch for %s: got %s expected %s\n' \
-            "$url" "$digest" "$sha256" >&2
-        rm -f -- "$part"
-        return 1
-    fi
     mv -f -- "$part" "$dest"
-    ensure_zlib_companion "$category" "$class" "$filename" "$dest"
-    if [[ "$sha256" == - ]]; then
-        printf 'fetched: %s sha256=%s (record in corpus.tsv)\n' "$dest" "$digest"
+    printf 'fetched: %s\n' "$dest"
+}
+
+check_row() {
+    local category="$1" class="$2" format="$3" filename="$4" bytes="$5" sha256="$6" source="$7"
+    local dest gzip_source
+    dest="$(dest_for "$category" "$class" "$format" "$filename")"
+    if [[ "$source" == derive:* ]]; then
+        gzip_source="$(gzip_source_for "$category" "$class")"
+        derived_current "$dest" "$gzip_source" "$source" || {
+            printf 'error: derived file missing or stale: %s\n' "$dest" >&2
+            return 1
+        }
+        verify_format "$format" "$dest" "$gzip_source"
     else
-        printf 'fetched: %s\n' "$dest"
+        verify_size_sha "$dest" "$bytes" "$sha256"
+        verify_format "$format" "$dest"
     fi
+    printf 'ok: %s\n' "$dest"
 }
 
 list_rows() {
-    local category class filename bytes sha256 url dest zlib_dest state
-    printf '%-12s %-8s %-12s %s\n' 'category' 'class' 'state' 'path'
-    while IFS=$'\t' read -r category class filename bytes sha256 url; do
-        [[ -z "${category:-}" || "$category" == \#* || "$category" == category ]] && continue
-        dest="$(dest_for "$category" "$class" "$filename")"
-        zlib_dest="$(zlib_dest_for "$category" "$class" "$filename")"
-        if [[ -f "$dest" && -f "$zlib_dest" ]] && verify_file "$dest" "$bytes" "$sha256" >/dev/null 2>&1 && verify_zlib_file "$dest" "$zlib_dest" >/dev/null 2>&1; then
+    local category class format filename bytes sha256 source dest state rows
+    rows="$(each_row all)"
+    printf '%-12s %-8s %-6s %-8s %s\n' 'category' 'class' 'format' 'state' 'path'
+    while IFS=$'\t' read -r category class format filename bytes sha256 source; do
+        dest="$(dest_for "$category" "$class" "$format" "$filename")"
+        if [[ "$source" == derive:* ]]; then
+            if derived_current "$dest" "$(gzip_source_for "$category" "$class")" "$source" 2>/dev/null; then
+                state=ok
+            elif [[ -f "$dest" ]]; then
+                state=stale
+            else
+                state=missing
+            fi
+        elif [[ -f "$dest" ]] && verify_size_sha "$dest" "$bytes" "$sha256" >/dev/null 2>&1; then
             state=ok
-        elif [[ -f "$dest" || -f "$zlib_dest" ]]; then
+        elif [[ -f "$dest" ]]; then
             state=bad
         else
             state=missing
         fi
-        printf '%-12s %-8s %-12s %s\n' "$category" "$class" "$state" "$dest"
-    done < <(each_row all)
+        printf '%-12s %-8s %-6s %-8s %s\n' "$category" "$class" "$format" "$state" "$dest"
+    done <<<"$rows"
 }
 
 main() {
@@ -277,18 +384,23 @@ main() {
             }
             ;;
     esac
-    local category class filename bytes sha256 url dest zlib_dest
-    while IFS=$'\t' read -r category class filename bytes sha256 url; do
-        dest="$(dest_for "$category" "$class" "$filename")"
-        zlib_dest="$(zlib_dest_for "$category" "$class" "$filename")"
-        if [[ "$mode" == check ]]; then
-            verify_file "$dest" "$bytes" "$sha256"
-            verify_zlib_file "$dest" "$zlib_dest"
-            printf 'ok: %s\n' "$dest"
-        else
-            fetch_row "$category" "$class" "$filename" "$bytes" "$sha256" "$url"
-        fi
-    done < <(each_row "$filter")
+    local rows pass category class format filename bytes sha256 source
+    # Rows are read up front so a manifest error stops the run before any fetch.
+    rows="$(each_row "$filter")"
+    # Fetched rows first: derived rows read the gzip row of their slot.
+    for pass in fetched derived; do
+        while IFS=$'\t' read -r category class format filename bytes sha256 source; do
+            [[ -z "${category:-}" ]] && continue
+            if [[ "$pass" == fetched && "$source" == derive:* ]] || [[ "$pass" == derived && "$source" != derive:* ]]; then
+                continue
+            fi
+            if [[ "$mode" == check ]]; then
+                check_row "$category" "$class" "$format" "$filename" "$bytes" "$sha256" "$source"
+            else
+                fetch_row "$category" "$class" "$format" "$filename" "$bytes" "$sha256" "$source"
+            fi
+        done <<<"$rows"
+    done
 }
 
 main "$@"

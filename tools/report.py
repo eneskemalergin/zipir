@@ -1428,7 +1428,6 @@ def measured_markdown(facts: list[dict[str, str]], peers: list[dict[str, str]]) 
 
 
 def expected_json(peers: list[dict[str, str]], corpus: list[dict[str, str]], classes: set[str]) -> list[Path]:
-    files = [c for c in corpus if c["class"] in classes]
     paths: list[Path] = []
     seen: set[Path] = set()
 
@@ -1441,6 +1440,7 @@ def expected_json(peers: list[dict[str, str]], corpus: list[dict[str, str]], cla
         tool = peer["tool"]
         fmt = peer["format"]
         threads = peer["threads"]
+        files = [c for c in corpus if c["class"] in classes and c["format"] == fmt]
         for item in files:
             cat, klass = item["category"], item["class"]
             if peer["level"] != "-":

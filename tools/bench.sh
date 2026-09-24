@@ -163,9 +163,10 @@ load_peer_config() {
 }
 
 each_row() {
-    local category class filename _bytes _sha256 _url
-    while IFS=$'\t' read -r category class filename _bytes _sha256 _url; do
+    local category class format filename _bytes _sha256 _source
+    while IFS=$'\t' read -r category class format filename _bytes _sha256 _source; do
         [[ -z "${category:-}" || "$category" == \#* || "$category" == category ]] && continue
+        [[ "$format" == "$FORMAT" ]] || continue
         if [[ "$FILTER_CATEGORY" != all && "$category" != "$FILTER_CATEGORY" ]]; then
             continue
         fi
@@ -177,11 +178,7 @@ each_row() {
 }
 
 data_path() {
-    local filename="$3"
-    if [[ "$FORMAT" == zlib ]]; then
-        filename="${filename%.gz}.zlib"
-    fi
-    printf '%s/%s/%s/%s/%s\n' "$DATA_DIR" "$1" "$FORMAT" "$2" "$filename"
+    printf '%s/%s/%s/%s/%s\n' "$DATA_DIR" "$1" "$FORMAT" "$2" "$3"
 }
 
 make_zlib_reference() {
