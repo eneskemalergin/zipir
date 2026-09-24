@@ -1,458 +1,155 @@
 #!/usr/bin/env bash
-# Time a qualified comparison adapter with Zebrac. Not a project L3 gate.
+# Matched timing with Zebrac: one batch per corpus file and operation, with every selected tool
+# and level interleaved in the same rounds on one pinned CPU. Writes tools/.local/bench/RUN/,
+# then runs tools/report.py RUN. Not a project L3 gate.
 
 set -euo pipefail
-
-TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
-MANIFEST="$TOOLS_DIR/corpus.tsv"
-DATA_DIR="$ROOT_DIR/data"
-LOCAL_DIR="$TOOLS_DIR/.local"
-# shellcheck source=tools/invoke.sh
-source "$TOOLS_DIR/invoke.sh"
-# shellcheck source=tools/select.sh
-source "$TOOLS_DIR/select.sh"
-KEEP_TOOL_WORK="${KEEP_TOOL_WORK:-0}"
-FORCE=0
-TOOL=""
-FILTER_CATEGORY=all
-FILTER_CLASSES="sanity small"
-WORK=""
-FORMAT=""
-THREADS=""
-NTHREADS=""
-PEER_VERSION=""
-COMPRESS_LEVELS=()
+# shellcheck source=tools/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+ALLOW_FORCE=1
+BENCH_CPU="${BENCH_CPU:-4}"
+RUN=""
 
 usage() {
     printf '%s\n' \
-        'usage: tools/bench.sh [--peers SET] [--levels SET] [--full] [--force] [--list] [TOOL]' \
-        '       tools/bench.sh [--levels SET] [--force] [--list] TOOL CATEGORY [CLASS]' \
+        'usage: tools/bench.sh [--peers SET] [--levels SET] [--category C] [--class C | --full] [--force] [--list] [TOOL...]' \
         '' \
-        'Without TOOL, runs every tool in the selected peer set, then one report.' \
+        'Without TOOL, times the selected peer set; named tools run whatever their tier. The zipir' \
+        'tool of each format is always in the batch: it is the anchor every row is compared with.' \
         '--peers prime|extended|all   peer tiers from tools/peers.tsv (default prime)' \
         '--levels lanes|all           fast/balanced/dense lanes or every level (default lanes)' \
-        '--list                       print the planned tool/level matrix and corpus size; run nothing' \
-        'Daily work uses the defaults. --peers all --levels all --full is for publication runs.' \
+        '--category sequencing|ms|generalized, --class sanity|small|medium|large|all' \
+        '--full                       every class (default classes are sanity and small)' \
+        '--force                      re-time batches that are already complete' \
+        '--list                       print the planned matrix and corpus size; run nothing' \
         '' \
-        'Default classes are sanity and small. --full or CLASS=all adds medium and large.' \
-        'Requires a passing tools/qualify.sh receipt for TOOL.' \
-        'Writes keyed JSON under tools/.local/zebrac/TOOL/FORMAT/LEVEL/THREADS/.' \
-        'Decompress LEVEL is -. Then runs tools/report.sh.' \
-        'Prepares plaintext and zlib reference inputs under /tmp when needed, then deletes them.' \
-        'Sampling: --warmup 3 --min-samples 25 --max-samples 25. No --allow-failures.' \
-        'Skips JSON that already has 25 samples and 0 failures. --force re-times those.'
+        'Daily work uses the defaults. --peers all --levels all --full is for publication runs.' \
+        'Every tool needs a passing tools/qualify.sh receipt for its current binary and levels.' \
+        'Sampling: 3 warmups, exactly 25 rounds, taskset -c BENCH_CPU (default 4).' \
+        'A batch is skipped when its tools, levels, binaries, and input are unchanged.'
 }
 
-require_command() {
-    command -v "$1" >/dev/null 2>&1 || {
-        printf 'error: required command not found: %s\n' "$1" >&2
-        return 1
-    }
-}
-
-require_linux_x64() {
-    [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || {
-        printf 'error: tools/bench.sh supports Linux x86_64 only\n' >&2
-        return 1
-    }
-}
-
-cleanup() {
-    if [[ -n "$WORK" && -d "$WORK" ]]; then
-        case "$WORK" in
-            /tmp/zipir-bench.*)
-                if [[ "$KEEP_TOOL_WORK" == 1 ]]; then
-                    printf 'keep: %s\n' "$WORK"
-                else
-                    rm -rf -- "$WORK"
-                fi
-                ;;
-        esac
-    fi
-}
-trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-known_tools() {
-    local tool ver fmt level threads nthreads _tier _lane
-    while IFS=$'\t' read -r tool ver fmt level threads nthreads _tier _lane; do
-        [[ -z "${tool:-}" || "$tool" == \#* || "$tool" == tool ]] && continue
-        printf '%s\n' "$tool"
-    done <"$TOOLS_DIR/peers.tsv" | sort -u
-}
-
-# Prints the planned matrix for the selection (one tool or the whole set) and its size.
-list_selection() {
-    local only="$1" tool fmt level lane rows=0 files
-    printf '%-16s %-6s %-6s %s\n' tool format level lane
-    while IFS=$'\t' read -r tool fmt level lane; do
-        printf '%-16s %-6s %-6s %s\n' "$tool" "$fmt" "$level" "$lane"
-        rows=$((rows + 1))
-    done < <(selected_rows "$only")
-    files="$(awk -F'\t' -v classes=" $FILTER_CLASSES " '!/^#/ && $1 != "category" && index(classes, " " $2 " ") { n[$3]++ } END { for (f in n) printf "%s %s files; ", f, n[f] }' "$MANIFEST")"
-    printf 'selection: --peers %s --levels %s, %s rows; classes: %s; corpus per format: %s\n' \
-        "$PEER_SET" "$LEVEL_SET" "$rows" "$FILTER_CLASSES" "$files"
-}
-
-expand_tool() {
-    local name="$1" candidate
-    while IFS= read -r candidate; do
-        if [[ "$candidate" == "$name" ]]; then
-            printf '%s\n' "$name"
-            return
-        fi
-    done < <(known_tools)
-    printf 'error: unknown tool: %s\n' "$name" >&2
-    return 64
-}
-
-expand_category() {
-    case "$1" in
-        all) printf '%s\n' all ;;
-        sequencing | ms | generalized) printf '%s\n' "$1" ;;
-        *)
-            printf 'error: unknown category: %s\n' "$1" >&2
-            return 64
-            ;;
-    esac
-}
-
-expand_classes() {
-    case "$1" in
-        all) printf '%s\n' 'sanity small medium large' ;;
-        sanity | small | medium | large) printf '%s\n' "$1" ;;
-        *)
-            printf 'error: unknown class: %s\n' "$1" >&2
-            return 64
-            ;;
-    esac
-}
-
-class_selected() {
-    local wanted="$1" item
-    for item in $FILTER_CLASSES; do
-        if [[ "$item" == "$wanted" ]]; then
-            return 0
-        fi
+# Identity of a batch: subjects, their binaries, the input file, and the sampling settings.
+batch_key() {
+    local input="$1" subject
+    shift
+    printf 'input %s %s %s; cpu %s; w3 n25' "${input#"$ROOT_DIR"/}" "$(stat -c '%s' "$input")" "$(stat -c '%Y' "$input")" "$BENCH_CPU"
+    for subject in "$@"; do
+        printf '; %s %s %s' "$subject" "$(lane_of "${subject%% *}" "${subject##* }")" "$(tool_identity "${subject%% *}")"
     done
-    return 1
 }
 
-load_peer_config() {
-    local tool ver fmt level threads nthreads _tier lane found=0
-    COMPRESS_LEVELS=()
-    FORMAT=""
-    THREADS=""
-    NTHREADS=""
-    PEER_VERSION=""
-    while IFS=$'\t' read -r tool ver fmt level threads nthreads _tier lane; do
-        [[ -z "${tool:-}" || "$tool" == \#* || "$tool" == tool ]] && continue
-        if [[ "$tool" != "$TOOL" ]]; then
-            continue
-        fi
-        if [[ "$threads" != ST ]]; then
-            printf 'error: bench is ST-only; %s has threads %s\n' "$TOOL" "$threads" >&2
-            return 1
-        fi
-        if [[ "$found" == 1 ]]; then
-            [[ "$fmt" == "$FORMAT" && "$threads" == "$THREADS" && "$ver" == "$PEER_VERSION" ]] || {
-                printf 'error: mixed format/version/threads for %s\n' "$TOOL" >&2
-                return 1
-            }
-        else
-            FORMAT="$fmt"
-            THREADS="$threads"
-            NTHREADS="$nthreads"
-            PEER_VERSION="$ver"
-        fi
-        if [[ "$level" != - ]] && row_selected "$level" "$lane"; then
-            COMPRESS_LEVELS+=("$level")
-        fi
-        found=1
-    done <"$TOOLS_DIR/peers.tsv"
-    if [[ "$found" != 1 ]]; then
-        printf 'error: no peers.tsv row for %s\n' "$TOOL" >&2
-        return 1
-    fi
+batch_complete() {
+    jq -e --argjson n "$2" \
+        '(.results | length) == $n and all(.results[]; .sample_count == 25 and .failed_sample_count == 0)' \
+        "$1" >/dev/null 2>&1
 }
 
-each_row() {
-    local category class format filename _bytes _sha256 _source
-    while IFS=$'\t' read -r category class format filename _bytes _sha256 _source; do
-        [[ -z "${category:-}" || "$category" == \#* || "$category" == category ]] && continue
-        [[ "$format" == "$FORMAT" ]] || continue
-        if [[ "$FILTER_CATEGORY" != all && "$category" != "$FILTER_CATEGORY" ]]; then
-            continue
-        fi
-        if ! class_selected "$class"; then
-            continue
-        fi
-        printf '%s\t%s\t%s\n' "$category" "$class" "$filename"
-    done <"$MANIFEST"
-}
-
-data_path() {
-    printf '%s/%s/%s/%s/%s\n' "$DATA_DIR" "$1" "$FORMAT" "$2" "$3"
-}
-
-make_zlib_reference() {
-    python3 -c 'import pathlib,sys,zlib
-pathlib.Path(sys.argv[2]).write_bytes(zlib.compress(pathlib.Path(sys.argv[1]).read_bytes(), 6))
-' "$1" "$2"
-}
-
-make_plain() {
-    case "$FORMAT" in
-        gzip) gzip -dc -- "$1" >"$2" ;;
-        zlib)
-            python3 -c 'import pathlib,sys,zlib
-pathlib.Path(sys.argv[2]).write_bytes(zlib.decompress(pathlib.Path(sys.argv[1]).read_bytes()))
-' "$1" "$2"
-            ;;
-        *) return 64 ;;
-    esac
-}
-
-json_path() {
-    local op="$1" category="$2" class="$3" level="$4"
-    printf '%s/%s/%s/%s/%s/%s.%s.%s.json\n' \
-        "$LOCAL_DIR/zebrac" "$TOOL" "$FORMAT" "$level" "$THREADS" \
-        "$category" "$class" "$op"
-}
-
-json_complete() {
-    local json="$1"
-    [[ "$FORCE" == 1 ]] && return 1
-    [[ -f "$json" ]] || return 1
-    python3 -c 'import json,sys
-p=sys.argv[1]
-d=json.load(open(p))
-r=d["results"][0]
-failed=r.get("failed_sample_count", 0)
-n=r.get("sample_count", 0)
-raise SystemExit(0 if failed == 0 and n == 25 else 1)
-' "$json"
-}
-
-run_zebrac() {
-    local json="$1" cmd="$2"
-    mkdir -p "$(dirname "$json")"
-    printf 'zebrac: %s\n' "$cmd"
-    zebrac --color never -q -w 3 -i 25 -a 25 --json "$json" -- "$cmd"
-    python3 -c 'import json,sys
-p=sys.argv[1]
-d=json.load(open(p))
-r=d["results"][0]
-failed=r.get("failed_sample_count", 0)
-n=r.get("sample_count", 0)
-if failed:
-    sys.exit("error: %s failed_sample_count=%s" % (p, failed))
-if n != 25:
-    sys.exit("error: %s sample_count=%s want 25" % (p, n))
-print("ok: %s samples=%s wall_median_ns=%s rss_median=%s" % (
-    p, n, r["wall_time"]["median"], r["peak_rss"]["median"]))
-' "$json"
-}
-
-run_zebrac_if_needed() {
-    local json="$1" cmd="$2"
-    if json_complete "$json"; then
-        printf 'skip: %s\n' "$json"
+# run_batch FORMAT OP CATEGORY CLASS INPUT SUBJECT...  (SUBJECT is "tool level"; level - decodes)
+run_batch() {
+    local format="$1" op="$2" category="$3" class="$4" input="$5"
+    shift 5
+    local base="$LOCAL_DIR/bench/$RUN/$format/$op/$category.$class" plain="$WORK/plain"
+    local key plain_bytes subject tool level bytes load_before cmds=() rows=()
+    key="$(batch_key "$input" "$@")"
+    if [[ "$FORCE" != 1 && -f "$base.tsv" ]] && batch_complete "$base.json" $# &&
+        [[ "$(awk -F'\t' '$1 == "# key" { print $2 }' "$base.tsv")" == "$key" ]]; then
+        printf 'skip: %s (complete)\n' "${base#"$ROOT_DIR"/}"
         return
     fi
-    run_zebrac "$json" "$cmd"
+    plain_bytes="$(stat -c '%s' "$plain")"
+    for subject in "$@"; do
+        read -r tool level <<<"$subject"
+        if [[ "$op" == compress ]]; then
+            # Bytes come from the binary being timed, and must decode to the input.
+            tool_run "$tool" compress "$level" "$plain" "$WORK/out"
+            gzip -dc -- "$WORK/out" | cmp -s - "$plain" || die "$tool -$level output does not decode to $input"
+            bytes="$(stat -c '%s' "$WORK/out")"
+            cmds+=("$(zebrac_cmd "$tool" compress "$level" "$plain")")
+        else
+            bytes="$(stat -c '%s' "$input")"
+            cmds+=("$(zebrac_cmd "$tool" decompress - "$input" "$plain_bytes")")
+        fi
+        rows+=("$(printf '%s\t%s\t%s\t%s\t%s' "$tool" "$level" "$(lane_of "$tool" "$level")" "${P_DECODE[$tool]}" "$bytes")")
+    done
+    rm -f -- "$WORK/out"
+    mkdir -p "$(dirname "$base")"
+    printf 'time: %s %s %s.%s, %s subjects\n' "$format" "$op" "$category" "$class" $#
+    load_before="$(cut -d' ' -f1-3 /proc/loadavg)"
+    taskset -c "$BENCH_CPU" zebrac --color never -q -w 3 -i 25 -a 25 -d 1 \
+        --json="$base.part.json" -- "${cmds[@]}" >/dev/null
+    batch_complete "$base.part.json" $# || die "incomplete Zebrac batch: $base.part.json"
+    [[ "$(jq -r '.results[].command' "$base.part.json")" == "$(printf '%s\n' "${cmds[@]}")" ]] ||
+        die "Zebrac commands do not match the planned subjects: $base.part.json"
+    {
+        printf '# key\t%s\n' "$key"
+        printf '# format\t%s\n# op\t%s\n# category\t%s\n# class\t%s\n' "$format" "$op" "$category" "$class"
+        printf '# input\t%s\n# input_bytes\t%s\n# plain_bytes\t%s\n' "${input#"$ROOT_DIR"/}" "$(stat -c '%s' "$input")" "$plain_bytes"
+        printf '# load_before\t%s\n# load_after\t%s\n# cpu\t%s\n' "$load_before" "$(cut -d' ' -f1-3 /proc/loadavg)" "$BENCH_CPU"
+        host_state | sed 's/^/# /'
+        git_state | sed 's/^/# /'
+        printf 'tool\tlevel\tlane\tdecode\tcompressed_bytes\n'
+        printf '%s\n' "${rows[@]}"
+    } >"$base.tsv"
+    mv -f -- "$base.part.json" "$base.json"
 }
 
 main() {
-    require_linux_x64
-    require_command zebrac
-    require_command python3
-    require_command gzip
-    local full=0 list=0 tool
-    local -a pass=()
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --help | -h)
-                usage
-                return
-                ;;
-            --full)
-                full=1
-                pass+=(--full)
-                shift
-                ;;
-            --force)
-                FORCE=1
-                pass+=(--force)
-                shift
-                ;;
-            --peers | --levels)
-                [[ $# -ge 2 ]] || {
-                    usage >&2
-                    return 64
-                }
-                if [[ "$1" == --peers ]]; then PEER_SET="$2"; else LEVEL_SET="$2"; fi
-                shift 2
-                ;;
-            --list)
-                list=1
-                shift
-                ;;
-            --)
-                shift
+    local tools=() rows=() row tool format category class filename input level comp decomp
+    parse_run_args "$@"
+    mapfile -t tools < <(run_tools)
+    # Every format in the run gets its zipir tool as the anchor.
+    for format in gzip zlib; do
+        for tool in "${tools[@]}"; do
+            if [[ "${P_FORMAT[$tool]}" == "$format" && " ${tools[*]} " != *" zipir-$format "* ]]; then
+                tools=("zipir-$format" "${tools[@]}")
                 break
-                ;;
-            -*)
-                usage >&2
-                return 64
-                ;;
-            *)
-                break
-                ;;
-        esac
-    done
-    check_selection
-    if [[ $# -eq 0 ]]; then
-        if [[ "$full" == 1 ]]; then
-            FILTER_CLASSES="$(expand_classes all)"
-        fi
-        if [[ "$list" == 1 ]]; then
-            list_selection ""
-            return
-        fi
-        # The whole selected set, one tool per run, then one report for the selection.
-        while IFS= read -r tool; do
-            ZIPIR_SKIP_REPORT=1 "$TOOLS_DIR/bench.sh" "${pass[@]}" --peers "$PEER_SET" --levels "$LEVEL_SET" "$tool"
-        done < <(selected_tools)
-        "$TOOLS_DIR/report.sh" --peers "$PEER_SET" --levels "$LEVEL_SET"
-        return
-    fi
-    TOOL="$(expand_tool "$1")"
-    if [[ $# -ge 2 ]]; then
-        FILTER_CATEGORY="$(expand_category "$2")"
-        [[ $# -le 3 ]] || {
-            usage >&2
-            return 64
-        }
-        if [[ "$full" == 1 && $# -eq 3 ]]; then
-            printf 'error: --full does not take CLASS; omit CLASS or drop --full\n' >&2
-            return 64
-        fi
-        if [[ $# -eq 3 ]]; then
-            FILTER_CLASSES="$(expand_classes "$3")"
-        fi
-    else
-        [[ $# -le 1 ]] || {
-            usage >&2
-            return 64
-        }
-    fi
-    if [[ "$full" == 1 ]]; then
-        FILTER_CLASSES="$(expand_classes all)"
-    fi
-    if [[ "$list" == 1 ]]; then
-        list_selection "$TOOL"
-        return
-    fi
-
-    load_peer_config
-
-    local receipt="$LOCAL_DIR/qualify/$TOOL/receipt.tsv"
-    [[ -f "$receipt" ]] || {
-        printf 'error: missing qualify receipt: %s\n' "$receipt" >&2
-        return 1
-    }
-    grep -Fqx $'status\tpass' "$receipt" || {
-        printf 'error: qualify did not pass; not starting Zebrac\n' >&2
-        return 1
-    }
-    [[ "$(zebrac --help 2>&1 | awk 'NR==1{print $2}')" == 0.6.2 ]] || {
-        printf 'error: bench requires zebrac 0.6.2\n' >&2
-        return 1
-    }
-
-    local engine
-    engine="$(tool_engine)"
-    [[ -x "$engine" ]] || {
-        printf 'error: missing engine: %s\n' "$engine" >&2
-        return 1
-    }
-
-    local zdir="$LOCAL_DIR/zebrac/$TOOL"
-    mkdir -p "$zdir"
-    {
-        printf 'schema\tzipir-zebrac-v2\n'
-        printf 'tool\t%s\n' "$TOOL"
-        printf 'tool_version\t%s\n' "$PEER_VERSION"
-        printf 'format\t%s\n' "$FORMAT"
-        printf 'decode_mode\t%s\n' "$(tool_decode_mode "$TOOL")"
-        printf 'compress_levels\t%s\n' "${COMPRESS_LEVELS[*]}"
-        printf 'decompress_level\t-\n'
-        printf 'threads\t%s\n' "$THREADS"
-        printf 'nthreads\t%s\n' "$NTHREADS"
-        printf 'zebrac\t0.6.2\n'
-        printf 'classes\t%s\n' "$FILTER_CLASSES"
-        printf 'warmup\t3\n'
-        printf 'min_samples\t25\n'
-        printf 'max_samples\t25\n'
-        printf 'allow_failures\tfalse\n'
-        cat "$LOCAL_DIR/qualify/$TOOL/meta.tsv"
-    } >"$zdir/meta.tsv"
-
-    printf 'bench %s format=%s levels=%s threads=%s classes: %s\n' \
-        "$TOOL" "$FORMAT" "${COMPRESS_LEVELS[*]}" "$THREADS" "$FILTER_CLASSES"
-    WORK="$(mktemp -d /tmp/zipir-bench.XXXXXX)"
-    local category class filename input plain reference json level need_plain need_decomp
-    while IFS=$'\t' read -r category class filename; do
-        input="$(data_path "$category" "$class" "$filename")"
-        plain="$WORK/plain"
-        reference="$WORK/reference.zlib"
-
-        need_plain=0
-        need_decomp=0
-        json="$(json_path decompress "$category" "$class" -)"
-        json_complete "$json" || need_decomp=1
-        for level in "${COMPRESS_LEVELS[@]}"; do
-            json="$(json_path compress "$category" "$class" "$level")"
-            json_complete "$json" || need_plain=1
-        done
-        if [[ "$FORMAT" == zlib && "$need_decomp" == 1 ]]; then
-            need_plain=1
-        fi
-        if [[ "$need_plain" == 0 && "$need_decomp" == 0 ]]; then
-            printf 'skip file: %s (complete)\n' "$filename"
-            continue
-        fi
-        if [[ "$need_plain" == 1 ]]; then
-            make_plain "$input" "$plain"
-        fi
-        if [[ "$FORMAT" == zlib && "$need_decomp" == 1 ]]; then
-            make_zlib_reference "$plain" "$reference"
-        fi
-        json="$(json_path decompress "$category" "$class" -)"
-        if [[ "$need_decomp" == 1 ]]; then
-            if [[ "$FORMAT" == zlib ]]; then
-                run_zebrac "$json" "$(zebrac_decompress_cmd "$reference" "$(stat -c '%s' "$plain")")"
-            else
-                run_zebrac "$json" "$(zebrac_decompress_cmd "$input")"
             fi
-        else
-            printf 'skip: %s\n' "$json"
-        fi
-        for level in "${COMPRESS_LEVELS[@]}"; do
-            json="$(json_path compress "$category" "$class" "$level")"
-            run_zebrac_if_needed "$json" "$(zebrac_compress_cmd "$level" "$plain")"
         done
-        rm -f -- "$plain"
-    done < <(each_row)
-
-    if [[ "${ZIPIR_SKIP_REPORT:-0}" != 1 ]]; then
-        "$TOOLS_DIR/report.sh" --peers "$PEER_SET" --levels "$LEVEL_SET"
+    done
+    if [[ ${#NAMED[@]} -gt 0 ]]; then
+        RUN="named-$(IFS=+ && printf '%s' "${NAMED[*]}")-$LEVEL_SET"
+    else
+        RUN="$PEER_SET-$LEVEL_SET"
     fi
-    printf 'bench pass: %s\n' "$zdir"
+    if [[ "$LIST" == 1 ]]; then
+        printf '%s\n' "${tools[@]}" | list_selection
+        printf 'results: tools/.local/bench/%s/\n' "$RUN"
+        return
+    fi
+
+    require_linux_x64
+    require_command zebrac taskset jq gzip python3 cmp
+    [[ "$(zebrac --help 2>&1 | awk 'NR==1{print $2}')" == 0.6.2 ]] || die "bench requires zebrac 0.6.2"
+    [[ "$BENCH_CPU" =~ ^[0-9]+$ && "$BENCH_CPU" -lt "$(nproc)" ]] || die "BENCH_CPU must be a CPU number below $(nproc)"
+    for tool in "${tools[@]}"; do
+        # shellcheck disable=SC2046
+        require_qualified "$tool" $(tool_levels "$tool")
+    done
+    make_work bench
+
+    for format in gzip zlib; do
+        comp=() decomp=()
+        for tool in "${tools[@]}"; do
+            [[ "${P_FORMAT[$tool]}" == "$format" ]] || continue
+            decomp+=("$tool -")
+            for level in $(tool_levels "$tool"); do comp+=("$tool $level"); done
+        done
+        [[ ${#decomp[@]} -gt 0 ]] || continue
+        # Rows are read up front so nothing timed can consume the loop's input.
+        mapfile -t rows < <(corpus_rows "$format")
+        for row in "${rows[@]}"; do
+            IFS=$'\t' read -r category class filename <<<"$row"
+            input="$(data_path "$category" "$format" "$class" "$filename")"
+            plain_of "$format" "$input" "$WORK/plain"
+            if [[ ${#comp[@]} -gt 0 ]]; then
+                run_batch "$format" compress "$category" "$class" "$input" "${comp[@]}"
+            fi
+            run_batch "$format" decompress "$category" "$class" "$input" "${decomp[@]}"
+            rm -f -- "$WORK/plain"
+        done
+    done
+    python3 "$TOOLS_DIR/report.py" "$RUN"
 }
 
 main "$@"

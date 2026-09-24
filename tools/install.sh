@@ -1,129 +1,39 @@
 #!/usr/bin/env bash
-# Build comparison tools into repository-local, ignored storage.
-# C/host CLIs stay native programs. Zig supplies the standard-library and zipir format adapters.
-# htslib bgzip is a BGZF format oracle, not a timed peer.
-# Rust adapters are those languages' CLIs. Host gzip and pigz are not copied.
-# libdeflate, ISA-L, and zlib-ng are built into tools/.local with a cmake
-# prefix under /tmp/zipir-tools.*. No global prefix. Local engines must not
-# link Fedora libdeflate, ISA-L, or zlib.
+# Build or link the comparison peers and the bgzip BGZF oracle into ignored tools/.local/installs
+# and tools/bin. C and host CLIs stay native programs; Zig and Rust adapters use the path CLI.
+# Host gzip and pigz are not copied. Source builds use a /tmp/zipir-tools.* work directory and
+# never a global prefix; native engines must not link Fedora libdeflate, ISA-L, or zlib.
 
 set -euo pipefail
-
-TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
-LOCAL_DIR="$TOOLS_DIR/.local"
-INSTALLS_DIR="$LOCAL_DIR/installs"
-BIN_DIR="$TOOLS_DIR/bin"
+# shellcheck source=tools/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 TOOL_JOBS="${TOOL_JOBS:-2}"
-KEEP_TOOL_WORK="${KEEP_TOOL_WORK:-0}"
 REBUILD=0
-ACTIVE_WORK=""
-ACTIVE_STAGE=""
-
-# shellcheck source=tools/versions.sh
-source "$TOOLS_DIR/versions.sh"
-# shellcheck source=tools/select.sh
-source "$TOOLS_DIR/select.sh"
-
-PEERS=(std-gzip zipir-gzip std-zlib zipir-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib)
+STAGE=""
 ORACLES=(bgzip)
-ALL_TARGETS=("${PEERS[@]}" "${ORACLES[@]}")
+ALL_TARGETS=("${PEER_TOOLS[@]}" "${ORACLES[@]}")
 
 usage() {
     printf '%s\n' \
-        'usage: tools/install.sh [NAME|prime|extended|all]' \
-        '       tools/install.sh --rebuild [NAME|prime|extended|all]' \
-        '       tools/install.sh --check [NAME|prime|extended|all]' \
+        'usage: tools/install.sh [--rebuild | --check] [NAME|prime|extended|all]' \
         '       tools/install.sh --list' \
         '' \
-        'names: std-gzip zipir-gzip std-zlib zipir-zlib system-zlib libdeflate-zlib gnu-gzip libdeflate-gzip igzip pigz flate2-miniz flate2-zlib-rs zlib-ng zlib-ng-zlib bgzip' \
+        "names: ${ALL_TARGETS[*]}" \
+        'prime and extended are the tools/peers.tsv tiers plus the oracles; all is every target.' \
         '' \
-        'Linux x86_64 only. Host gzip and pigz stay at /usr/bin. libdeflate,' \
-        'igzip, and zlib-ng are native CLIs under ignored tools/.local/. Zig' \
-        'spawn wrappers around C CLIs are not used. TOOL_JOBS defaults to 2;' \
-        'KEEP_TOOL_WORK=1 keeps /tmp work.'
+        'Linux x86_64 only. Host gzip and pigz stay at /usr/bin. libdeflate, igzip, and zlib-ng' \
+        'are native CLIs under ignored tools/.local/. TOOL_JOBS defaults to 2; KEEP_TOOL_WORK=1' \
+        'keeps the /tmp work directory.'
 }
 
-cleanup() {
-    if [[ -n "$ACTIVE_STAGE" && -d "$ACTIVE_STAGE" ]]; then
-        case "$ACTIVE_STAGE" in
-            "$LOCAL_DIR"/stage/*) rm -rf -- "$ACTIVE_STAGE" ;;
-        esac
-    fi
-    if [[ -n "$ACTIVE_WORK" && -d "$ACTIVE_WORK" ]]; then
-        case "$ACTIVE_WORK" in
-            /tmp/zipir-tools.*)
-                if [[ "$KEEP_TOOL_WORK" == 1 ]]; then
-                    printf 'keep: %s\n' "$ACTIVE_WORK"
-                else
-                    rm -rf -- "$ACTIVE_WORK"
-                fi
-                ;;
-        esac
-    fi
-}
-trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-require_linux_x64() {
-    [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || {
-        printf 'error: tools/install.sh supports Linux x86_64 only\n' >&2
-        return 1
-    }
-}
-
-require_command() {
-    command -v "$1" >/dev/null 2>&1 || {
-        printf 'error: required host build command not found: %s\n' "$1" >&2
-        return 1
-    }
+cleanup_extra() {
+    if [[ -n "$STAGE" && -d "$STAGE" && "$STAGE" == "$LOCAL_DIR"/stage/* ]]; then rm -rf -- "$STAGE"; fi
 }
 
 require_zig() {
     require_command zig
-    local zig_bin
-    zig_bin="$(command -v zig)"
-    [[ "$(zig version)" == "$ZIG_VERSION" ]] || {
-        printf 'error: adapters require Zig %s (got %s from %s)\n' \
-            "$ZIG_VERSION" "$(zig version)" "$zig_bin" >&2
-        return 1
-    }
-}
-
-validate_settings() {
-    [[ "$TOOL_JOBS" =~ ^[1-9][0-9]*$ ]] || {
-        printf 'error: TOOL_JOBS must be a positive integer\n' >&2
-        return 1
-    }
-    case "$KEEP_TOOL_WORK" in
-        0 | 1) ;;
-        *)
-            printf 'error: KEEP_TOOL_WORK must be 0 or 1\n' >&2
-            return 1
-            ;;
-    esac
-}
-
-version_for() {
-    case "$1" in
-        std-gzip) printf '%s\n' "$STD_GZIP_VERSION" ;;
-        zipir-gzip | zipir-zlib) printf '%s\n' "$ZIPIR_VERSION" ;;
-        std-zlib) printf '%s\n' "$STD_ZLIB_VERSION" ;;
-        system-zlib) printf '%s\n' "$SYSTEM_ZLIB_VERSION" ;;
-        libdeflate-zlib) printf '%s\n' "$LIBDEFLATE_VERSION" ;;
-        gnu-gzip) printf '%s\n' "$GNU_GZIP_VERSION" ;;
-        pigz) printf '%s\n' "$PIGZ_VERSION" ;;
-        libdeflate-gzip) printf '%s\n' "$LIBDEFLATE_VERSION" ;;
-        igzip) printf '%s\n' "$ISAL_VERSION" ;;
-        flate2-miniz) printf '%s\n' "$FLATE2_MINIZ_VERSION" ;;
-        flate2-zlib-rs) printf '%s\n' "$FLATE2_ZLIB_RS_VERSION" ;;
-        zlib-ng) printf '%s\n' "$ZLIB_NG_VERSION" ;;
-        zlib-ng-zlib) printf '%s\n' "$ZLIB_NG_VERSION" ;;
-        bgzip) printf '%s\n' "$HTSLIB_VERSION" ;;
-        *) return 64 ;;
-    esac
+    [[ "$(zig version)" == "$ZIG_VERSION" ]] ||
+        die "adapters require Zig $ZIG_VERSION (got $(zig version) from $(command -v zig))"
 }
 
 expand_target() {
@@ -133,756 +43,324 @@ expand_target() {
             PEER_SET="$1" selected_tools
             printf '%s\n' "${ORACLES[@]}"
             ;;
-        std-gzip | zipir-gzip | std-zlib | zipir-zlib | system-zlib | libdeflate-zlib | gnu-gzip | libdeflate-gzip | igzip | pigz | flate2-miniz | flate2-zlib-rs | zlib-ng | zlib-ng-zlib | bgzip)
+        *)
+            [[ " ${ALL_TARGETS[*]} " == *" $1 "* ]] || usage_error "unknown target: $1"
             printf '%s\n' "$1"
             ;;
-        *)
-            printf 'error: unknown target: %s\n' "$1" >&2
-            return 64
-            ;;
     esac
 }
 
-start_work() {
-    if [[ -z "$ACTIVE_WORK" ]]; then
-        ACTIVE_WORK="$(mktemp -d /tmp/zipir-tools.XXXXXX)"
-    fi
-}
-
-download_archive() {
-    local url="$1" output="$2"
+fetch_source() {
+    local url="$1" dest="$2" archive="$2.archive"
+    [[ -d "$dest" ]] && return 0
     require_command curl
+    mkdir -p "$dest.part"
     printf 'download: %s\n' "$url"
-    curl --fail --location --retry 3 --show-error --silent "$url" --output "$output"
+    curl --fail --location --retry 3 --show-error --silent "$url" --output "$archive"
+    tar -xf "$archive" -C "$dest.part" --strip-components=1
+    mv -- "$dest.part" "$dest"
 }
 
-extract_archive() {
-    local archive="$1" destination="$2"
-    mkdir -p "$destination"
-    tar -xf "$archive" -C "$destination" --strip-components=1
+# cmake_install SOURCE BUILD PREFIX ARGS...: Release build installed into PREFIX.
+cmake_install() {
+    local source="$1" build="$2" prefix="$3"
+    shift 3
+    require_command cmake
+    cmake -S "$source" -B "$build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
+        -DCMAKE_INSTALL_MESSAGE=NEVER "$@"
+    cmake --build "$build" -j"$TOOL_JOBS"
+    cmake --install "$build"
 }
 
-switch_link() {
-    local name="$1" version="$2"
-    local link="$BIN_DIR/$name" temporary="$BIN_DIR/$name.tmp.$$"
-    local target="../.local/installs/$name/$version/bin/$name"
+cc_version() {
+    cc --version | awk 'NR==1{print $1, $NF}'
+}
+
+# Points tools/bin/NAME at TARGET; an empty TARGET removes the link.
+link_bin() {
+    local link="$BIN_DIR/$1" target="$2"
     mkdir -p "$BIN_DIR"
-    if [[ -e "$link" && ! -L "$link" ]]; then
-        printf 'error: installer will not replace non-link path: %s\n' "$link" >&2
-        return 1
-    fi
-    ln -s "$target" "$temporary"
-    mv -Tf -- "$temporary" "$link"
-}
-
-switch_abs_link() {
-    local name="$1" target="$2"
-    local link="$BIN_DIR/$name" temporary="$BIN_DIR/$name.tmp.$$"
-    mkdir -p "$BIN_DIR"
-    if [[ -e "$link" && ! -L "$link" ]]; then
-        printf 'error: installer will not replace non-link path: %s\n' "$link" >&2
-        return 1
-    fi
-    ln -s "$target" "$temporary"
-    mv -Tf -- "$temporary" "$link"
-}
-
-remove_bin_link() {
-    local name="$1"
-    local link="$BIN_DIR/$name"
-    if [[ -L "$link" ]]; then
+    [[ ! -e "$link" || -L "$link" ]] || die "installer will not replace non-link path: $link"
+    if [[ -z "$target" ]]; then
         rm -f -- "$link"
-    elif [[ -e "$link" ]]; then
-        printf 'error: installer will not remove non-link path: %s\n' "$link" >&2
-        return 1
+    else
+        ln -s "$target" "$link.tmp.$$"
+        mv -Tf -- "$link.tmp.$$" "$link"
     fi
 }
 
-host_version() {
+bin_target() {
     case "$1" in
-        gnu-gzip)
-            "$GNU_GZIP_BIN" --version | awk 'NR==1{print $2}'
-            ;;
-        pigz)
-            "$PIGZ_BIN" --version | awk '{print $2; exit}'
-            ;;
-        *) return 1 ;;
+        gnu-gzip) printf '%s\n' "$GNU_GZIP_BIN" ;;
+        pigz) ;; # invoked as /usr/bin/pigz -p1; never published under tools/bin
+        *) printf '../.local/installs/%s/%s/bin/%s\n' "$1" "$(version_for "$1")" "$1" ;;
     esac
 }
 
-write_receipt() {
-    local dest="$1" name="$2" version="$3" source="$4" compiler="$5" build_profile="$6"
-    local suite_commit suite_dirty
-    suite_commit="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || printf unknown)"
-    if git -C "$ROOT_DIR" rev-parse HEAD >/dev/null 2>&1 &&
-        [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=normal)" ]]; then
-        suite_dirty=true
-    else
-        suite_dirty=false
+# publish NAME BINARY SOURCE COMPILER PROFILE: installs BINARY (empty for host tools) with a receipt.
+publish() {
+    local name="$1" binary="$2" source="$3" compiler="$4" profile="$5" version dest
+    version="$(version_for "$name")"
+    dest="$INSTALLS_DIR/$name/$version"
+    mkdir -p "$LOCAL_DIR/stage" "$INSTALLS_DIR/$name"
+    STAGE="$(mktemp -d "$LOCAL_DIR/stage/$name.XXXXXX")"
+    if [[ -n "$binary" ]]; then
+        install -D -m 755 "$binary" "$STAGE/bin/$name"
+        strip --strip-unneeded "$STAGE/bin/$name" 2>/dev/null || true
     fi
     {
         printf 'schema\tzipir-tool-receipt-v1\n'
         printf 'name\t%s\nversion\t%s\nsource\t%s\n' "$name" "$version" "$source"
-        printf 'compiler\t%s\njobs\t%s\n' "$compiler" "$TOOL_JOBS"
-        printf 'build_profile\t%s\n' "$build_profile"
-        printf 'suite_commit\t%s\nsuite_dirty\t%s\n' "$suite_commit" "$suite_dirty"
-    } >"$dest"
-}
-
-publish() {
-    local name="$1" version="$2" binary="$3" source="$4" compiler="$5" build_profile="$6"
-    local destination="$INSTALLS_DIR/$name/$version"
-    mkdir -p "$LOCAL_DIR/stage" "$INSTALLS_DIR/$name"
-    ACTIVE_STAGE="$(mktemp -d "$LOCAL_DIR/stage/$name.XXXXXX")"
-    mkdir -p "$ACTIVE_STAGE/bin"
-    install -m 755 "$binary" "$ACTIVE_STAGE/bin/$name"
-    if command -v strip >/dev/null 2>&1; then
-        strip --strip-unneeded "$ACTIVE_STAGE/bin/$name" 2>/dev/null || true
-    fi
-    write_receipt "$ACTIVE_STAGE/receipt.tsv" "$name" "$version" "$source" "$compiler" "$build_profile"
-    if [[ -d "$destination" ]]; then
-        case "$destination" in
-            "$INSTALLS_DIR"/*/*) rm -rf -- "$destination" ;;
-            *)
-                printf 'error: invalid rebuild path: %s\n' "$destination" >&2
-                return 1
-                ;;
-        esac
-    fi
-    mv "$ACTIVE_STAGE" "$destination"
-    ACTIVE_STAGE=""
-    switch_link "$name" "$version"
+        printf 'compiler\t%s\njobs\t%s\nbuild_profile\t%s\n' "$compiler" "$TOOL_JOBS" "$profile"
+        git_state | sed 's/^commit/suite_commit/; s/^dirty/suite_dirty/'
+    } >"$STAGE/receipt.tsv"
+    [[ "$dest" == "$INSTALLS_DIR"/*/* ]] || die "invalid install path: $dest"
+    rm -rf -- "$dest"
+    mv "$STAGE" "$dest"
+    STAGE=""
+    link_bin "$name" "$(bin_target "$name")"
     printf 'installed: %s %s\n' "$name" "$version"
 }
 
-publish_host() {
-    local name="$1" version="$2" host_bin="$3" source="$4" compiler="$5" build_profile="$6"
-    local destination="$INSTALLS_DIR/$name/$version"
-    mkdir -p "$LOCAL_DIR/stage" "$INSTALLS_DIR/$name"
-    ACTIVE_STAGE="$(mktemp -d "$LOCAL_DIR/stage/$name.XXXXXX")"
-    write_receipt "$ACTIVE_STAGE/receipt.tsv" "$name" "$version" "$source" "$compiler" "$build_profile"
-    if [[ -d "$destination" ]]; then
-        case "$destination" in
-            "$INSTALLS_DIR"/*/*) rm -rf -- "$destination" ;;
-            *)
-                printf 'error: invalid rebuild path: %s\n' "$destination" >&2
-                return 1
-                ;;
-        esac
+assert_links() {
+    local binary="$1" forbidden="$2" deps
+    deps="$(ldd "$binary" 2>/dev/null || true)"
+    if [[ -n "$forbidden" ]] && grep -Eq "$forbidden" <<<"$deps"; then
+        printf 'error: %s links a forbidden library (%s):\n%s\n' "$binary" "$forbidden" "$deps" >&2
+        return 1
     fi
-    mv "$ACTIVE_STAGE" "$destination"
-    ACTIVE_STAGE=""
-    if [[ -n "$host_bin" ]]; then
-        switch_abs_link "$name" "$host_bin"
-    else
-        remove_bin_link "$name"
-    fi
-    printf 'installed: %s %s\n' "$name" "$version"
 }
 
 check_target() {
-    local name="$1" version path receipt resolved_bin resolved_host
+    local name="$1" version path forbidden=""
     version="$(version_for "$name")"
-    receipt="$INSTALLS_DIR/$name/$version/receipt.tsv"
     path="$INSTALLS_DIR/$name/$version/bin/$name"
-    if [[ ! -f "$receipt" ]]; then
+    [[ -f "$INSTALLS_DIR/$name/$version/receipt.tsv" ]] || {
         printf 'missing: %s %s\n' "$name" "$version" >&2
         return 1
-    fi
-    grep -Fqx "schema"$'\t'"zipir-tool-receipt-v1" "$receipt" || return 1
-    grep -Fqx "version"$'\t'"$version" "$receipt" || return 1
+    }
+    grep -Fqx $'schema\tzipir-tool-receipt-v1' "$INSTALLS_DIR/$name/$version/receipt.tsv" || return 1
+    grep -Fqx "version"$'\t'"$version" "$INSTALLS_DIR/$name/$version/receipt.tsv" || return 1
     case "$name" in
-        gnu-gzip)
-            [[ -x "$GNU_GZIP_BIN" ]] || {
-                printf 'error: host gzip missing: %s\n' "$GNU_GZIP_BIN" >&2
-                return 1
-            }
-            [[ "$(host_version gnu-gzip)" == "$GNU_GZIP_VERSION" ]] || {
-                printf 'error: host gzip version %s, pin is %s\n' \
-                    "$(host_version gnu-gzip)" "$GNU_GZIP_VERSION" >&2
-                return 1
-            }
-            [[ -L "$BIN_DIR/gnu-gzip" ]] || {
-                printf 'error: missing host link: %s\n' "$BIN_DIR/gnu-gzip" >&2
-                return 1
-            }
-            resolved_bin="$(readlink -f "$BIN_DIR/gnu-gzip")"
-            resolved_host="$(readlink -f "$GNU_GZIP_BIN")"
-            [[ "$resolved_bin" == "$resolved_host" ]] || {
-                printf 'error: %s must be a symlink to %s\n' \
-                    "$BIN_DIR/gnu-gzip" "$GNU_GZIP_BIN" >&2
-                return 1
-            }
-            ;;
-        pigz)
-            [[ -x "$PIGZ_BIN" ]] || {
-                printf 'error: host pigz missing: %s\n' "$PIGZ_BIN" >&2
-                return 1
-            }
-            [[ "$(host_version pigz)" == "$PIGZ_VERSION" ]] || {
-                printf 'error: host pigz version %s, pin is %s\n' \
-                    "$(host_version pigz)" "$PIGZ_VERSION" >&2
-                return 1
-            }
-            if [[ -e "$BIN_DIR/pigz" ]]; then
-                printf 'error: pigz is invoked as %s -p1; do not publish %s\n' \
-                    "$PIGZ_BIN" "$BIN_DIR/pigz" >&2
+        gnu-gzip | pigz)
+            path="$(tool_path "$name")"
+            [[ -x "$path" ]] || { printf 'error: host %s missing: %s\n' "$name" "$path" >&2 && return 1; }
+            [[ "$(tool_version_text "$name")" == "$version" ]] ||
+                { printf 'error: host %s is %s, pin is %s\n' "$name" "$(tool_version_text "$name")" "$version" >&2 && return 1; }
+            if [[ "$name" == gnu-gzip ]]; then
+                [[ "$(readlink -f "$BIN_DIR/gnu-gzip")" == "$(readlink -f "$GNU_GZIP_BIN")" ]] ||
+                    { printf 'error: %s must link to %s\n' "$BIN_DIR/gnu-gzip" "$GNU_GZIP_BIN" >&2 && return 1; }
+            elif [[ -e "$BIN_DIR/pigz" ]]; then
+                printf 'error: pigz runs as %s -p1; remove %s\n' "$PIGZ_BIN" "$BIN_DIR/pigz" >&2
                 return 1
             fi
+            printf 'ok: %s %s\n' "$name" "$version"
+            return
             ;;
-        libdeflate-gzip)
-            [[ -x "$path" ]] || {
-                printf 'missing: %s %s\n' "$name" "$version" >&2
-                return 1
-            }
-            file -b "$path" | grep -q 'statically linked' && {
-                printf 'error: %s is a Zig wrapper, not the native CLI\n' "$path" >&2
-                return 1
-            }
-            "$path" -V | grep -Fq "$version" || return 1
-            assert_not_linked "$path" 'libdeflate|libisal|libigzip' "$name" || return 1
-            ;;
-        libdeflate-zlib)
-            [[ -x "$path" ]] || {
-                printf 'missing: %s %s\n' "$name" "$version" >&2
-                return 1
-            }
-            "$path" --version | grep -Fq "$version" || return 1
-            assert_not_linked "$path" 'libz\.so|libdeflate|libisal|libigzip' "$name" || return 1
-            ;;
-        igzip)
-            [[ -x "$path" ]] || {
-                printf 'missing: %s %s\n' "$name" "$version" >&2
-                return 1
-            }
-            file -b "$path" | grep -q 'statically linked' && {
-                printf 'error: %s is a Zig wrapper, not the native CLI\n' "$path" >&2
-                return 1
-            }
-            "$path" --version | grep -Fq 'unknown version' || return 1
-            assert_not_linked "$path" 'libdeflate|libisal|libigzip' "$name" || return 1
-            ;;
-        std-gzip | zipir-gzip | std-zlib | zipir-zlib | flate2-miniz | flate2-zlib-rs)
-            [[ -x "$path" ]] || {
-                printf 'missing: %s %s\n' "$name" "$version" >&2
-                return 1
-            }
-            "$path" --version | grep -Fq "$version" || return 1
-            case "$name" in
-                flate2-miniz | flate2-zlib-rs)
-                    assert_not_linked "$path" 'libz\.so|libminiz|libdeflate' "$name" || return 1
-                    ;;
-            esac
-            ;;
-        system-zlib)
-            [[ -x "$path" ]] || {
-                printf 'missing: %s %s\n' "$name" "$version" >&2
-                return 1
-            }
-            "$path" --version | grep -Fq "$version" || return 1
-            ldd "$path" 2>/dev/null | grep -Eq 'libz\.so' || {
-                printf 'error: %s is not using the host libz\n' "$path" >&2
-                return 1
-            }
-            ;;
-        zlib-ng)
-            [[ -x "$path" ]] || {
-                printf 'missing: %s %s\n' "$name" "$version" >&2
-                return 1
-            }
-            file -b "$path" | grep -q 'statically linked' && {
-                printf 'error: %s is a Zig wrapper, not the native CLI\n' "$path" >&2
-                return 1
-            }
-            "$path" --help | grep -Fq 'Usage: minigzip' || return 1
-            assert_not_linked "$path" 'libz\.so|libdeflate|libisal' "$name" || return 1
-            ;;
-        zlib-ng-zlib)
-            [[ -x "$path" ]] || {
-                printf 'missing: %s %s\n' "$name" "$version" >&2
-                return 1
-            }
-            "$path" --version | grep -Fq "$version" || return 1
-            assert_not_linked "$path" 'libz\.so|libdeflate|libisal' "$name" || return 1
-            ;;
-        bgzip)
-            [[ -x "$path" ]] || {
-                printf 'missing: %s %s\n' "$name" "$version" >&2
-                return 1
-            }
-            [[ "$("$path" --version | awk 'NR==1{print $3}')" == "$version" ]] || return 1
-            assert_not_linked "$path" 'libdeflate|libisal|libhts\.so' "$name" || return 1
-            ;;
-        *) return 64 ;;
     esac
+    [[ -x "$path" ]] || { printf 'missing: %s %s\n' "$name" "$version" >&2 && return 1; }
+    case "$name" in
+        libdeflate-gzip | igzip | zlib-ng)
+            ! file -b "$path" | grep -q 'statically linked' ||
+                { printf 'error: %s is a Zig wrapper, not the native CLI\n' "$path" >&2 && return 1; }
+            ;;
+    esac
+    case "$name" in
+        libdeflate-gzip) "$path" -V | grep -Fq "$version" ;;
+        igzip) "$path" --version | grep -Fq 'unknown version' ;;
+        zlib-ng) "$path" --help | grep -Fq 'Usage: minigzip' ;;
+        bgzip) [[ "$("$path" --version | awk 'NR==1{print $3}')" == "$version" ]] ;;
+        *) "$path" --version | grep -Fq "$version" ;;
+    esac || { printf 'error: %s does not report version %s\n' "$path" "$version" >&2 && return 1; }
+    case "$name" in
+        libdeflate-gzip | igzip) forbidden='libdeflate|libisal|libigzip' ;;
+        libdeflate-zlib) forbidden='libz\.so|libdeflate|libisal|libigzip' ;;
+        flate2-miniz | flate2-zlib-rs) forbidden='libz\.so|libminiz|libdeflate' ;;
+        zlib-ng | zlib-ng-zlib) forbidden='libz\.so|libdeflate|libisal' ;;
+        bgzip) forbidden='libdeflate|libisal|libhts\.so' ;;
+        system-zlib)
+            ldd "$path" 2>/dev/null | grep -Eq 'libz\.so' ||
+                { printf 'error: %s is not using the host libz\n' "$path" >&2 && return 1; }
+            ;;
+    esac
+    assert_links "$path" "$forbidden" || return 1
     printf 'ok: %s %s\n' "$name" "$version"
 }
 
-assert_not_linked() {
-    local binary="$1" pattern="$2" label="$3" deps
-    deps="$(ldd "$binary" 2>/dev/null || true)"
-    if printf '%s\n' "$deps" | grep -Eq "$pattern"; then
-        printf 'error: %s links a forbidden library (%s):\n%s\n' \
-            "$label" "$pattern" "$deps" >&2
-        return 1
-    fi
-}
-
-already_installed() {
-    check_target "$1" >/dev/null 2>&1
-}
-
-build_std_gzip() {
-    local work
+build_zig_adapter() {
+    local name="$1" work="$WORK/$1" source
     require_zig
-    start_work
-    work="$ACTIVE_WORK/std-gzip"
     mkdir -p "$work/global-cache" "$work/local-cache" "$work/prefix"
-    printf 'build: std.compress.flate gzip adapter\n'
-    ZIG_GLOBAL_CACHE_DIR="$work/global-cache" ZIG_LOCAL_CACHE_DIR="$work/local-cache" \
-        zig build --build-file "$TOOLS_DIR/build.zig" -Dadapter=std-gzip \
-        -Doptimize=ReleaseFast -Dstrip=true -Dcpu=native \
-        --prefix "$work/prefix" -j"$TOOL_JOBS"
-    publish std-gzip "$STD_GZIP_VERSION" "$work/prefix/bin/std-gzip" \
-        "Zig ${ZIG_VERSION} standard library" "$(zig version)" \
-        'ReleaseFast;strip;single_threaded;cpu=native;x86_64-linux'
-}
-
-build_std_zlib() {
-    local work
-    require_zig
-    start_work
-    work="$ACTIVE_WORK/std-zlib"
-    mkdir -p "$work/global-cache" "$work/local-cache" "$work/prefix"
-    printf 'build: std.compress.flate zlib adapter\n'
-    ZIG_GLOBAL_CACHE_DIR="$work/global-cache" ZIG_LOCAL_CACHE_DIR="$work/local-cache" \
-        zig build --build-file "$TOOLS_DIR/build.zig" -Dadapter=std-zlib \
-        -Doptimize=ReleaseFast -Dstrip=true -Dcpu=native \
-        --prefix "$work/prefix" -j"$TOOL_JOBS"
-    publish std-zlib "$STD_ZLIB_VERSION" "$work/prefix/bin/std-zlib" \
-        "Zig ${ZIG_VERSION} standard library" "$(zig version)" \
-        'ReleaseFast;strip;single_threaded;cpu=native;x86_64-linux'
-}
-
-build_zipir() {
-    local name="$1" format="$2" work
-    require_zig
-    start_work
-    work="$ACTIVE_WORK/$name"
-    mkdir -p "$work/global-cache" "$work/local-cache" "$work/prefix"
-    printf 'build: zipir %s adapter\n' "$format"
+    printf 'build: %s Zig adapter\n' "$name"
     ZIG_GLOBAL_CACHE_DIR="$work/global-cache" ZIG_LOCAL_CACHE_DIR="$work/local-cache" \
         zig build --build-file "$TOOLS_DIR/build.zig" -Dadapter="$name" \
-        -Doptimize=ReleaseFast -Dstrip=true -Dcpu=native \
-        --prefix "$work/prefix" -j"$TOOL_JOBS"
-    publish "$name" "$ZIPIR_VERSION" "$work/prefix/bin/$name" \
-        "local zipir src/root.zig $format adapter" "$(zig version)" \
-        "ReleaseFast;strip;single_threaded;cpu=native;x86_64-linux;$format"
+        -Doptimize=ReleaseFast -Dstrip=true -Dcpu=native --prefix "$work/prefix" -j"$TOOL_JOBS"
+    case "$name" in
+        std-*) source="Zig ${ZIG_VERSION} standard library" ;;
+        *) source="local zipir src/root.zig ${name#zipir-} adapter" ;;
+    esac
+    publish "$name" "$work/prefix/bin/$name" "$source" "$(zig version)" \
+        "ReleaseFast;strip;single_threaded;cpu=native;x86_64-linux"
 }
 
-build_system_zlib() {
-    local work
-    require_command cc
-    start_work
-    work="$ACTIVE_WORK/system-zlib"
-    mkdir -p "$work"
-    printf 'build: system libz %s zlib API\n' "$SYSTEM_ZLIB_VERSION"
-    cc -O3 -DNDEBUG -march=native -std=c11 \
-        "$TOOLS_DIR/c/zlib_adapter.c" -lz -o "$work/system-zlib"
-    publish system-zlib "$SYSTEM_ZLIB_VERSION" "$work/system-zlib" \
-        'host system libz' "$(cc --version | awk 'NR==1{print $1, $NF}')" \
-        'Release;dynamic;zlib-api;ST;march=native'
-}
-
-prepare_libdeflate() {
-    local need_gzip="${1:-0}" work archive source build_gzip
-    require_command cmake
-    start_work
-    work="$ACTIVE_WORK/libdeflate"
-    archive="$work/libdeflate.tar.gz"
-    source="$work/source"
-    build_gzip=OFF
-    if [[ "$need_gzip" == 1 ]]; then
-        build_gzip=ON
-    fi
-    mkdir -p "$work/build" "$work/prefix"
-    if [[ ! -f "$work/prefix/include/libdeflate.h" ||
-        ( ! -f "$work/prefix/lib/libdeflate.a" && ! -f "$work/prefix/lib64/libdeflate.a" ) ||
-        ( "$need_gzip" == 1 && ! -x "$work/prefix/bin/libdeflate-gzip" ) ]]; then
-        if [[ ! -f "$archive" ]]; then
-            download_archive "$LIBDEFLATE_URL" "$archive"
-        fi
-        if [[ ! -f "$source/CMakeLists.txt" ]]; then
-            extract_archive "$archive" "$source"
-        fi
-        printf 'build: libdeflate %s static library (gzip CLI=%s)\n' "$LIBDEFLATE_VERSION" "$build_gzip"
-        cmake -S "$source" -B "$work/build" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$work/prefix" \
-            -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=native" \
-            -DLIBDEFLATE_BUILD_SHARED_LIB=OFF \
-            -DLIBDEFLATE_BUILD_STATIC_LIB=ON \
-            -DLIBDEFLATE_BUILD_GZIP="$build_gzip" \
-            -DLIBDEFLATE_USE_SHARED_LIB=OFF \
-            -DLIBDEFLATE_BUILD_TESTS=OFF \
-            -DCMAKE_INSTALL_MESSAGE=NEVER
-        cmake --build "$work/build" -j"$TOOL_JOBS"
-        cmake --install "$work/build"
-    fi
-    [[ -f "$work/prefix/lib/libdeflate.a" || -f "$work/prefix/lib64/libdeflate.a" ]] || {
-        printf 'error: libdeflate static library missing after install\n' >&2
-        return 1
-    }
-    if [[ "$need_gzip" == 1 && ! -x "$work/prefix/bin/libdeflate-gzip" ]]; then
-        printf 'error: libdeflate-gzip missing after install\n' >&2
-        return 1
-    fi
-}
-
-build_gnu_gzip() {
-    [[ -x "$GNU_GZIP_BIN" ]] || {
-        printf 'error: host gzip not found: %s\n' "$GNU_GZIP_BIN" >&2
-        return 1
-    }
-    [[ "$(host_version gnu-gzip)" == "$GNU_GZIP_VERSION" ]] || {
-        printf 'error: host gzip version %s, pin is %s\n' \
-            "$(host_version gnu-gzip)" "$GNU_GZIP_VERSION" >&2
-        return 1
-    }
-    publish_host gnu-gzip "$GNU_GZIP_VERSION" "$GNU_GZIP_BIN" \
-        "host ${GNU_GZIP_BIN}" "host gzip $(host_version gnu-gzip)" \
-        'host-native;ST;-n;levels-1-6-9'
-}
-
-build_pigz() {
-    [[ -x "$PIGZ_BIN" ]] || {
-        printf 'error: host pigz not found: %s\n' "$PIGZ_BIN" >&2
-        return 1
-    }
-    [[ "$(host_version pigz)" == "$PIGZ_VERSION" ]] || {
-        printf 'error: host pigz version %s, pin is %s\n' \
-            "$(host_version pigz)" "$PIGZ_VERSION" >&2
-        return 1
-    }
-    publish_host pigz "$PIGZ_VERSION" "" \
-        "host ${PIGZ_BIN} -p1" "host pigz $(host_version pigz)" \
-        'host-native;ST;-p1;-n;levels-1-6-9'
-}
-
-build_libdeflate_gzip() {
-    local work
-    prepare_libdeflate 1
-    work="$ACTIVE_WORK/libdeflate"
-    [[ -x "$work/prefix/bin/libdeflate-gzip" ]] || {
-        printf 'error: libdeflate-gzip missing after install\n' >&2
-        return 1
-    }
-    publish libdeflate-gzip "$LIBDEFLATE_VERSION" "$work/prefix/bin/libdeflate-gzip" \
-        "$LIBDEFLATE_URL" "cmake $(cmake --version | awk 'NR==1{print $3}')" \
-        'Release;static;gzip-cli;ST;march=native;native-cli'
-}
-
-build_libdeflate_zlib() {
-    local work lib include_dir
-    require_command cc
-    prepare_libdeflate 0
-    work="$ACTIVE_WORK/libdeflate"
-    lib="$(find "$work/prefix" -type f -name 'libdeflate.a' -print -quit)"
-    include_dir="$work/prefix/include"
-    [[ -n "$lib" && -f "$include_dir/libdeflate.h" ]] || {
-        printf 'error: libdeflate headers or static library missing\n' >&2
-        return 1
-    }
-    printf 'build: libdeflate %s zlib full-buffer adapter\n' "$LIBDEFLATE_VERSION"
-    cc -O3 -DNDEBUG -march=native -std=c11 -I"$include_dir" \
-        "$TOOLS_DIR/c/libdeflate_zlib_adapter.c" "$lib" -o "$work/libdeflate-zlib"
-    publish libdeflate-zlib "$LIBDEFLATE_VERSION" "$work/libdeflate-zlib" \
-        "$LIBDEFLATE_URL" "cc $(cc --version | awk 'NR==1{print $1, $NF}')" \
-        'Release;static;libdeflate-zlib;full-buffer;known-output-size;ST;march=native'
-}
-
-build_igzip() {
-    local work archive source engine
-    engine="$INSTALLS_DIR/igzip/$ISAL_VERSION/libexec/igzip"
-    if [[ "$REBUILD" != 1 && -x "$engine" ]]; then
-        printf 'reuse: local igzip engine\n'
-        publish igzip "$ISAL_VERSION" "$engine" \
-            "$ISAL_URL" 'previously built local CLI' \
-            'Release;static;igzip-cli;ST;no-shim;native-cli'
-        return
-    fi
-    require_command cmake
-    require_command nasm
-    start_work
-    work="$ACTIVE_WORK/isal"
-    archive="$work/isal.tar.gz"
-    source="$work/source"
-    mkdir -p "$work/build" "$work/prefix"
-    download_archive "$ISAL_URL" "$archive"
-    extract_archive "$archive" "$source"
-    printf 'build: ISA-L %s igzip CLI (static, no shim, no -T)\n' "$ISAL_VERSION"
-    cmake -S "$source" -B "$work/build" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="$work/prefix" \
-        -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=native" \
-        -DCMAKE_ASM_NASM_COMPILER="$(command -v nasm)" \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DISAL_BUILD_TESTS=OFF \
-        -DISAL_BUILD_PERF_TESTS=OFF \
-        -DISAL_BUILD_FUZZ_TESTS=OFF \
-        -DISAL_BUILD_ISAL_SHIM=OFF \
-        -DISAL_BUILD_IGZIP_CLI=ON \
-        -DCMAKE_INSTALL_MESSAGE=NEVER
-    cmake --build "$work/build" -j"$TOOL_JOBS"
-    cmake --install "$work/build"
-    [[ -x "$work/prefix/bin/igzip" ]] || {
-        printf 'error: igzip missing after install\n' >&2
-        return 1
-    }
-    publish igzip "$ISAL_VERSION" "$work/prefix/bin/igzip" \
-        "$ISAL_URL" "cmake $(cmake --version | awk 'NR==1{print $3}'); nasm $(nasm -v | awk '{print $3}')" \
-        'Release;static;igzip-cli;ST;no-shim;march=native;native-cli'
-}
-
-build_flate2_miniz() {
-    local work output
-    require_command cargo
-    require_command rustc
-    start_work
-    work="$ACTIVE_WORK/flate2-miniz"
+build_flate2() {
+    local name="$1" work="$WORK/$1" backend
+    require_command cargo rustc
     mkdir -p "$work/cargo-home" "$work/target"
-    printf 'build: flate2 %s rust_backend (miniz_oxide)\n' "$FLATE2_MINIZ_VERSION"
-    CARGO_HOME="$work/cargo-home" CARGO_TARGET_DIR="$work/target" \
-        RUSTFLAGS='-C target-cpu=native' \
-        cargo build --locked --release \
-        --manifest-path "$TOOLS_DIR/rust/flate2-miniz/Cargo.toml" \
-        -j "$TOOL_JOBS"
-    output="$work/target/release/flate2-miniz"
-    publish flate2-miniz "$FLATE2_MINIZ_VERSION" "$output" \
-        'crates.io flate2 rust_backend via tracked Cargo.lock' \
-        "$(rustc --version)" \
-        'cargo-release;rust_backend;target-cpu=native;ST'
+    backend="$([[ "$name" == flate2-miniz ]] && printf 'rust_backend' || printf 'zlib-rs %s' "$ZLIB_RS_VERSION")"
+    printf 'build: %s %s\n' "$name" "$backend"
+    CARGO_HOME="$work/cargo-home" CARGO_TARGET_DIR="$work/target" RUSTFLAGS='-C target-cpu=native' \
+        cargo build --locked --release --manifest-path "$TOOLS_DIR/rust/$name/Cargo.toml" -j "$TOOL_JOBS"
+    publish "$name" "$work/target/release/$name" "crates.io flate2 $backend via tracked Cargo.lock" \
+        "$(rustc --version)" "cargo-release;${backend%% *};target-cpu=native;ST"
 }
 
-build_flate2_zlib_rs() {
-    local work output
-    require_command cargo
-    require_command rustc
-    start_work
-    work="$ACTIVE_WORK/flate2-zlib-rs"
-    mkdir -p "$work/cargo-home" "$work/target"
-    printf 'build: flate2 %s zlib-rs %s\n' "$FLATE2_ZLIB_RS_VERSION" "$ZLIB_RS_VERSION"
-    CARGO_HOME="$work/cargo-home" CARGO_TARGET_DIR="$work/target" \
-        RUSTFLAGS='-C target-cpu=native' \
-        cargo build --locked --release \
-        --manifest-path "$TOOLS_DIR/rust/flate2-zlib-rs/Cargo.toml" \
-        -j "$TOOL_JOBS"
-    output="$work/target/release/flate2-zlib-rs"
-    publish flate2-zlib-rs "$FLATE2_ZLIB_RS_VERSION" "$output" \
-        "crates.io flate2 zlib-rs ${ZLIB_RS_VERSION} via tracked Cargo.lock" \
-        "$(rustc --version)" \
-        'cargo-release;zlib-rs;target-cpu=native;ST'
+# libdeflate static library plus its gzip CLI, built once per run.
+build_libdeflate() {
+    local work="$WORK/libdeflate"
+    [[ -x "$work/prefix/bin/libdeflate-gzip" ]] && return 0
+    fetch_source "$LIBDEFLATE_URL" "$work/source"
+    printf 'build: libdeflate %s static library and gzip CLI\n' "$LIBDEFLATE_VERSION"
+    cmake_install "$work/source" "$work/build" "$work/prefix" \
+        -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=native" -DLIBDEFLATE_BUILD_SHARED_LIB=OFF \
+        -DLIBDEFLATE_BUILD_STATIC_LIB=ON -DLIBDEFLATE_BUILD_GZIP=ON -DLIBDEFLATE_USE_SHARED_LIB=OFF \
+        -DLIBDEFLATE_BUILD_TESTS=OFF
 }
 
-build_zlib_ng() {
-    local work archive source engine
-    engine="$INSTALLS_DIR/zlib-ng/$ZLIB_NG_VERSION/libexec/zlib-ng"
-    if [[ "$REBUILD" != 1 && -x "$engine" ]]; then
-        printf 'reuse: local zlib-ng minigzip\n'
-        publish zlib-ng "$ZLIB_NG_VERSION" "$engine" \
-            "$ZLIB_NG_URL" 'previously built local CLI' \
-            'Release;static;minigzip;ST;native-cli'
-        return
+# zlib-ng configured for its minigzip CLI (native) or its native zlib API (api).
+build_zlib_ng_prefix() {
+    local kind="$1" work="$WORK/zlib-ng"
+    fetch_source "$ZLIB_NG_URL" "$work/source"
+    printf 'build: zlib-ng %s (%s)\n' "$ZLIB_NG_VERSION" "$kind"
+    if [[ "$kind" == cli ]]; then
+        cmake_install "$work/source" "$work/build-cli" "$work/prefix-cli" -DBUILD_SHARED_LIBS=OFF \
+            -DZLIB_COMPAT=OFF -DWITH_GTEST=OFF -DWITH_FUZZERS=OFF -DWITH_BENCHMARKS=OFF \
+            -DBUILD_TESTING=ON -DINSTALL_UTILS=ON -DWITH_NATIVE_INSTRUCTIONS=ON
+    else
+        cmake_install "$work/source" "$work/build-api" "$work/prefix-api" -DBUILD_SHARED_LIBS=OFF \
+            -DZLIB_COMPAT=OFF -DWITH_GTEST=OFF -DWITH_FUZZERS=OFF -DWITH_BENCHMARKS=OFF \
+            -DBUILD_TESTING=OFF -DINSTALL_UTILS=OFF -DWITH_NATIVE_INSTRUCTIONS=ON \
+            -DWITH_RUNTIME_CPU_DETECTION=OFF -DWITH_NEW_STRATEGIES=OFF
     fi
-    require_command cmake
-    start_work
-    work="$ACTIVE_WORK/zlib-ng"
-    archive="$work/zlib-ng.tar.gz"
-    source="$work/source"
-    mkdir -p "$work/build" "$work/prefix"
-    download_archive "$ZLIB_NG_URL" "$archive"
-    extract_archive "$archive" "$source"
-    printf 'build: zlib-ng %s minigzip (static, local prefix)\n' "$ZLIB_NG_VERSION"
-    cmake -S "$source" -B "$work/build" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="$work/prefix" \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DZLIB_COMPAT=OFF \
-        -DWITH_GTEST=OFF \
-        -DWITH_FUZZERS=OFF \
-        -DWITH_BENCHMARKS=OFF \
-        -DBUILD_TESTING=ON \
-        -DINSTALL_UTILS=ON \
-        -DWITH_NATIVE_INSTRUCTIONS=ON \
-        -DCMAKE_INSTALL_MESSAGE=NEVER
-    cmake --build "$work/build" -j"$TOOL_JOBS"
-    cmake --install "$work/build"
-    [[ -x "$work/prefix/bin/minigzip" ]] || {
-        printf 'error: zlib-ng minigzip missing after install\n' >&2
-        return 1
-    }
-    publish zlib-ng "$ZLIB_NG_VERSION" "$work/prefix/bin/minigzip" \
-        "$ZLIB_NG_URL" "cmake $(cmake --version | awk 'NR==1{print $3}')" \
-        'Release;static;minigzip;ST;WITH_NATIVE_INSTRUCTIONS;native-cli'
 }
 
-build_zlib_ng_zlib() {
-    local work archive source lib
-    require_command cmake
-    start_work
-    work="$ACTIVE_WORK/zlib-ng-zlib"
-    archive="$work/zlib-ng.tar.gz"
-    source="$work/source"
-    mkdir -p "$work/build" "$work/prefix"
-    download_archive "$ZLIB_NG_URL" "$archive"
-    extract_archive "$archive" "$source"
-    printf 'build: zlib-ng %s native zlib API (static, no new strategies)\n' "$ZLIB_NG_VERSION"
-    cmake -S "$source" -B "$work/build" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="$work/prefix" \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DZLIB_COMPAT=OFF \
-        -DWITH_GTEST=OFF \
-        -DWITH_FUZZERS=OFF \
-        -DWITH_BENCHMARKS=OFF \
-        -DBUILD_TESTING=OFF \
-        -DINSTALL_UTILS=OFF \
-        -DWITH_NATIVE_INSTRUCTIONS=ON \
-        -DWITH_RUNTIME_CPU_DETECTION=OFF \
-        -DWITH_NEW_STRATEGIES=OFF \
-        -DCMAKE_INSTALL_MESSAGE=NEVER
-    cmake --build "$work/build" -j"$TOOL_JOBS"
-    cmake --install "$work/build"
-    lib="$(find "$work/prefix" -type f \( -name 'libz-ng.a' -o -name 'libz.a' \) -print -quit)"
-    [[ -n "$lib" ]] || {
-        printf 'error: zlib-ng native static library missing after install\n' >&2
-        return 1
-    }
-    cc -O3 -DNDEBUG -march=native -std=c11 \
-        -DZIPIR_ZLIB_NG_NATIVE -I"$work/prefix/include" \
-        "$TOOLS_DIR/c/zlib_adapter.c" "$lib" -o "$work/zlib-ng-zlib"
-    publish zlib-ng-zlib "$ZLIB_NG_VERSION" "$work/zlib-ng-zlib" \
-        "$ZLIB_NG_URL" "$(cc --version | awk 'NR==1{print $1, $NF}')" \
-        'Release;static;zlib-ng-native-api;WITH_NATIVE_INSTRUCTIONS;NO_NEW_STRATEGIES;ST;march=native'
-}
-
-build_bgzip() {
-    local work archive source
-    require_command make
-    require_command cc
-    start_work
-    work="$ACTIVE_WORK/htslib"
-    archive="$work/htslib.tar.bz2"
-    source="$work/source"
-    mkdir -p "$work"
-    download_archive "$HTSLIB_URL" "$archive"
-    extract_archive "$archive" "$source"
-    printf 'build: htslib %s bgzip (static libhts, host libz, no libdeflate)\n' "$HTSLIB_VERSION"
-    # configure links libdeflate whenever its headers are installed; that would make
-    # bgzip output depend on the host, so it is always disabled.
-    (
-        cd "$source"
-        ./configure --disable-bz2 --disable-lzma --disable-libcurl --without-libdeflate >/dev/null
-        make -j"$TOOL_JOBS" bgzip >/dev/null
-    )
-    [[ -x "$source/bgzip" ]] || {
-        printf 'error: bgzip missing after build\n' >&2
-        return 1
-    }
-    publish bgzip "$HTSLIB_VERSION" "$source/bgzip" \
-        "$HTSLIB_URL" "$(cc --version | awk 'NR==1{print $1, $NF}')" \
-        'configure;static-libhts;host-libz;no-libdeflate;no-bz2;no-lzma;no-libcurl;ST'
+build_target() {
+    local name="$1" lib work
+    case "$name" in
+        std-gzip | std-zlib | zipir-gzip | zipir-zlib) build_zig_adapter "$name" ;;
+        flate2-miniz | flate2-zlib-rs) build_flate2 "$name" ;;
+        gnu-gzip | pigz)
+            [[ "$(tool_version_text "$name")" == "$(version_for "$name")" ]] ||
+                die "host $name is $(tool_version_text "$name"), pin is $(version_for "$name")"
+            publish "$name" "" "host $(tool_path "$name")" "host $name $(tool_version_text "$name")" \
+                "host-native;ST;$([[ "$name" == pigz ]] && printf -- '-p1;')-n"
+            ;;
+        system-zlib)
+            require_command cc
+            mkdir -p "$WORK/system-zlib"
+            cc -O3 -DNDEBUG -march=native -std=c11 "$TOOLS_DIR/c/zlib_adapter.c" -lz -o "$WORK/system-zlib/$name"
+            publish "$name" "$WORK/system-zlib/$name" 'host system libz' "$(cc_version)" 'Release;dynamic;zlib-api;ST;march=native'
+            ;;
+        libdeflate-gzip)
+            build_libdeflate
+            publish "$name" "$WORK/libdeflate/prefix/bin/libdeflate-gzip" "$LIBDEFLATE_URL" \
+                "cmake $(cmake --version | awk 'NR==1{print $3}')" 'Release;static;gzip-cli;ST;march=native;native-cli'
+            ;;
+        libdeflate-zlib)
+            require_command cc
+            build_libdeflate
+            work="$WORK/libdeflate"
+            lib="$(find "$work/prefix" -type f -name 'libdeflate.a' -print -quit)"
+            [[ -n "$lib" ]] || die "libdeflate static library missing after install"
+            cc -O3 -DNDEBUG -march=native -std=c11 -I"$work/prefix/include" \
+                "$TOOLS_DIR/c/libdeflate_zlib_adapter.c" "$lib" -o "$work/$name"
+            publish "$name" "$work/$name" "$LIBDEFLATE_URL" "cc $(cc_version)" \
+                'Release;static;libdeflate-zlib;full-buffer;known-output-size;ST;march=native'
+            ;;
+        igzip)
+            require_command nasm
+            work="$WORK/isal"
+            fetch_source "$ISAL_URL" "$work/source"
+            printf 'build: ISA-L %s igzip CLI (static, no shim, no -T)\n' "$ISAL_VERSION"
+            cmake_install "$work/source" "$work/build" "$work/prefix" \
+                -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=native" -DCMAKE_ASM_NASM_COMPILER="$(command -v nasm)" \
+                -DBUILD_SHARED_LIBS=OFF -DISAL_BUILD_TESTS=OFF -DISAL_BUILD_PERF_TESTS=OFF \
+                -DISAL_BUILD_FUZZ_TESTS=OFF -DISAL_BUILD_ISAL_SHIM=OFF -DISAL_BUILD_IGZIP_CLI=ON
+            publish "$name" "$work/prefix/bin/igzip" "$ISAL_URL" \
+                "cmake $(cmake --version | awk 'NR==1{print $3}'); nasm $(nasm -v | awk '{print $3}')" \
+                'Release;static;igzip-cli;ST;no-shim;march=native;native-cli'
+            ;;
+        zlib-ng)
+            build_zlib_ng_prefix cli
+            publish "$name" "$WORK/zlib-ng/prefix-cli/bin/minigzip" "$ZLIB_NG_URL" \
+                "cmake $(cmake --version | awk 'NR==1{print $3}')" 'Release;static;minigzip;ST;WITH_NATIVE_INSTRUCTIONS;native-cli'
+            ;;
+        zlib-ng-zlib)
+            require_command cc
+            build_zlib_ng_prefix api
+            work="$WORK/zlib-ng"
+            lib="$(find "$work/prefix-api" -type f \( -name 'libz-ng.a' -o -name 'libz.a' \) -print -quit)"
+            [[ -n "$lib" ]] || die "zlib-ng native static library missing after install"
+            cc -O3 -DNDEBUG -march=native -std=c11 -DZIPIR_ZLIB_NG_NATIVE -I"$work/prefix-api/include" \
+                "$TOOLS_DIR/c/zlib_adapter.c" "$lib" -o "$work/$name"
+            publish "$name" "$work/$name" "$ZLIB_NG_URL" "$(cc_version)" \
+                'Release;static;zlib-ng-native-api;WITH_NATIVE_INSTRUCTIONS;NO_NEW_STRATEGIES;ST;march=native'
+            ;;
+        bgzip)
+            require_command make cc
+            work="$WORK/htslib"
+            fetch_source "$HTSLIB_URL" "$work/source"
+            printf 'build: htslib %s bgzip (static libhts, host libz, no libdeflate)\n' "$HTSLIB_VERSION"
+            # configure links libdeflate whenever its headers are installed; that would make
+            # bgzip output depend on the host, so it is always disabled.
+            (
+                cd "$work/source"
+                ./configure --disable-bz2 --disable-lzma --disable-libcurl --without-libdeflate >/dev/null
+                make -j"$TOOL_JOBS" bgzip >/dev/null
+            )
+            publish "$name" "$work/source/bgzip" "$HTSLIB_URL" "$(cc_version)" \
+                'configure;static-libhts;host-libz;no-libdeflate;no-bz2;no-lzma;no-libcurl;ST'
+            ;;
+        *) usage_error "unknown target: $name" ;;
+    esac
 }
 
 install_target() {
     local name="$1"
-    if [[ "$REBUILD" != 1 ]] && already_installed "$name"; then
-        case "$name" in
-            gnu-gzip) switch_abs_link gnu-gzip "$GNU_GZIP_BIN" ;;
-            pigz) remove_bin_link pigz ;;
-            *) switch_link "$name" "$(version_for "$name")" ;;
-        esac
-        check_target "$name"
-        return
+    if [[ "$REBUILD" != 1 ]] && check_target "$name" >/dev/null 2>&1; then
+        link_bin "$name" "$(bin_target "$name")"
+    else
+        make_work tools
+        build_target "$name"
     fi
-    case "$name" in
-        std-gzip) build_std_gzip ;;
-        std-zlib) build_std_zlib ;;
-        zipir-gzip | zipir-zlib) build_zipir "$name" "${name#zipir-}" ;;
-        system-zlib) build_system_zlib ;;
-        libdeflate-zlib) build_libdeflate_zlib ;;
-        gnu-gzip) build_gnu_gzip ;;
-        pigz) build_pigz ;;
-        libdeflate-gzip) build_libdeflate_gzip ;;
-        igzip) build_igzip ;;
-        flate2-miniz) build_flate2_miniz ;;
-        flate2-zlib-rs) build_flate2_zlib_rs ;;
-        zlib-ng) build_zlib_ng ;;
-        zlib-ng-zlib) build_zlib_ng_zlib ;;
-        bgzip) build_bgzip ;;
-        *) return 64 ;;
-    esac
     check_target "$name"
 }
 
-list_targets() {
-    local name version state
-    for name in "${ALL_TARGETS[@]}"; do
-        version="$(version_for "$name")"
-        if check_target "$name" >/dev/null 2>&1; then
-            state=installed
-        else
-            state=missing
-        fi
-        printf '%-16s %-12s %s\n' "$name" "$version" "$state"
-    done
-}
-
 main() {
-    local mode=install selection=all name
-    require_linux_x64
-    validate_settings
+    local mode=install name targets
     case "${1:-}" in
-        --help | -h)
+        -h | --help)
             usage
             return
             ;;
         --list)
-            list_targets
+            for name in "${ALL_TARGETS[@]}"; do
+                printf '%-16s %-12s %s\n' "$name" "$(version_for "$name")" \
+                    "$(check_target "$name" >/dev/null 2>&1 && printf installed || printf missing)"
+            done
             return
             ;;
-        --rebuild)
-            REBUILD=1
-            selection="${2:-all}"
-            [[ $# -le 2 ]] || {
-                usage >&2
-                return 64
-            }
-            ;;
-        --check)
-            mode=check
-            selection="${2:-all}"
-            [[ $# -le 2 ]] || {
-                usage >&2
-                return 64
-            }
-            ;;
-        '') ;;
-        *)
-            selection="$1"
-            [[ $# -eq 1 ]] || {
-                usage >&2
-                return 64
-            }
-            ;;
+        --rebuild) REBUILD=1 && shift ;;
+        --check) mode=check && shift ;;
     esac
-    while IFS= read -r name; do
-        if [[ "$mode" == check ]]; then
-            check_target "$name"
-        else
-            install_target "$name"
-        fi
-    done < <(expand_target "$selection")
+    [[ $# -le 1 ]] || usage_error "one target at a time; see --help"
+    require_linux_x64
+    [[ "$TOOL_JOBS" =~ ^[1-9][0-9]*$ ]] || die "TOOL_JOBS must be a positive integer"
+    [[ "$KEEP_TOOL_WORK" =~ ^[01]$ ]] || die "KEEP_TOOL_WORK must be 0 or 1"
+    targets="$(expand_target "${1:-all}")"
+    for name in $targets; do
+        if [[ "$mode" == check ]]; then check_target "$name"; else install_target "$name"; fi
+    done
 }
 
 main "$@"

@@ -3,16 +3,10 @@
 # One row per category, class, and format; data/{category}/{format}/{class}/{filename}.
 
 set -euo pipefail
-
-TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
-MANIFEST="$TOOLS_DIR/corpus.tsv"
-DATA_DIR="$ROOT_DIR/data"
-BGZIP="$TOOLS_DIR/bin/bgzip"
+# shellcheck source=tools/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+BGZIP="$BIN_DIR/bgzip"
 FORCE=0
-
-# shellcheck source=tools/versions.sh
-source "$TOOLS_DIR/versions.sh"
 
 usage() {
     printf '%s\n' \
@@ -26,24 +20,6 @@ usage() {
         '' \
         'Reads tools/corpus.tsv. Writes gitignored data/. Requires curl, gzip, sha256sum, python3.' \
         'Rows derived with bgzip-6 also need tools/bin/bgzip (tools/install.sh bgzip).'
-}
-
-require_command() {
-    command -v "$1" >/dev/null 2>&1 || {
-        printf 'error: required command not found: %s\n' "$1" >&2
-        return 1
-    }
-}
-
-expand_filter() {
-    case "$1" in
-        all | '') printf '%s\n' all ;;
-        sequencing | ms | generalized) printf '%s\n' "$1" ;;
-        *)
-            printf 'error: unknown category: %s\n' "$1" >&2
-            return 64
-            ;;
-    esac
 }
 
 # Prints valid rows as: category class format filename bytes sha256 source.
@@ -433,10 +409,7 @@ list_rows() {
 
 main() {
     local mode=fetch filter=all
-    require_command curl
-    require_command gzip
-    require_command sha256sum
-    require_command python3
+    require_command curl gzip sha256sum python3
     case "${1:-}" in
         --help | -h)
             usage
@@ -452,7 +425,7 @@ main() {
             ;;
         --check)
             mode=check
-            filter="$(expand_filter "${2:-all}")"
+            filter="$(expand_category "${2:-all}")"
             [[ $# -le 2 ]] || {
                 usage >&2
                 return 64
@@ -460,7 +433,7 @@ main() {
             ;;
         --force)
             FORCE=1
-            filter="$(expand_filter "${2:-all}")"
+            filter="$(expand_category "${2:-all}")"
             [[ $# -le 2 ]] || {
                 usage >&2
                 return 64
@@ -468,7 +441,7 @@ main() {
             ;;
         '') ;;
         *)
-            filter="$(expand_filter "$1")"
+            filter="$(expand_category "$1")"
             [[ $# -eq 1 ]] || {
                 usage >&2
                 return 64

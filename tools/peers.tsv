@@ -1,96 +1,27 @@
-# zipir run matrix
-# One row per tool + format + compress-level + threads we qualify and time.
-# Compression rows use the tool's native level scale. Decode-only tools have
-# one row with level -. Decode-only peers can be streaming or full-buffer;
-# coverage.tsv records the decode mode. Never rank those modes together.
-# All rows here are ST. Do not add pigz -p32, igzip -T, or pigz -11.
-#
-# tier: prime (daily work), extended (wider context), all (publication runs).
-#   Selections nest: --peers prime < extended < all (tools/select.sh).
-# lane: fast, balanced, dense marks the three representative levels per tool
-#   (--levels lanes, the default); - is used only by --levels all. Decode rows
-#   use lane -. igzip lanes follow tmp/gzip/compress/PEER-MAPPING.md; libdeflate
-#   1/6/12 (fastest, default, densest) is provisional until its frontier is measured.
-tool	tool_version	format	level	threads	nthreads	tier	lane
-std-gzip	0.16.0	gzip	1	ST	1	prime	fast
-std-gzip	0.16.0	gzip	2	ST	1	prime	-
-std-gzip	0.16.0	gzip	3	ST	1	prime	-
-std-gzip	0.16.0	gzip	4	ST	1	prime	-
-std-gzip	0.16.0	gzip	5	ST	1	prime	balanced
-std-gzip	0.16.0	gzip	6	ST	1	prime	-
-std-gzip	0.16.0	gzip	7	ST	1	prime	-
-std-gzip	0.16.0	gzip	8	ST	1	prime	-
-std-gzip	0.16.0	gzip	9	ST	1	prime	dense
-zipir-gzip	0.1.2	gzip	1	ST	1	prime	fast
-zipir-gzip	0.1.2	gzip	5	ST	1	prime	balanced
-zipir-gzip	0.1.2	gzip	9	ST	1	prime	dense
-std-zlib	0.16.0	zlib	-	ST	1	prime	-
-zipir-zlib	0.1.2	zlib	-	ST	1	prime	-
-system-zlib	1.3.1.zlib-ng	zlib	-	ST	1	extended	-
-libdeflate-zlib	1.26	zlib	-	ST	1	extended	-
-gnu-gzip	1.14	gzip	1	ST	1	extended	fast
-gnu-gzip	1.14	gzip	2	ST	1	extended	-
-gnu-gzip	1.14	gzip	3	ST	1	extended	-
-gnu-gzip	1.14	gzip	4	ST	1	extended	-
-gnu-gzip	1.14	gzip	5	ST	1	extended	balanced
-gnu-gzip	1.14	gzip	6	ST	1	extended	-
-gnu-gzip	1.14	gzip	7	ST	1	extended	-
-gnu-gzip	1.14	gzip	8	ST	1	extended	-
-gnu-gzip	1.14	gzip	9	ST	1	extended	dense
-libdeflate-gzip	1.26	gzip	1	ST	1	extended	fast
-libdeflate-gzip	1.26	gzip	2	ST	1	extended	-
-libdeflate-gzip	1.26	gzip	3	ST	1	extended	-
-libdeflate-gzip	1.26	gzip	4	ST	1	extended	-
-libdeflate-gzip	1.26	gzip	5	ST	1	extended	-
-libdeflate-gzip	1.26	gzip	6	ST	1	extended	balanced
-libdeflate-gzip	1.26	gzip	7	ST	1	extended	-
-libdeflate-gzip	1.26	gzip	8	ST	1	extended	-
-libdeflate-gzip	1.26	gzip	9	ST	1	extended	-
-libdeflate-gzip	1.26	gzip	10	ST	1	extended	-
-libdeflate-gzip	1.26	gzip	11	ST	1	extended	-
-libdeflate-gzip	1.26	gzip	12	ST	1	extended	dense
-igzip	2.32.1	gzip	0	ST	1	prime	fast
-igzip	2.32.1	gzip	1	ST	1	prime	balanced
-igzip	2.32.1	gzip	2	ST	1	prime	dense
-igzip	2.32.1	gzip	3	ST	1	prime	-
-pigz	2.8	gzip	0	ST	1	all	-
-pigz	2.8	gzip	1	ST	1	all	fast
-pigz	2.8	gzip	2	ST	1	all	-
-pigz	2.8	gzip	3	ST	1	all	-
-pigz	2.8	gzip	4	ST	1	all	-
-pigz	2.8	gzip	5	ST	1	all	balanced
-pigz	2.8	gzip	6	ST	1	all	-
-pigz	2.8	gzip	7	ST	1	all	-
-pigz	2.8	gzip	8	ST	1	all	-
-pigz	2.8	gzip	9	ST	1	all	dense
-flate2-miniz	1.1.10	gzip	0	ST	1	all	-
-flate2-miniz	1.1.10	gzip	1	ST	1	all	fast
-flate2-miniz	1.1.10	gzip	2	ST	1	all	-
-flate2-miniz	1.1.10	gzip	3	ST	1	all	-
-flate2-miniz	1.1.10	gzip	4	ST	1	all	-
-flate2-miniz	1.1.10	gzip	5	ST	1	all	balanced
-flate2-miniz	1.1.10	gzip	6	ST	1	all	-
-flate2-miniz	1.1.10	gzip	7	ST	1	all	-
-flate2-miniz	1.1.10	gzip	8	ST	1	all	-
-flate2-miniz	1.1.10	gzip	9	ST	1	all	dense
-flate2-zlib-rs	1.1.10	gzip	0	ST	1	all	-
-flate2-zlib-rs	1.1.10	gzip	1	ST	1	all	fast
-flate2-zlib-rs	1.1.10	gzip	2	ST	1	all	-
-flate2-zlib-rs	1.1.10	gzip	3	ST	1	all	-
-flate2-zlib-rs	1.1.10	gzip	4	ST	1	all	-
-flate2-zlib-rs	1.1.10	gzip	5	ST	1	all	balanced
-flate2-zlib-rs	1.1.10	gzip	6	ST	1	all	-
-flate2-zlib-rs	1.1.10	gzip	7	ST	1	all	-
-flate2-zlib-rs	1.1.10	gzip	8	ST	1	all	-
-flate2-zlib-rs	1.1.10	gzip	9	ST	1	all	dense
-zlib-ng	2.3.3	gzip	0	ST	1	prime	-
-zlib-ng	2.3.3	gzip	1	ST	1	prime	fast
-zlib-ng	2.3.3	gzip	2	ST	1	prime	-
-zlib-ng	2.3.3	gzip	3	ST	1	prime	-
-zlib-ng	2.3.3	gzip	4	ST	1	prime	-
-zlib-ng	2.3.3	gzip	5	ST	1	prime	balanced
-zlib-ng	2.3.3	gzip	6	ST	1	prime	-
-zlib-ng	2.3.3	gzip	7	ST	1	prime	-
-zlib-ng	2.3.3	gzip	8	ST	1	prime	-
-zlib-ng	2.3.3	gzip	9	ST	1	prime	dense
-zlib-ng-zlib	2.3.3	zlib	-	ST	1	prime	-
+# zipir comparison peers: one row per tool. Read by tools/common.sh and tools/report.py.
+# format    corpus format the tool reads and writes (gzip or zlib).
+# tier      prime (daily work), extended (wider check), all (publication runs). Selections nest.
+# levels    compression levels on the tool's own scale: a range A-B or a space list; - is decode-only.
+# fast balanced dense
+#           the three lane levels (--levels lanes, the default); - for decode-only tools. zipir,
+#           zlib-ng, and the zlib-scale tools use 1/5/9. igzip 0/1/2 is its measured frontier
+#           (tmp/gzip/compress/PEER-MAPPING.md). libdeflate 1/6/12 is provisional.
+# decode    streaming or full-buffer. Reports never rank the two modes together.
+# crc isize concat
+#           gzip checks qualify.sh blocks on (yes); any other value records the result only.
+# Every row is single-threaded. Versions live in tools/versions.sh.
+tool	format	tier	levels	fast	balanced	dense	decode	crc	isize	concat
+zipir-gzip	gzip	prime	1 5 9	1	5	9	streaming	yes	yes	yes
+zipir-zlib	zlib	prime	-	-	-	-	streaming	-	-	-
+zlib-ng	gzip	prime	0-9	1	5	9	streaming	yes	yes	yes
+zlib-ng-zlib	zlib	prime	-	-	-	-	streaming	-	-	-
+igzip	gzip	prime	0-3	0	1	2	streaming	yes	yes	yes
+std-gzip	gzip	prime	1-9	1	5	9	streaming	no	no	no
+std-zlib	zlib	prime	-	-	-	-	streaming	-	-	-
+libdeflate-gzip	gzip	extended	1-12	1	6	12	full-buffer	yes	hint	yes
+libdeflate-zlib	zlib	extended	-	-	-	-	full-buffer	-	-	-
+gnu-gzip	gzip	extended	1-9	1	5	9	streaming	yes	yes	yes
+system-zlib	zlib	extended	-	-	-	-	streaming	-	-	-
+pigz	gzip	all	0-9	1	5	9	streaming	yes	yes	yes
+flate2-miniz	gzip	all	0-9	1	5	9	streaming	yes	yes	yes
+flate2-zlib-rs	gzip	all	0-9	1	5	9	streaming	yes	yes	yes
