@@ -1,0 +1,14 @@
+.{
+    .name = .zipir_tools,
+    .version = "0.0.0",
+    .fingerprint = 0xcf08be2e90f768b2,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zipir = .{ .path = ".." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "zig",
+    },
+}
