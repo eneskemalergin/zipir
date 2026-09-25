@@ -6,9 +6,11 @@ const copy = @import("../kernel/copy.zig");
 
 pub const Error = error{ Truncated, BadHuffman, BadSymbol, BadDistance, BadStored, BadBlock, OutputLimitExceeded, ReadFailed, WriteFailed };
 
+pub const TrailingData = enum { reject, leave };
+
 pub const DecompressOptions = struct {
     max_output_bytes: u64 = std.math.maxInt(u64),
-    trailing_data: enum { reject, leave } = .reject,
+    trailing_data: TrailingData = .reject,
 };
 
 pub const Limits = struct {
@@ -103,6 +105,7 @@ pub const BitReader = struct {
     i: usize = 0,
     bits: u64 = 0,
     nbits: u32 = 0,
+    tossed: u64 = 0,
 
     fn memcpy8Le(src: []const u8) u64 {
         var tmp: [8]u8 align(8) = undefined;
@@ -113,6 +116,7 @@ pub const BitReader = struct {
     pub fn window(self: *BitReader, minimum: usize) !bool {
         self.putBack();
         self.reader.toss(self.i);
+        self.tossed += self.i;
         self.i = 0;
         self.src = self.reader.peekGreedy(minimum) catch |err| switch (err) {
             error.EndOfStream => self.reader.buffer[self.reader.seek..self.reader.end],
@@ -124,8 +128,14 @@ pub const BitReader = struct {
     pub fn release(self: *BitReader) void {
         self.putBack();
         self.reader.toss(self.i);
+        self.tossed += self.i;
         self.i = 0;
         self.src = &.{};
+    }
+
+    // Bytes taken from the reader since the bit reader started; exact when the reader is byte-aligned.
+    pub fn consumed(self: *const BitReader) u64 {
+        return self.tossed + self.i - self.nbits / 8;
     }
 
     fn need(self: *BitReader, n: u32) !void {
@@ -256,6 +266,8 @@ pub fn Session(comptime Check: type) type {
         check_pos: usize = RING,
         stream_start: u64 = 0,
         max_output_bytes: u64,
+        // Output cap for each stream (a BGZF block holds at most 65536 bytes), applied with max_output_bytes.
+        stream_limit: u64 = std.math.maxInt(u64),
 
         pub fn stream(self: *Self, br: *BitReader, check: *Check) Error!u64 {
             self.br = br;
@@ -263,6 +275,7 @@ pub fn Session(comptime Check: type) type {
             defer self.check = null;
             const start = self.position();
             self.stream_start = start;
+            self.out = self.decoder.buffer[0..self.batchEnd()];
             self.check_pos = self.out_pos;
             var bfinal: u32 = 0;
             while (bfinal == 0) {
@@ -324,6 +337,11 @@ pub fn Session(comptime Check: type) type {
             return self.produced + (self.out_pos - RING);
         }
 
+        fn batchEnd(self: *const Self) usize {
+            const stream_room = (self.stream_start +| self.stream_limit) - self.produced;
+            return RING + @as(usize, @intCast(@min(BATCH, self.max_output_bytes - self.produced, stream_room)));
+        }
+
         fn catchup(self: *Self) void {
             if (self.check_pos >= self.out_pos) return;
             self.check.?.update(self.out[self.check_pos..self.out_pos]);
@@ -342,7 +360,7 @@ pub fn Session(comptime Check: type) type {
             self.produced += count;
             self.out_pos = RING;
             self.check_pos = RING;
-            self.out = self.decoder.buffer[0 .. RING + @as(usize, @intCast(@min(BATCH, self.max_output_bytes - self.produced)))];
+            self.out = self.decoder.buffer[0..self.batchEnd()];
             if (self.br) |br| br.putBack();
         }
 

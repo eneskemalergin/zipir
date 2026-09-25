@@ -60,7 +60,10 @@ comptime {
     std.debug.assert(@sizeOf(Compressor) == 238848);
 }
 
-fn parseHeader(br: *engine.BitReader) !void {
+// Shared with BGZF. `Visitor` is `void` (plain gzip) or provides
+// `subfield(*Visitor, id: [2]u8, len: u16, offset: u16, bytes: []const u8) !void`, called as extra subfield
+// bytes stream by; a subfield that overruns XLEN is `BadHeader`.
+pub fn parseHeader(br: *engine.BitReader, comptime Visitor: type, visitor: if (Visitor == void) void else *Visitor) !void {
     const header = try br.getBytes(10);
     if (header[0] != 0x1f or header[1] != 0x8b) return error.BadHeader;
     if (header[2] != 8) return error.UnsupportedMethod;
@@ -72,13 +75,15 @@ fn parseHeader(br: *engine.BitReader) !void {
         const size_bytes = try br.getBytes(2);
         const size = std.mem.readInt(u16, size_bytes[0..2], .little);
         checksum.update(size_bytes);
-        var left: usize = size;
-        while (left != 0) {
-            if (br.i == br.src.len and !try br.window(1)) return error.Truncated;
-            const n = @min(left, br.src.len - br.i);
-            checksum.update(try br.getBytes(n));
-            left -= n;
-        }
+        if (Visitor == void) {
+            var left: usize = size;
+            while (left != 0) {
+                if (br.i == br.src.len and !try br.window(1)) return error.Truncated;
+                const n = @min(left, br.src.len - br.i);
+                checksum.update(try br.getBytes(n));
+                left -= n;
+            }
+        } else try readSubfields(br, &checksum, size, Visitor, visitor);
     }
     for ([_]u8{ 8, 16 }) |flag| {
         if (flags & flag == 0) continue;
@@ -98,15 +103,42 @@ fn parseHeader(br: *engine.BitReader) !void {
     }
 }
 
+fn readSubfields(br: *engine.BitReader, checksum: *crc.Crc32, size: u16, comptime Visitor: type, visitor: *Visitor) !void {
+    var left: usize = size;
+    while (left != 0) {
+        if (left < 4) return error.BadHeader;
+        const head = try br.getBytes(4);
+        checksum.update(head);
+        const id: [2]u8 = head[0..2].*;
+        const len = std.mem.readInt(u16, head[2..4], .little);
+        left -= 4;
+        if (len > left) return error.BadHeader;
+        if (len == 0) try visitor.subfield(id, 0, 0, &.{});
+        var offset: u16 = 0;
+        while (offset < len) {
+            if (br.i == br.src.len and !try br.window(1)) return error.Truncated;
+            const n: u16 = @intCast(@min(len - offset, br.src.len - br.i));
+            const bytes = try br.getBytes(n);
+            checksum.update(bytes);
+            try visitor.subfield(id, len, offset, bytes);
+            offset += n;
+        }
+        left -= len;
+    }
+}
+
+// Shared with BGZF: ISIZE is compared before CRC-32, the gzip error precedence.
+pub fn readTrailer(br: *engine.BitReader, crc_value: u32, size: u64) Error!void {
+    const footer = try br.getBytes(8);
+    if (std.mem.readInt(u32, footer[4..8], .little) != @as(u32, @truncate(size))) return error.IsizeMismatch;
+    if (std.mem.readInt(u32, footer[0..4], .little) != crc_value) return error.CrcMismatch;
+}
+
 fn inflateMember(session: *engine.Session(crc.Crc32), br: *engine.BitReader) Error!void {
-    try parseHeader(br);
+    try parseHeader(br, void, {});
     var check: crc.Crc32 = .init();
     const size = try session.stream(br, &check);
-    const footer = try br.getBytes(8);
-    const trailer_crc = std.mem.readInt(u32, footer[0..4], .little);
-    const trailer_size = std.mem.readInt(u32, footer[4..8], .little);
-    if (trailer_size != @as(u32, @truncate(size))) return error.IsizeMismatch;
-    if (check.final() != trailer_crc) return error.CrcMismatch;
+    try readTrailer(br, check.final(), size);
 }
 
 fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) Error!u64 {
