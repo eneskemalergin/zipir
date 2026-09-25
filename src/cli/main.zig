@@ -37,7 +37,8 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     defer allocator.free(args);
     var output_buffer: [4096]u8 = undefined;
     var stdout = std.Io.File.stdout().writer(io, &output_buffer);
-    if (args.len == 1 or (args.len == 2 and std.mem.eql(u8, args[1], "--version"))) {
+    // An empty argument vector (possible through execve) gets the version, not an out-of-bounds read.
+    if (args.len <= 1 or (args.len == 2 and std.mem.eql(u8, args[1], "--version"))) {
         try stdout.interface.print("zipir {d}.{d}.{d}\n", .{
             zipir.version.major, zipir.version.minor, zipir.version.patch,
         });
