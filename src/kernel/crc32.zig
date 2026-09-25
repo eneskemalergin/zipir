@@ -78,6 +78,26 @@ pub fn finish(crc_in: u32) u32 {
     return crc_in ^ 0xffffffff;
 }
 
+pub const Crc32 = struct {
+    state: u32 = 0xffffffff,
+
+    pub fn init() Crc32 {
+        return .{};
+    }
+
+    pub fn update(self: *Crc32, bytes: []const u8) void {
+        self.state = updateState(self.state, bytes);
+    }
+
+    pub fn copyUpdate(self: *Crc32, src: []const u8, dst: []u8) void {
+        self.state = copyUpdateState(self.state, src, dst);
+    }
+
+    pub fn final(self: Crc32) u32 {
+        return finish(self.state);
+    }
+};
+
 const HAVE_ARM_CRC = options.kernel_backend != .portable and switch (builtin.cpu.arch) {
     .aarch64 => std.Target.aarch64.featureSetHas(builtin.cpu.features, .crc),
     else => false,
@@ -98,7 +118,7 @@ fn updateArm(crc_in: u32, data: []const u8) u32 {
     return tail(value, data[i..]);
 }
 
-pub fn update(crc_in: u32, data: []const u8) u32 {
+pub fn updateState(crc_in: u32, data: []const u8) u32 {
     if (comptime HAVE_ARM_CRC) return updateArm(crc_in, data);
     if (data.len == 0) return crc_in;
     if (data.len >= PCLMUL_MIN_BULK and usePclmul()) {
@@ -109,7 +129,7 @@ pub fn update(crc_in: u32, data: []const u8) u32 {
 }
 
 /// Copies non-overlapping slices of equal length and updates the raw gzip CRC.
-pub fn copyUpdate(crc_in: u32, data: []const u8, dest: []u8) u32 {
+pub fn copyUpdateState(crc_in: u32, data: []const u8, dest: []u8) u32 {
     std.debug.assert(data.len == dest.len);
     if (data.len >= PCLMUL_MIN_BULK and usePclmul()) {
         const bulk = data.len & ~@as(usize, 15);
@@ -118,7 +138,7 @@ pub fn copyUpdate(crc_in: u32, data: []const u8, dest: []u8) u32 {
         return tail(value, data[bulk..]);
     }
     @memcpy(dest, data);
-    return update(crc_in, data);
+    return updateState(crc_in, data);
 }
 
 test "[property] - [crc]: native and portable incremental paths match independent CRC" {
@@ -135,7 +155,7 @@ test "[property] - [crc]: native and portable incremental paths match independen
                 var i: usize = 0;
                 while (i < data.len) {
                     const part = data[i..][0..@min(chunk, data.len - i)];
-                    native = update(native, part);
+                    native = updateState(native, part);
                     portable = updatePortable(portable, part);
                     i += part.len;
                 }
@@ -161,10 +181,10 @@ test "[property] - [crc]: fused copies preserve bytes, incremental CRC and exact
                 var i: usize = 0;
                 while (i < length) {
                     const n = @min(chunk, length - i);
-                    value = copyUpdate(value, bytes[prefix + i ..][0..n], copied[start + i ..][0..n]);
+                    value = copyUpdateState(value, bytes[prefix + i ..][0..n], copied[start + i ..][0..n]);
                     i += n;
                 }
-                value = copyUpdate(value, &.{}, copied[start..start]);
+                value = copyUpdateState(value, &.{}, copied[start..start]);
                 try std.testing.expectEqual(expected, finish(value));
                 try std.testing.expectEqualSlices(u8, bytes[prefix..][0..length], copied[start..][0..length]);
                 for (copied[0..start]) |b| try std.testing.expectEqual(@as(u8, 0xa5), b);
