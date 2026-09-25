@@ -80,16 +80,12 @@ each_row() {
     done <"$MANIFEST"
 }
 
-dest_for() {
-    printf '%s/%s/%s/%s/%s\n' "$DATA_DIR" "$1" "$3" "$2" "$4"
-}
-
 # The gzip row of a category and class supplies the plaintext for derived rows.
 gzip_source_for() {
     local category class format filename _rest
     while IFS=$'\t' read -r category class format filename _rest; do
         if [[ "$category" == "$1" && "$class" == "$2" && "$format" == gzip ]]; then
-            dest_for "$category" "$class" gzip "$filename"
+            data_path "$category" gzip "$class" "$filename"
             return
         fi
     done < <(each_row all)
@@ -112,42 +108,10 @@ verify_size_sha() {
 }
 
 verify_zlib_file() {
-    python3 - "$1" "$2" <<'PY'
-import gzip
-import sys
-import zlib
-
-
-def read_exact(stream, size):
-    chunks = []
-    remaining = size
-    while remaining:
-        chunk = stream.read(remaining)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
-
-
-zlib_path, gzip_path = sys.argv[1:]
-decoder = zlib.decompressobj()
-with gzip.open(gzip_path, "rb") as expected, open(zlib_path, "rb") as encoded:
-    while True:
-        chunk = encoded.read(1024 * 1024)
-        if not chunk:
-            break
-        decoded = decoder.decompress(chunk)
-        if decoded != read_exact(expected, len(decoded)):
-            raise SystemExit(f"{zlib_path}: plaintext differs from {gzip_path}")
-    decoded = decoder.flush()
-    if decoded != read_exact(expected, len(decoded)):
-        raise SystemExit(f"{zlib_path}: trailer output differs from {gzip_path}")
-    if not decoder.eof or decoder.unused_data:
-        raise SystemExit(f"{zlib_path}: incomplete or has trailing data")
-    if expected.read(1):
-        raise SystemExit(f"{zlib_path}: shorter than {gzip_path}")
-PY
+    zlib_decode "$1" /dev/stdout | cmp -s - <(gzip -dc -- "$2") || {
+        printf 'error: %s does not decode to the plaintext of %s\n' "$1" "$2" >&2
+        return 1
+    }
 }
 
 # Independent BGZF structure check (no zipir code). With a gzip source path, also
@@ -322,7 +286,7 @@ PY
 fetch_row() {
     local category="$1" class="$2" format="$3" filename="$4" bytes="$5" sha256="$6" source="$7"
     local dest part actual digest gzip_source
-    dest="$(dest_for "$category" "$class" "$format" "$filename")"
+    dest="$(data_path "$category" "$format" "$class" "$filename")"
     if [[ "$source" == derive:* ]]; then
         gzip_source="$(gzip_source_for "$category" "$class")"
         if [[ "$FORCE" != 1 ]] && derived_current "$dest" "$gzip_source" "$source"; then
@@ -367,7 +331,7 @@ fetch_row() {
 check_row() {
     local category="$1" class="$2" format="$3" filename="$4" bytes="$5" sha256="$6" source="$7"
     local dest gzip_source
-    dest="$(dest_for "$category" "$class" "$format" "$filename")"
+    dest="$(data_path "$category" "$format" "$class" "$filename")"
     if [[ "$source" == derive:* ]]; then
         gzip_source="$(gzip_source_for "$category" "$class")"
         derived_current "$dest" "$gzip_source" "$source" || {
@@ -387,7 +351,7 @@ list_rows() {
     rows="$(each_row all)"
     printf '%-12s %-8s %-6s %-8s %s\n' 'category' 'class' 'format' 'state' 'path'
     while IFS=$'\t' read -r category class format filename bytes sha256 source; do
-        dest="$(dest_for "$category" "$class" "$format" "$filename")"
+        dest="$(data_path "$category" "$format" "$class" "$filename")"
         if [[ "$source" == derive:* ]]; then
             if derived_current "$dest" "$(gzip_source_for "$category" "$class")" "$source" 2>/dev/null; then
                 state=ok
