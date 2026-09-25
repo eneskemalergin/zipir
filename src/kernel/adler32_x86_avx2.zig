@@ -10,11 +10,11 @@ const Dwords = @Vector(8, u32);
 const MODULUS: u64 = 65_521;
 const MAX_CHUNK: usize = 8_192;
 
-const zero_bytes: Bytes = @splat(0);
-const mults_a: Words = .{ 64, 63, 62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52, 51, 50, 49 };
-const mults_b: Words = .{ 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33 };
-const mults_c: Words = .{ 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17 };
-const mults_d: Words = .{ 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 };
+const ZERO_BYTES: Bytes = @splat(0);
+const MULTS_A: Words = .{ 64, 63, 62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52, 51, 50, 49 };
+const MULTS_B: Words = .{ 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33 };
+const MULTS_C: Words = .{ 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17 };
+const MULTS_D: Words = .{ 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 };
 
 pub fn update(start: u32, bytes: []const u8) u32 {
     return updateRaw(start, bytes.ptr, bytes.len);
@@ -58,10 +58,10 @@ fn updateRaw(start: u32, bytes: [*]const u8, len: usize) callconv(.c) u32 {
             }
 
             var weighted: Dwords = sum_of_sums << @as(@Vector(8, u5), @splat(6));
-            weighted += madd16(byte_a, mults_a);
-            weighted += madd16(byte_b, mults_b);
-            weighted += madd16(byte_c, mults_c);
-            weighted += madd16(byte_d, mults_d);
+            weighted += madd16(byte_a, MULTS_A);
+            weighted += madd16(byte_b, MULTS_B);
+            weighted += madd16(byte_c, MULTS_C);
+            weighted += madd16(byte_d, MULTS_D);
             a += @as(u64, @intCast(@reduce(.Add, sum)));
             var weighted_total: u64 = 0;
             inline for (0..8) |index| weighted_total += weighted[index];
@@ -110,6 +110,6 @@ fn sadBytes(data: Bytes) Dwords {
     return asm volatile ("vpsadbw %[zero], %[data], %[out]"
         : [out] "=x" (-> Dwords),
         : [data] "x" (data),
-          [zero] "x" (zero_bytes),
+          [zero] "x" (ZERO_BYTES),
     );
 }

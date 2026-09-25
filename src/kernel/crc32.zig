@@ -128,7 +128,6 @@ fn updateState(crc_in: u32, data: []const u8) u32 {
     return updatePortable(crc_in, data);
 }
 
-/// Copies non-overlapping slices of equal length and updates the raw gzip CRC.
 fn copyUpdateState(crc_in: u32, data: []const u8, dest: []u8) u32 {
     std.debug.assert(data.len == dest.len);
     if (data.len >= PCLMUL_MIN_BULK and usePclmul()) {

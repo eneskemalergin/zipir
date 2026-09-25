@@ -20,7 +20,7 @@ pub const Options = struct {
 };
 
 /// Reusable without initialization, including after errors. No allocation occurs during decode.
-/// Reader, writer and workspace storage must not overlap. One active call per workspace.
+/// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
 pub const Decompressor = struct {
     decoder: deflate.Decoder = .{},
 
@@ -35,7 +35,7 @@ comptime {
     std.debug.assert(@sizeOf(Decompressor) == 196608);
 }
 
-fn parseHeader(br: *deflate.Br) !void {
+fn parseHeader(br: *deflate.BitReader) !void {
     const header = try br.getBytes(2);
     const cmf = header[0];
     const flg = header[1];
@@ -47,7 +47,7 @@ fn parseHeader(br: *deflate.Br) !void {
 
 fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) Error!u64 {
     if (reader.buffer.len < 16) return error.InputBufferTooSmall;
-    var br: deflate.Br = .{ .reader = reader };
+    var br: deflate.BitReader = .{ .reader = reader };
     defer br.release();
     var session = work.decoder.session(adler32.Adler32, writer, .{ .max_output_bytes = options.max_output_bytes });
     try parseHeader(&br);

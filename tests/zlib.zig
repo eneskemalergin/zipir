@@ -6,14 +6,14 @@ const zlib = @import("zipir").zlib;
 
 // Only the first gzip member is rewrapped: copy-boundaries repeats one member and
 // final-stored-concat ends with the short6 member.
-const copy_gzip = @embedFile("data/synthetic/copy-boundaries.gz");
-const copy_plain = @embedFile("data/synthetic/copy-boundaries.plain");
-const copy_member = copy_gzip[0 .. copy_gzip.len / 2];
-const copy_member_plain = copy_plain[0 .. copy_plain.len / 2];
-const stored_gzip = @embedFile("data/synthetic/final-stored-concat.gz");
-const stored_plain = @embedFile("data/synthetic/final-stored-concat.plain");
-const stored_member = stored_gzip[0 .. stored_gzip.len - @embedFile("data/synthetic/short6.gz").len];
-const stored_member_plain = stored_plain[0 .. stored_plain.len - @embedFile("data/synthetic/short.plain").len];
+const COPY_GZIP = @embedFile("data/synthetic/copy-boundaries.gz");
+const COPY_PLAIN = @embedFile("data/synthetic/copy-boundaries.plain");
+const COPY_MEMBER = COPY_GZIP[0 .. COPY_GZIP.len / 2];
+const COPY_MEMBER_PLAIN = COPY_PLAIN[0 .. COPY_PLAIN.len / 2];
+const STORED_GZIP = @embedFile("data/synthetic/final-stored-concat.gz");
+const STORED_PLAIN = @embedFile("data/synthetic/final-stored-concat.plain");
+const STORED_MEMBER = STORED_GZIP[0 .. STORED_GZIP.len - @embedFile("data/synthetic/short6.gz").len];
+const STORED_MEMBER_PLAIN = STORED_PLAIN[0 .. STORED_PLAIN.len - @embedFile("data/synthetic/short.plain").len];
 
 fn wrapGzip(
     allocator: std.mem.Allocator,
@@ -61,8 +61,8 @@ test "[integration] - [zlib decoder]: valid streams decode through short input a
         .{ @embedFile("data/synthetic/short6.gz"), @embedFile("data/synthetic/short.plain") },
         .{ @embedFile("data/synthetic/fixed-codes.gz"), @embedFile("data/synthetic/fixed-codes.plain") },
         .{ @embedFile("data/synthetic/long-codes.gz"), @embedFile("data/synthetic/long-codes.plain") },
-        .{ stored_member, stored_member_plain },
-        .{ copy_member, copy_member_plain },
+        .{ STORED_MEMBER, STORED_MEMBER_PLAIN },
+        .{ COPY_MEMBER, COPY_MEMBER_PLAIN },
     };
     const decoder = try std.testing.allocator.create(zlib.Decompressor);
     defer std.testing.allocator.destroy(decoder);
@@ -151,7 +151,7 @@ test "[failure] - [zlib decoder]: invalid history, trees, and fixed symbols fail
 }
 
 test "[failure] - [zlib decoder]: I/O errors propagate and the workspace decodes again" {
-    const stream = try wrapGzip(std.testing.allocator, stored_member, stored_member_plain);
+    const stream = try wrapGzip(std.testing.allocator, STORED_MEMBER, STORED_MEMBER_PLAIN);
     defer std.testing.allocator.free(stream);
     const decoder = try std.testing.allocator.create(zlib.Decompressor);
     defer std.testing.allocator.destroy(decoder);
@@ -170,7 +170,7 @@ test "[failure] - [zlib decoder]: I/O errors propagate and the workspace decodes
     }
     var source = support.Source.init(stream, &input_buffer, 17);
     var sink: support.Sink = .{ .output = &output };
-    try std.testing.expectEqual(@as(u64, stored_member_plain.len), try decoder.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectEqual(@as(u64, STORED_MEMBER_PLAIN.len), try decoder.decompress(&source.reader, &sink.writer, .{}));
 }
 
 test "[property] - [zlib decoder]: splits pass while truncations and bit flips stay bounded" {
@@ -259,8 +259,8 @@ test "[edge] - [zlib decoder]: strict and leaving trailing bytes preserve the re
 test "[failure] - [zlib decoder]: output limits cover matches, stored blocks, and staging edges" {
     const cases = .{
         .{ @embedFile("data/synthetic/short6.gz"), @embedFile("data/synthetic/short.plain") },
-        .{ stored_member, stored_member_plain },
-        .{ copy_member, copy_member_plain },
+        .{ STORED_MEMBER, STORED_MEMBER_PLAIN },
+        .{ COPY_MEMBER, COPY_MEMBER_PLAIN },
     };
     const decoder = try std.testing.allocator.create(zlib.Decompressor);
     defer std.testing.allocator.destroy(decoder);

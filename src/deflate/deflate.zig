@@ -37,18 +37,18 @@ fn bitReverse(code: u16, n: u4) u16 {
 
 fn buildCodes(lens: []const u4, codes: []u16, kind: enum { codes, symbols }) !void {
     var bl_count: [16]u16 = .{0} ** 16;
-    for (lens) |L| {
-        if (L != 0) bl_count[L] += 1;
+    for (lens) |code_len| {
+        if (code_len != 0) bl_count[code_len] += 1;
     }
     var next_code: [16]u16 = .{0} ** 16;
     var code: u32 = 0;
     var left: i32 = 1;
-    for (1..16) |Li| {
-        const L: u4 = @intCast(Li);
-        code = (code + bl_count[L - 1]) << 1;
-        left = left * 2 - bl_count[L];
+    for (1..16) |bit_len| {
+        const code_len: u4 = @intCast(bit_len);
+        code = (code + bl_count[code_len - 1]) << 1;
+        left = left * 2 - bl_count[code_len];
         if (left < 0) return error.BadHuffman;
-        next_code[L] = @intCast(code & 0xffff);
+        next_code[code_len] = @intCast(code & 0xffff);
     }
     if (left != 0) {
         var symbols: usize = 0;
@@ -85,14 +85,14 @@ fn fixedTables() FixedTables {
     @setEvalBranchQuota(100000);
     var tables: FixedTables = undefined;
     var no_spill: [0]Entry = .{};
-    fillTwoLevel(&tables.lit, &no_spill, 10, &FIXED_LIT_LENS, litKind, litPayload, true) catch unreachable;
-    fillTwoLevel(&tables.dist, &no_spill, 9, &FIXED_DIST_LENS, distKind, distPayload, true) catch unreachable;
+    fillTwoLevel(&tables.lit, &no_spill, 10, &FIXED_LIT_LENS, litKind, litPayload, true) catch |err| @compileError(@errorName(err));
+    fillTwoLevel(&tables.dist, &no_spill, 9, &FIXED_DIST_LENS, distKind, distPayload, true) catch |err| @compileError(@errorName(err));
     return tables;
 }
 
 // --- Bit reader ---
 
-pub const Br = struct {
+pub const BitReader = struct {
     reader: *std.Io.Reader,
     src: []const u8 = &.{},
     i: usize = 0,
@@ -105,7 +105,7 @@ pub const Br = struct {
         return std.mem.readInt(u64, &tmp, .little);
     }
 
-    pub fn window(self: *Br, minimum: usize) !bool {
+    pub fn window(self: *BitReader, minimum: usize) !bool {
         self.putBack();
         self.reader.toss(self.i);
         self.i = 0;
@@ -116,14 +116,14 @@ pub const Br = struct {
         return self.src.len >= minimum;
     }
 
-    pub fn release(self: *Br) void {
+    pub fn release(self: *BitReader) void {
         self.putBack();
         self.reader.toss(self.i);
         self.i = 0;
         self.src = &.{};
     }
 
-    fn need(self: *Br, n: u32) !void {
+    fn need(self: *BitReader, n: u32) !void {
         while (self.nbits < n) {
             if (self.i >= self.src.len) {
                 _ = try self.window(8);
@@ -151,7 +151,7 @@ pub const Br = struct {
         }
     }
 
-    pub fn get(self: *Br, n: u32) !u32 {
+    pub fn get(self: *BitReader, n: u32) !u32 {
         try self.need(n);
         const mask = (@as(u64, 1) << @intCast(n)) - 1;
         const v: u32 = @truncate(self.bits & mask);
@@ -160,19 +160,19 @@ pub const Br = struct {
         return v;
     }
 
-    fn consume(self: *Br, n: u32) void {
+    fn consume(self: *BitReader, n: u32) void {
         self.bits >>= @intCast(n);
         self.nbits -= n;
     }
 
-    pub fn alignByte(self: *Br) void {
+    pub fn alignByte(self: *BitReader) void {
         const drop = self.nbits % 8;
         if (drop == 0) return;
         self.bits >>= @intCast(drop);
         self.nbits -= drop;
     }
 
-    pub fn putBack(self: *Br) void {
+    pub fn putBack(self: *BitReader) void {
         const extra: usize = self.nbits / 8;
         std.debug.assert(extra <= self.i);
         self.i -= extra;
@@ -184,7 +184,7 @@ pub const Br = struct {
         }
     }
 
-    pub fn getBytes(self: *Br, n: usize) ![]const u8 {
+    pub fn getBytes(self: *BitReader, n: usize) ![]const u8 {
         self.putBack();
         self.alignByte();
         if (n > self.src.len - self.i and !try self.window(n)) return error.Truncated;
@@ -228,7 +228,7 @@ pub fn Session(comptime Check: type) type {
     return struct {
         const Self = @This();
 
-        br: ?*Br = null,
+        br: ?*BitReader = null,
         check: ?*Check = null,
         decoder: *Decoder,
         out: []u8,
@@ -239,7 +239,7 @@ pub fn Session(comptime Check: type) type {
         stream_start: u64 = 0,
         max_output_bytes: u64,
 
-        pub fn stream(self: *Self, br: *Br, check: *Check) Error!u64 {
+        pub fn stream(self: *Self, br: *BitReader, check: *Check) Error!u64 {
             self.br = br;
             self.check = check;
             defer self.check = null;
@@ -265,7 +265,7 @@ pub fn Session(comptime Check: type) type {
                             left -= n;
                         }
                     },
-                    1 => try decodeHuff(self, &FIXED_TABLES.lit, &FIXED_TABLES.dist),
+                    1 => try decodeHuff(Check, self, &FIXED_TABLES.lit, &FIXED_TABLES.dist),
                     2 => {
                         const hlit = try br.get(5) + 257;
                         const hdist = try br.get(5) + 1;
@@ -279,16 +279,16 @@ pub fn Session(comptime Check: type) type {
                         var clen_first: [1 << 7]Entry = undefined;
                         try fillFirst(clen_first[0..], 7, clens[0..19], clenKind, clenPayload, false);
                         var all_lens: [318]u4 = .{0} ** 318;
-                        const ntot: usize = hlit + hdist;
-                        try readDynLens(br, clen_first[0..], all_lens[0..ntot]);
+                        const total_lens: usize = hlit + hdist;
+                        try readDynLens(br, clen_first[0..], all_lens[0..total_lens]);
                         var lit_lens: [288]u4 = .{0} ** 288;
                         @memcpy(lit_lens[0..hlit], all_lens[0..hlit]);
                         var dist_lens: [32]u4 = .{0} ** 32;
-                        @memcpy(dist_lens[0..hdist], all_lens[hlit..ntot]);
+                        @memcpy(dist_lens[0..hdist], all_lens[hlit..total_lens]);
                         if (lit_lens[256] == 0) return error.BadHuffman;
                         try fillTwoLevel(&self.decoder.tables.lit_first, &self.decoder.tables.lit_spill, 10, &lit_lens, litKind, litPayload, true);
                         try fillTwoLevel(&self.decoder.tables.dist_first, &self.decoder.tables.dist_spill, 9, &dist_lens, distKind, distPayload, true);
-                        try decodeHuff(self, &self.decoder.tables.lit_first, &self.decoder.tables.dist_first);
+                        try decodeHuff(Check, self, &self.decoder.tables.lit_first, &self.decoder.tables.dist_first);
                     },
                     else => return error.BadBlock,
                 }
@@ -376,42 +376,42 @@ pub fn Session(comptime Check: type) type {
     };
 }
 
-fn fillFirst(table: []Entry, W: u4, lens: []const u4, kind_of: *const fn (usize) Kind, payload_of: *const fn (usize) u16, comptime predecoded: bool) !void {
-    const tlen: usize = @as(usize, 1) << W;
-    if (table.len != tlen) return error.BadHuffman;
+fn fillFirst(table: []Entry, width: u4, lens: []const u4, kind_of: *const fn (usize) Kind, payload_of: *const fn (usize) u16, comptime predecoded: bool) !void {
+    const table_len: usize = @as(usize, 1) << width;
+    if (table.len != table_len) return error.BadHuffman;
     @memset(table, .{ .nbits = 0, .kind = .invalid, .payload = 0 });
     var codes: [288]u16 = undefined;
     try buildCodes(lens, codes[0..lens.len], .codes);
-    const mask: u16 = @intCast(tlen - 1);
+    const mask: u16 = @intCast(table_len - 1);
     for (lens, 0..) |len, s| {
         if (len == 0) continue;
         const rev = bitReverse(codes[s], len);
-        if (len <= W) {
-            var neu = Entry{
+        if (len <= width) {
+            var entry = Entry{
                 .nbits = len,
                 .kind = kind_of(s),
                 .payload = payload_of(s),
             };
-            if (predecoded) neu = predecode(neu);
+            if (predecoded) entry = predecode(entry);
             const step: usize = @as(usize, 1) << len;
             var i: usize = rev;
-            while (i < tlen) : (i += step) {
+            while (i < table_len) : (i += step) {
                 const old = table[i];
-                if (old.kind != .invalid and (old.kind != neu.kind or old.nbits != neu.nbits or old.payload != neu.payload)) {
+                if (old.kind != .invalid and (old.kind != entry.kind or old.nbits != entry.nbits or old.payload != entry.payload)) {
                     return error.BadHuffman;
                 }
-                table[i] = neu;
+                table[i] = entry;
             }
         } else {
             const idx: usize = rev & mask;
             const old = table[idx];
             if (old.kind != .invalid and old.kind != .long) return error.BadHuffman;
-            table[idx] = .{ .nbits = W, .kind = .long, .payload = 0 };
+            table[idx] = .{ .nbits = width, .kind = .long, .payload = 0 };
         }
     }
 }
 
-fn fillTwoLevel(table: []Entry, spill: []Entry, comptime W: u4, lens: []const u4, kind_of: *const fn (usize) Kind, payload_of: *const fn (usize) u16, comptime predecoded: bool) !void {
+fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []const u4, kind_of: *const fn (usize) Kind, payload_of: *const fn (usize) u16, comptime predecoded: bool) !void {
     if (@inComptime()) {
         @memset(table, .{ .nbits = 0, .kind = .invalid, .payload = 0 });
     } else {
@@ -431,7 +431,7 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime W: u4, lens: []const u4
     for (lens, 0..) |len, symbol| {
         if (len == 0) continue;
         const rev = bitReverse(codes[symbol], len);
-        if (len <= W) {
+        if (len <= width) {
             var entry = Entry{ .nbits = len, .kind = kind_of(symbol), .payload = payload_of(symbol) };
             if (predecoded) entry = predecode(entry);
             var i: usize = rev;
@@ -440,7 +440,7 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime W: u4, lens: []const u4
             has_long = true;
             const entry = &table[rev & mask];
             if (entry.kind != .invalid and entry.kind != .long) return error.BadHuffman;
-            entry.* = .{ .nbits = W, .kind = .long, .extra = @max(entry.extra, len - W), .payload = 0 };
+            entry.* = .{ .nbits = width, .kind = .long, .extra = @max(entry.extra, len - width), .payload = 0 };
         }
     }
     if (!has_long) return;
@@ -454,20 +454,20 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime W: u4, lens: []const u4
         used += size;
     }
     for (lens, 0..) |len, symbol| {
-        if (len <= W) continue;
+        if (len <= width) continue;
         const rev = bitReverse(codes[symbol], len);
         const root = table[rev & mask];
         const size = @as(usize, 1) << @intCast(root.extra);
         var entry = Entry{ .nbits = len, .kind = kind_of(symbol), .payload = payload_of(symbol) };
         if (predecoded) entry = predecode(entry);
-        var i: usize = rev >> W;
-        while (i < size) : (i += @as(usize, 1) << (len - W)) spill[root.payload + i] = entry;
+        var i: usize = rev >> width;
+        while (i < size) : (i += @as(usize, 1) << (len - width)) spill[root.payload + i] = entry;
     }
 }
 
-inline fn lookupLong(root: Entry, spill: []const Entry, bits: u64, comptime W: u4) Entry {
+inline fn lookupLong(root: Entry, spill: []const Entry, bits: u64, comptime width: u4) Entry {
     const mask = (@as(u64, 1) << @intCast(root.extra)) - 1;
-    return spill[root.payload + @as(usize, @intCast((bits >> W) & mask))];
+    return spill[root.payload + @as(usize, @intCast((bits >> width) & mask))];
 }
 
 fn litKind(s: usize) Kind {
@@ -498,12 +498,12 @@ fn clenPayload(s: usize) u16 {
     return @intCast(s);
 }
 
-fn peekFirst(table: []const Entry, W: u4, bits: u64) Entry {
-    const mask = (@as(u64, 1) << W) - 1;
+fn peekFirst(table: []const Entry, width: u4, bits: u64) Entry {
+    const mask = (@as(u64, 1) << width) - 1;
     return table[@intCast(bits & mask)];
 }
 
-fn decodeClen(br: *Br, clen_tab: []const Entry) !u8 {
+fn decodeClen(br: *BitReader, clen_tab: []const Entry) !u8 {
     try br.need(7);
     const e = peekFirst(clen_tab, 7, br.bits);
     if (e.kind == .invalid or e.kind == .long) return error.BadHuffman;
@@ -511,15 +511,15 @@ fn decodeClen(br: *Br, clen_tab: []const Entry) !u8 {
     return @intCast(e.payload);
 }
 
-fn readDynLens(br: *Br, clen_tab: []const Entry, out: []u4) !void {
+fn readDynLens(br: *BitReader, clen_tab: []const Entry, out: []u4) !void {
     var i: usize = 0;
     var prev: u4 = 0;
     while (i < out.len) {
         const s = try decodeClen(br, clen_tab);
         if (s <= 15) {
-            const L: u4 = @intCast(s);
-            out[i] = L;
-            prev = L;
+            const code_len: u4 = @intCast(s);
+            out[i] = code_len;
+            prev = code_len;
             i += 1;
         } else if (s == 16) {
             if (i == 0) return error.BadHuffman;
@@ -566,12 +566,12 @@ fn predecode(entry: Entry) Entry {
     return e;
 }
 
-fn decodeFast(ctx: anytype, lit: []const Entry, dist: []const Entry) !bool {
-    if (ctx.position() - ctx.stream_start >= RING) return decodeFastImpl(ctx, lit, dist, true);
-    return decodeFastImpl(ctx, lit, dist, false);
+fn decodeFast(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) !bool {
+    if (ctx.position() - ctx.stream_start >= RING) return decodeFastImpl(Check, ctx, lit, dist, true);
+    return decodeFastImpl(Check, ctx, lit, dist, false);
 }
 
-fn decodeFastImpl(ctx: anytype, lit: []const Entry, dist: []const Entry, comptime full_history: bool) !bool {
+fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry, comptime full_history: bool) !bool {
     const br = ctx.br.?;
     var bits = br.bits;
     var count = br.nbits;
@@ -641,7 +641,7 @@ fn decodeFastImpl(ctx: anytype, lit: []const Entry, dist: []const Entry, comptim
     return false;
 }
 
-fn decodeHuff(ctx: anytype, lit: []const Entry, dist: []const Entry) !void {
+fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) !void {
     const br = ctx.br.?;
     while (true) {
         if (br.src.len - br.i < 8) {
@@ -654,7 +654,7 @@ fn decodeHuff(ctx: anytype, lit: []const Entry, dist: []const Entry) !void {
             }
             _ = try br.window(8);
         }
-        if (try @call(.never_inline, decodeFast, .{ ctx, lit, dist })) return;
+        if (try @call(.never_inline, decodeFast, .{ Check, ctx, lit, dist })) return;
         try br.need(15);
         var e = peekFirst(lit, 10, br.bits);
         if (e.kind == .long) e = lookupLong(e, &ctx.decoder.tables.lit_spill, br.bits, 10);
@@ -717,12 +717,12 @@ fn distCode(d: usize) usize {
     return 2 * @as(usize, top) + (((d - 1) >> (top - 1)) & 1);
 }
 
-const Bw = struct {
+const BitWriter = struct {
     writer: *std.Io.Writer,
     value: u64 = 0,
     count: u32 = 0,
 
-    fn put(self: *Bw, value: u32, n: u5) EncodeError!void {
+    fn put(self: *BitWriter, value: u32, n: u5) EncodeError!void {
         std.debug.assert(n <= 16 and (n == 0 or value < (@as(u32, 1) << n)));
         if (n == 0) return;
         if (self.count > 47) try self.drain();
@@ -730,7 +730,7 @@ const Bw = struct {
         self.count += n;
     }
 
-    fn drain(self: *Bw) EncodeError!void {
+    fn drain(self: *BitWriter) EncodeError!void {
         const n: usize = self.count / 8;
         if (n == 0) return;
         if (self.writer.buffer.len - self.writer.end >= 8) {
@@ -746,16 +746,16 @@ const Bw = struct {
         self.count &= 7;
     }
 
-    inline fn add(self: *Bw, entry: u64) void {
+    inline fn add(self: *BitWriter, entry: u64) void {
         self.value |= (entry & 0xffffffff) << @intCast(self.count);
         self.count += @intCast(entry >> 32);
     }
 
-    fn symbol(self: *Bw, tree: *const EncodeTree, s: usize) EncodeError!void {
+    fn symbol(self: *BitWriter, tree: *const EncodeTree, s: usize) EncodeError!void {
         try self.put(tree.codes[s], @intCast(tree.lens[s]));
     }
 
-    fn alignByte(self: *Bw) EncodeError!void {
+    fn alignByte(self: *BitWriter) EncodeError!void {
         const remainder = self.count & 7;
         if (remainder != 0) try self.put(0, @intCast(8 - remainder));
         try self.drain();
@@ -975,7 +975,7 @@ pub const Encoder = struct {
     pub fn encodeStream(self: *Encoder, comptime Check: type, reader: *std.Io.Reader, writer: *std.Io.Writer, check: *Check, level: Level) EncodeError!u64 {
         @memset(&self.head, 0);
         if (level != .fast) @memset(&self.previous, 0);
-        var bits: Bw = .{ .writer = writer };
+        var bits: BitWriter = .{ .writer = writer };
         var history: usize = 0;
         var size: u64 = 0;
         var lookahead: [1]u8 = undefined;
@@ -1152,7 +1152,7 @@ pub const Encoder = struct {
         return n;
     }
 
-    fn emit(self: *const Encoder, bits: *Bw, raw: []const u8, last: bool) EncodeError!bool {
+    fn emit(self: *const Encoder, bits: *BitWriter, raw: []const u8, last: bool) EncodeError!bool {
         var lit: EncodeTree = .{};
         var dist: EncodeTree = .{};
         var code: EncodeTree = .{};
@@ -1210,7 +1210,7 @@ pub const Encoder = struct {
         return false;
     }
 
-    fn emitTokens(self: *const Encoder, bits: *Bw, raw: []const u8, lit: *const EncodeTree, dist: *const EncodeTree) EncodeError!void {
+    fn emitTokens(self: *const Encoder, bits: *BitWriter, raw: []const u8, lit: *const EncodeTree, dist: *const EncodeTree) EncodeError!void {
         var lit_tab: [256]u64 = undefined;
         for (&lit_tab, 0..) |*e, s| e.* = lit.codes[s] | (@as(u64, lit.lens[s]) << 32);
         var len_tab: [256]u64 = undefined;
@@ -1259,13 +1259,13 @@ comptime {
     std.debug.assert(@sizeOf(Encoder) == 238848);
 }
 
-test {
-    _ = copy;
-}
-
 const TestCheck = struct {
     fn update(_: *TestCheck, _: []const u8) void {}
 };
+
+test {
+    _ = copy;
+}
 
 test "[property] - [deflate tables]: rejected trees clear roots without changing adjacent entries" {
     const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
@@ -1441,7 +1441,7 @@ test "[edge] - [deflate decoder]: decoded counters stop at the u64 output bound"
     const decoder = try std.testing.allocator.create(Decoder);
     defer std.testing.allocator.destroy(decoder);
     var reader = std.Io.Reader.fixed("");
-    var br: Br = .{ .reader = &reader };
+    var br: BitReader = .{ .reader = &reader };
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var check: TestCheck = .{};
     var ctx: Session(TestCheck) = .{
@@ -1488,7 +1488,7 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
         for ([_]usize{ 0, 1, 2, 287, 288, 289, 290, 291, 320, 353 }) |room| {
             @memset(decoder.buffer[RING..][0..384], 0xa5);
             var reader = std.Io.Reader.fixed(&input);
-            var br: Br = .{ .reader = &reader, .src = &input };
+            var br: BitReader = .{ .reader = &reader, .src = &input };
             var check: TestCheck = .{};
             var ctx: Session(TestCheck) = .{
                 .br = &br,
@@ -1498,7 +1498,7 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
                 .writer = &sink.writer,
                 .max_output_bytes = std.math.maxInt(u64),
             };
-            const ended = try decodeFastImpl(&ctx, &FIXED_TABLES.lit, &FIXED_TABLES.dist, false);
+            const ended = try decodeFastImpl(TestCheck, &ctx, &FIXED_TABLES.lit, &FIXED_TABLES.dist, false);
             const written = ctx.out_pos - RING;
             try std.testing.expect(written <= length and written <= room);
             if (ended) try std.testing.expectEqual(length, written);
@@ -1534,7 +1534,7 @@ test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-
         const token_bits: u64 = (@as(u64, 31) << 15) | (@as(u64, 8191) << 35);
         std.mem.writeInt(u64, input[0..8], token_bits | (literal_code << 48) | (@as(u64, 1) << @intCast(consumed - 1)), .little);
         var reader = std.Io.Reader.fixed(&input);
-        var br: Br = .{ .reader = &reader, .src = &input };
+        var br: BitReader = .{ .reader = &reader, .src = &input };
         var check: TestCheck = .{};
         var ctx: Session(TestCheck) = .{
             .br = &br,
@@ -1545,7 +1545,7 @@ test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-
             .produced = RING,
             .max_output_bytes = std.math.maxInt(u64),
         };
-        try std.testing.expect(try decodeFastImpl(&ctx, &decoder.tables.lit_first, &decoder.tables.dist_first, true));
+        try std.testing.expect(try decodeFastImpl(TestCheck, &ctx, &decoder.tables.lit_first, &decoder.tables.dist_first, true));
         try std.testing.expectEqual(RING + 259, ctx.out_pos);
         try std.testing.expectEqual(consumed, br.i * 8 - br.nbits);
         try std.testing.expectEqualSlices(u8, decoder.buffer[0..258], decoder.buffer[RING..][0..258]);
@@ -1612,7 +1612,7 @@ test "[property] - [deflate encoder]: bit output matches scalar packing at write
             const capacity = bytes - 1 + extra;
             var storage: [288]u8 = @splat(0xa5);
             var writer = std.Io.Writer.fixed(storage[8..][0..capacity]);
-            var bits: Bw = .{ .writer = &writer };
+            var bits: BitWriter = .{ .writer = &writer };
             var failed = false;
             for (0..count) |i| {
                 const width: u5 = @intCast(i % 17);

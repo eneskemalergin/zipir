@@ -54,7 +54,7 @@ inline fn clmul(a: X, b: X, comptime imm: u8) X {
             : [_] "0" (a),
               [b] "x" (b),
         ),
-        else => unreachable,
+        else => @compileError("unsupported pclmulqdq immediate"),
     };
 }
 

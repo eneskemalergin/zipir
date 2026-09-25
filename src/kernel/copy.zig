@@ -19,8 +19,8 @@ fn matchByte(buf: []u8, start: usize, dist: usize, len: usize) void {
     }
 }
 
-/// Requires distance 1..31, 32 valid history bytes, and 31 owned tail bytes.
-/// One vector is reused at positions with the same phase in the history pattern.
+// Asserts distance 1..31, 32 valid history bytes, and 31 owned tail bytes; one vector is
+// reused at positions with the same phase in the history pattern.
 pub inline fn repeatSmall(buf: []u8, start: usize, distance: usize, length: usize) void {
     @setEvalBranchQuota(10000);
     var advance: usize = undefined;

@@ -6,7 +6,7 @@ const KernelBackend = enum { dispatch, portable };
 const Mode = enum { direct, object, absent };
 
 // Every CPU-specific kernel, wired only here (plan/design/dispatch.md).
-const backends = [_]struct { name: []const u8, features: []const std.Target.x86.Feature }{
+const BACKENDS = [_]struct { name: []const u8, features: []const std.Target.x86.Feature }{
     .{ .name = "crc32_x86_pclmul", .features = &.{ .pclmul, .sse4_1 } },
     .{ .name = "adler32_x86_avx2", .features = &.{.avx2} },
 };
@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     const kernel_options = b.addOptions();
     kernel_options.addOption(KernelBackend, "kernel_backend", kernel_backend);
     kernel_options.addOption(bool, "as_object", false);
-    for (backends) |backend| {
+    for (BACKENDS) |backend| {
         const mode = backendMode(target, backend.features);
         kernel_options.addOption(Mode, backend.name, mode);
         if (mode == .object) mod.addObject(backendObject(b, target, optimize, backend.name, backend.features));
@@ -107,8 +107,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(cli_tests).step);
 }
 
-// A target that guarantees the features imports the backend directly (inlinable, no dispatch);
-// another x86_64 target links it as a separate object; other architectures skip it.
 fn backendMode(target: std.Build.ResolvedTarget, features: []const std.Target.x86.Feature) Mode {
     if (target.result.cpu.arch != .x86_64) return .absent;
     for (features) |feature| {

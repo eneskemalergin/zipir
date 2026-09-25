@@ -21,7 +21,7 @@ pub const Options = struct {
 };
 
 /// Reusable without initialization, including after errors. No allocation occurs during decode.
-/// Reader, writer and workspace storage must not overlap. One active call per workspace.
+/// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
 pub const Decompressor = struct {
     decoder: deflate.Decoder = .{},
 
@@ -43,7 +43,7 @@ pub const CompressOptions = struct {
 };
 
 /// Reusable without initialization, including after errors. No allocation occurs during compression.
-/// Reader, writer and workspace storage must not overlap. One active call per workspace.
+/// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
 pub const Compressor = struct {
     encoder: deflate.Encoder = .{},
 
@@ -65,7 +65,7 @@ comptime {
     std.debug.assert(@sizeOf(Compressor) == 238848);
 }
 
-fn parseHeader(br: *deflate.Br) !void {
+fn parseHeader(br: *deflate.BitReader) !void {
     const header = try br.getBytes(10);
     if (header[0] != 0x1f or header[1] != 0x8b) return error.BadHeader;
     if (header[2] != 8) return error.UnsupportedMethod;
@@ -103,7 +103,7 @@ fn parseHeader(br: *deflate.Br) !void {
     }
 }
 
-fn inflateMember(session: *deflate.Session(crc.Crc32), br: *deflate.Br) Error!void {
+fn inflateMember(session: *deflate.Session(crc.Crc32), br: *deflate.BitReader) Error!void {
     try parseHeader(br);
     var check: crc.Crc32 = .init();
     const size = try session.stream(br, &check);
@@ -116,7 +116,7 @@ fn inflateMember(session: *deflate.Session(crc.Crc32), br: *deflate.Br) Error!vo
 
 fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) Error!u64 {
     if (reader.buffer.len < 16) return error.InputBufferTooSmall;
-    var br: deflate.Br = .{ .reader = reader };
+    var br: deflate.BitReader = .{ .reader = reader };
     defer br.release();
     var session = work.decoder.session(crc.Crc32, writer, .{ .max_output_bytes = options.max_output_bytes });
     var have_member = false;
