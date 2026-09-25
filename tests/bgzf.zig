@@ -304,6 +304,146 @@ test "[property] - [bgzf reader]: bounded bit flips and truncations end in succe
     }
 }
 
+// --- Writing ---
+
+fn compress(writer: *bgzf.Writer, plain: []const u8, options: bgzf.WriterOptions, chunk: usize, out: []u8) ![]u8 {
+    var buffer: [16]u8 = undefined;
+    var source = support.Source.init(plain, &buffer, chunk);
+    var sink = std.Io.Writer.fixed(out);
+    writer.start(&sink, options);
+    try writer.write(&source.reader);
+    const totals = try writer.finish();
+    try std.testing.expectEqual(@as(u64, plain.len), totals.uncompressed);
+    try std.testing.expectEqual(@as(u64, sink.end), totals.compressed);
+    return sink.buffered();
+}
+
+fn blockSizes(stream: []const u8, sizes: []u32) ![]u32 {
+    var reader = std.Io.Reader.fixed(stream);
+    var scanner = bgzf.scan(&reader, .{ .require_eof_marker = true });
+    var n: usize = 0;
+    while (try scanner.next()) |b| : (n += 1) sizes[n] = b.data_size;
+    return sizes[0..n];
+}
+
+test "[edge] - [bgzf writer]: empty input is exactly the EOF marker, and a full random block fits" {
+    const writer = try std.testing.allocator.create(bgzf.Writer);
+    defer std.testing.allocator.destroy(writer);
+    var out: [140000]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, EOF, try compress(writer, "", .{}, 1, &out));
+    var plain: [bgzf.BLOCK_INPUT]u8 = undefined;
+    var rng = std.Random.DefaultPrng.init(1717);
+    rng.random().bytes(&plain);
+    for ([_]zipir.gzip.CompressOptions{ .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| {
+        const stream = try compress(writer, &plain, .{ .level = options.level }, 4099, &out);
+        var sizes: [4]u32 = undefined;
+        try std.testing.expectEqualSlices(u32, &.{ bgzf.BLOCK_INPUT, 0 }, try blockSizes(stream, &sizes));
+        try std.testing.expect(stream.len - EOF.len <= 65317);
+    }
+}
+
+test "[property] - [bgzf writer]: output decodes with the BGZF and gzip readers at every level and block edge" {
+    const writer = try std.testing.allocator.create(bgzf.Writer);
+    defer std.testing.allocator.destroy(writer);
+    const reader = try std.testing.allocator.create(bgzf.Reader);
+    defer std.testing.allocator.destroy(reader);
+    const plain = try std.testing.allocator.alloc(u8, 200000);
+    defer std.testing.allocator.free(plain);
+    for (plain, 0..) |*b, i| b.* = "ACGTN\n"[(i * i / 7 + i) % 6];
+    const out = try std.testing.allocator.alloc(u8, 260000);
+    defer std.testing.allocator.free(out);
+    for ([_]bgzf.Split{ .fill, .lines }) |split| {
+        for ([_]usize{ 1, 65279, 65280, 65281, 130560, 130561, 200000 }) |n| {
+            const stream = try compress(writer, plain[0..n], .{ .split = split, .level = .fast }, 997, out);
+            const summary = try decode(reader, stream, 4099, .{ .require_eof_marker = true }, plain[0..n]);
+            try std.testing.expect(summary.eof_marker);
+            var gzip_decoder: zipir.Decompressor(.gzip) = undefined;
+            var fixed = std.Io.Reader.fixed(stream);
+            var discard: std.Io.Writer.Discarding = .init(&.{});
+            try std.testing.expectEqual(@as(u64, n), try gzip_decoder.decompress(&fixed, &discard.writer, .{}));
+        }
+    }
+}
+
+test "[property] - [bgzf writer]: splitter plus block encoder writes exactly what the writer writes" {
+    const writer = try std.testing.allocator.create(bgzf.Writer);
+    defer std.testing.allocator.destroy(writer);
+    const encoder = try std.testing.allocator.create(bgzf.BlockEncoder);
+    defer std.testing.allocator.destroy(encoder);
+    const plain = try std.testing.allocator.alloc(u8, 300000);
+    defer std.testing.allocator.free(plain);
+    var rng = std.Random.DefaultPrng.init(1718);
+    for (plain) |*b| b.* = if (rng.random().uintLessThan(u8, 40) == 0) '\n' else 'a' + rng.random().uintLessThan(u8, 4);
+    @memset(plain[100000..180000], 'x');
+    @memcpy(plain[0..12], "#h1\n@h2\n#h3\n");
+    const out = try std.testing.allocator.alloc(u8, 400000);
+    defer std.testing.allocator.free(out);
+    const parallel = try std.testing.allocator.alloc(u8, 400000);
+    defer std.testing.allocator.free(parallel);
+    var encoded: [bgzf.MAX_BLOCK]u8 = undefined;
+    for ([_]bgzf.Split{ .fill, .lines }) |split| {
+        const stream = try compress(writer, plain, .{ .split = split }, 65536, out);
+        var splitter: bgzf.BlockSplitter = .init(split);
+        var at: usize = 0;
+        var len: usize = 0;
+        while (splitter.next(plain[at..], true)) |n| : (at += n) {
+            const size = encoder.compressBlock(plain[at..][0..n], &encoded, .balanced);
+            @memcpy(parallel[len..][0..size], encoded[0..size]);
+            len += size;
+        }
+        @memcpy(parallel[len..][0..EOF.len], EOF);
+        try std.testing.expectEqualSlices(u8, stream, parallel[0 .. len + EOF.len]);
+    }
+}
+
+test "[unit] - [bgzf splitter]: line mode gives header lines their own blocks and ends blocks after a newline" {
+    var sizes: [8]usize = undefined;
+    const cases = .{
+        .{ "#one\n#two\nrow 1\nrow 2\n", &[_]usize{ 10, 12 } },
+        .{ "@read\nACGT\n+\nIIII\n", &[_]usize{ 6, 12 } },
+        .{ "plain text without a final newline", &[_]usize{34} },
+        .{ "a\nb", &[_]usize{ 2, 1 } },
+    };
+    inline for (cases) |case| {
+        var splitter: bgzf.BlockSplitter = .init(.lines);
+        var at: usize = 0;
+        var n: usize = 0;
+        while (splitter.next(case[0][at..], true)) |len| : (at += len) {
+            sizes[n] = len;
+            n += 1;
+        }
+        try std.testing.expectEqualSlices(usize, case[1], sizes[0..n]);
+    }
+    var fill: bgzf.BlockSplitter = .init(.fill);
+    try std.testing.expectEqual(@as(?usize, null), fill.next("short", false));
+    try std.testing.expectEqual(@as(?usize, 5), fill.next("short", true));
+    var lines: bgzf.BlockSplitter = .init(.lines);
+    try std.testing.expectEqual(@as(?usize, null), lines.next("#h\nrow\n", false));
+    try std.testing.expectEqual(@as(?usize, 3), lines.next("#h\nrow\n", true));
+}
+
+test "[failure] - [bgzf writer]: flush ends a block early and write failures propagate" {
+    const writer = try std.testing.allocator.create(bgzf.Writer);
+    defer std.testing.allocator.destroy(writer);
+    var out: [4096]u8 = undefined;
+    var sink = std.Io.Writer.fixed(&out);
+    writer.start(&sink, .{});
+    var first = std.Io.Reader.fixed("record one;");
+    try writer.write(&first);
+    try writer.flush();
+    var second = std.Io.Reader.fixed("record two;");
+    try writer.write(&second);
+    _ = try writer.finish();
+    var sizes: [4]u32 = undefined;
+    try std.testing.expectEqualSlices(u32, &.{ 11, 11, 0 }, try blockSizes(sink.buffered(), &sizes));
+    var small: [20]u8 = undefined;
+    var failing = std.Io.Writer.fixed(&small);
+    writer.start(&failing, .{});
+    var input = std.Io.Reader.fixed("does not fit in twenty bytes once compressed");
+    try writer.write(&input);
+    try std.testing.expectError(error.WriteFailed, writer.finish());
+}
+
 test "[unit] - [bgzf]: the public error set names exactly the documented errors" {
     const expected = [_][]const u8{ "BadBlock", "BadBlockSize", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "BadVirtualOffset", "BlockSizeMismatch", "BlockTooLarge", "CrcMismatch", "HeaderCrcMismatch", "InputBufferTooSmall", "IsizeMismatch", "MissingEofMarker", "NotBgzf", "OutputLimitExceeded", "ReadFailed", "ReservedFlag", "TrailingData", "Truncated", "UnsupportedMethod", "WriteFailed" };
     try support.expectErrorNames(bgzf.Error, &expected);

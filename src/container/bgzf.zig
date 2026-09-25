@@ -9,6 +9,8 @@ pub const Error = gzip.Error || error{ NotBgzf, BadBlockSize, BlockSizeMismatch,
 
 pub const MAX_BLOCK = 65536;
 
+pub const BLOCK_INPUT = 65280;
+
 pub const EOF_MARKER = [28]u8{ 0x1f, 0x8b, 8, 4, 0, 0, 0, 0, 0, 0xff, 6, 0, 'B', 'C', 2, 0, 0x1b, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 pub const VirtualOffset = packed struct(u64) { uoffset: u16, coffset: u48 };
@@ -203,6 +205,199 @@ pub const BlockDecoder = struct {
 comptime {
     std.debug.assert(@sizeOf(BlockDecoder) == 196608);
 }
+
+pub const Split = enum { fill, lines };
+
+/// `.fill` makes blocks of 65280 bytes; `.lines` gives exactly the uncompressed
+/// boundaries of `bgzip` 1.24 on text: blocks end after the last newline of each read window, leading `#`
+/// or `@` header lines get their own blocks, and a line longer than a block continues in the next one.
+pub const BlockSplitter = struct {
+    split: Split,
+    in_header: bool = true,
+    long_line: bool = false,
+    // Bytes at the start of `available` already written into the open block, and whether it then ends.
+    carry: usize = 0,
+    carry_ends: bool = false,
+    // Bytes after `carry` that bgzip keeps from its previous read window.
+    leftover: usize = 0,
+    draining: bool = false,
+
+    pub const LOOKAHEAD = 2 * BLOCK_INPUT;
+
+    pub fn init(split: Split) BlockSplitter {
+        return .{ .split = split };
+    }
+
+    /// The length of the next block, which starts at `available[0]`; null when `available` is empty or,
+    /// unless `at_end`, shorter than `LOOKAHEAD`. Never 0.
+    pub fn next(self: *BlockSplitter, available: []const u8, at_end: bool) ?usize {
+        if (available.len == 0) return null;
+        if (!at_end and available.len < LOOKAHEAD) return null;
+        return switch (self.split) {
+            .fill => @min(available.len, BLOCK_INPUT),
+            .lines => self.lines(available, at_end),
+        };
+    }
+
+    fn reset(self: *BlockSplitter) void {
+        self.carry = 0;
+        self.carry_ends = false;
+        self.leftover = 0;
+        self.draining = false;
+    }
+
+    // One pass of bgzip's text loop per read window: write `n` bytes into the open block (which closes when
+    // it reaches 65280 bytes) and close it after them when `flush` is set.
+    fn lines(self: *BlockSplitter, available: []const u8, at_end: bool) usize {
+        if (self.draining) return @min(available.len, BLOCK_INPUT);
+        var open = self.carry;
+        if (self.carry_ends) {
+            self.carry = 0;
+            self.carry_ends = false;
+            return open;
+        }
+        while (true) {
+            const window = available[open..@min(available.len, open + BLOCK_INPUT)];
+            if (window.len == self.leftover and at_end) {
+                // bgzip's read returns nothing new: it writes what it kept, then closing flushes.
+                self.carry = 0;
+                self.leftover = 0;
+                self.draining = true;
+                return @min(available.len, BLOCK_INPUT);
+            }
+            var n: usize = undefined;
+            var flush = false;
+            if (self.in_header and (self.long_line or window[0] == '@' or window[0] == '#')) {
+                var last_start: usize = 0;
+                var i: usize = 0;
+                while (i < window.len) {
+                    i += 1;
+                    if (window[i - 1] != '\n') continue;
+                    last_start = i;
+                    if (i < window.len and window[i] != '@' and window[i] != '#') {
+                        self.in_header = false;
+                        break;
+                    }
+                }
+                self.long_line = last_start == 0;
+                n = if (last_start == 0) window.len else last_start;
+                flush = last_start != 0;
+            } else if (std.mem.lastIndexOfScalar(u8, window, '\n')) |last| {
+                n = last + 1;
+                flush = true;
+            } else n = window.len;
+            self.leftover = window.len - n;
+            if (open + n >= BLOCK_INPUT) {
+                self.carry = open + n - BLOCK_INPUT;
+                self.carry_ends = flush and self.carry != 0;
+                return BLOCK_INPUT;
+            }
+            open += n;
+            if (flush) {
+                self.carry = 0;
+                return open;
+            }
+        }
+    }
+};
+
+/// Reusable without initialization. No allocation occurs during compression.
+pub const BlockEncoder = struct {
+    encoder: engine.Encoder = .{},
+
+    /// Asserts `input.len <= 65280`; the result is the block's length in `out`.
+    pub fn compressBlock(self: *BlockEncoder, input: []const u8, out: *[MAX_BLOCK]u8, level: engine.Level) usize {
+        std.debug.assert(input.len <= BLOCK_INPUT);
+        var reader = std.Io.Reader.fixed(input);
+        var body = std.Io.Writer.fixed(out[HEADER_LEN .. MAX_BLOCK - 8]);
+        var check: crc.Crc32 = .init();
+        // 65280 input bytes compress to at most 65291 (two stored blocks at worst), which fits `body`,
+        // and fixed readers and writers of that size cannot fail.
+        _ = self.encoder.encodeStream(crc.Crc32, &reader, &body, &check, level) catch unreachable;
+        const size = HEADER_LEN + body.end + 8;
+        var subfield = [6]u8{ 'B', 'C', 2, 0, 0, 0 };
+        std.mem.writeInt(u16, subfield[4..6], @intCast(size - 1), .little);
+        var header = std.Io.Writer.fixed(out[0..HEADER_LEN]);
+        gzip.writeHeader(&header, &subfield) catch unreachable;
+        std.mem.writeInt(u32, out[size - 8 ..][0..4], check.final(), .little);
+        std.mem.writeInt(u32, out[size - 4 ..][0..4], @intCast(input.len), .little);
+        return size;
+    }
+};
+
+comptime {
+    std.debug.assert(@sizeOf(BlockEncoder) == 238848);
+}
+
+pub const WriterOptions = struct {
+    level: engine.Level = .balanced,
+    split: Split = .fill,
+};
+
+pub const WriteError = error{ ReadFailed, WriteFailed };
+
+pub const Totals = struct { uncompressed: u64, compressed: u64 };
+
+/// Use: `start`, then `write` any number of times, then `finish`. Input is staged in two blocks'
+/// worth of memory so that `.lines` sees as far ahead as `bgzip` does.
+/// No allocation occurs. One active stream per workspace; `start` begins a new one at any time.
+pub const Writer = struct {
+    encoder: BlockEncoder = .{},
+    staging: [BlockSplitter.LOOKAHEAD]u8 = undefined,
+    block: [MAX_BLOCK]u8 = undefined,
+    staged: usize = 0,
+    splitter: BlockSplitter = .init(.fill),
+    level: engine.Level = .balanced,
+    out: *std.Io.Writer = undefined,
+    compressed: u64 = 0,
+    uncompressed: u64 = 0,
+
+    pub fn start(self: *Writer, out: *std.Io.Writer, options: WriterOptions) void {
+        self.staged = 0;
+        self.splitter = .init(options.split);
+        self.level = options.level;
+        self.out = out;
+        self.compressed = 0;
+        self.uncompressed = 0;
+    }
+
+    /// Consumes the reader to its end: blocks whose boundaries are decided are written, the rest stays staged.
+    pub fn write(self: *Writer, reader: *std.Io.Reader) WriteError!void {
+        while (true) {
+            const room = self.staging.len - self.staged;
+            const n = try reader.readSliceShort(self.staging[self.staged..]);
+            self.staged += n;
+            while (self.splitter.next(self.staging[0..self.staged], false)) |len| try self.emit(len);
+            // A short read is the end of this reader's input.
+            if (n < room) return;
+        }
+    }
+
+    /// Ends the current block early, so that the next byte starts a block (a record boundary).
+    pub fn flush(self: *Writer) WriteError!void {
+        while (self.splitter.next(self.staging[0..self.staged], true)) |len| try self.emit(len);
+        self.splitter.reset();
+    }
+
+    /// The staged bytes and the EOF marker are written; caller flushes the underlying writer.
+    pub fn finish(self: *Writer) WriteError!Totals {
+        try self.flush();
+        try self.out.writeAll(&EOF_MARKER);
+        self.compressed += EOF_MARKER.len;
+        return .{ .uncompressed = self.uncompressed, .compressed = self.compressed };
+    }
+
+    fn emit(self: *Writer, len: usize) WriteError!void {
+        const size = self.encoder.compressBlock(self.staging[0..len], &self.block, self.level);
+        try self.out.writeAll(self.block[0..size]);
+        self.compressed += size;
+        self.uncompressed += len;
+        std.mem.copyForwards(u8, self.staging[0 .. self.staged - len], self.staging[len..self.staged]);
+        self.staged -= len;
+    }
+};
+
+const HEADER_LEN = 18;
 
 fn readAll(r: *std.Io.Reader, out: []u8) Error!void {
     r.readSliceAll(out) catch |err| return switch (err) {

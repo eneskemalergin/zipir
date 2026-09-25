@@ -45,7 +45,7 @@ pub const Compressor = struct {
     /// Reads through EOF and writes one member. Caller flushes writer; failures may leave partial output.
     /// Reader capacity may be zero. A failed call cannot be resumed.
     pub fn compress(self: *Compressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: CompressOptions) CompressError!u64 {
-        try writer.writeAll(&.{ 31, 139, 8, 0, 0, 0, 0, 0, 0, 255 });
+        try writeHeader(writer, "");
         var check: crc.Crc32 = .init();
         const size = try self.encoder.encodeStream(crc.Crc32, reader, writer, &check, options.level);
         var trailer: [8]u8 = undefined;
@@ -125,6 +125,17 @@ fn readSubfields(br: *engine.BitReader, checksum: *crc.Crc32, size: u16, comptim
         }
         left -= len;
     }
+}
+
+// Shared with BGZF: MTIME 0, XFL 0, OS 255 (unknown), and FEXTRA with `extra` as the subfields when not empty.
+pub fn writeHeader(writer: *std.Io.Writer, extra: []const u8) std.Io.Writer.Error!void {
+    std.debug.assert(extra.len <= std.math.maxInt(u16));
+    var header = [12]u8{ 0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 0, 0 };
+    if (extra.len == 0) return writer.writeAll(header[0..10]);
+    header[3] = 4;
+    std.mem.writeInt(u16, header[10..12], @intCast(extra.len), .little);
+    try writer.writeAll(&header);
+    try writer.writeAll(extra);
 }
 
 // Shared with BGZF: ISIZE is compared before CRC-32, the gzip error precedence.
