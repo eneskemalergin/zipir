@@ -5,7 +5,7 @@ const engine = @import("../deflate/deflate.zig");
 const crc = @import("../kernel/crc32.zig");
 const gzip = @import("gzip.zig");
 
-pub const Error = gzip.Error || error{ NotBgzf, BadBlockSize, BlockSizeMismatch, BlockTooLarge, MissingEofMarker, BadVirtualOffset };
+pub const Error = gzip.Error || error{ NotBgzf, BadBlockSize, BlockSizeMismatch, BlockTooLarge, MissingEofMarker, BadVirtualOffset, BadIndex };
 
 pub const MAX_BLOCK = 65536;
 
@@ -149,17 +149,36 @@ pub const Reader = struct {
     /// Decoding stops after the block that completes the range, so later blocks are not checked.
     /// Reader capacity must be >=28. Caller flushes writer.
     pub fn readAt(self: *Reader, source: *std.Io.File.Reader, offset: VirtualOffset, writer: *std.Io.Writer, length: u64) Error!u64 {
+        return self.readFrom(source, offset.coffset, offset.uoffset, true, writer, length);
+    }
+
+    /// `entries` come from `IndexReader`, which checked them; the entry at or before `uoffset` gives the block
+    /// to start from; a sparse index is fine, as the skip then spans blocks. Otherwise as `readAt`.
+    pub fn readAtUncompressed(self: *Reader, source: *std.Io.File.Reader, entries: []const IndexEntry, uoffset: u64, writer: *std.Io.Writer, length: u64) Error!u64 {
+        var start: IndexEntry = .{ .coffset = 0, .uoffset = 0 };
+        var low: usize = 0;
+        var high: usize = entries.len;
+        while (low < high) {
+            const mid = low + (high - low) / 2;
+            if (entries[mid].uoffset <= uoffset) low = mid + 1 else high = mid;
+        }
+        if (low != 0) start = entries[low - 1];
+        return self.readFrom(source, start.coffset, uoffset - start.uoffset, false, writer, length);
+    }
+
+    // `skip_in_block`: the skip must end within the first block, as a virtual offset's does.
+    fn readFrom(self: *Reader, source: *std.Io.File.Reader, coffset: u64, skip: u64, skip_in_block: bool, writer: *std.Io.Writer, length: u64) Error!u64 {
         if (source.interface.buffer.len < EOF_MARKER.len) return error.InputBufferTooSmall;
         if (length == 0) return 0;
-        source.seekTo(offset.coffset) catch return error.ReadFailed;
-        var window: Window = .{ .inner = writer, .skip = offset.uoffset, .left = length };
+        source.seekTo(coffset) catch return error.ReadFailed;
+        var window: Window = .{ .inner = writer, .skip = skip, .left = length };
         var br: engine.BitReader = .{ .reader = &source.interface };
         defer br.release();
         var session = self.decoder.session(crc.Crc32, &window.writer, .{});
         session.stream_limit = MAX_BLOCK;
         var first = true;
         var decoded: u64 = 0;
-        while (decoded < offset.uoffset +| length) {
+        while (decoded < skip +| length) {
             _ = try br.window(2);
             if (br.src.len < 2 or br.src[0] != 0x1f or br.src[1] != 0x8b) {
                 if (first) return error.BadVirtualOffset;
@@ -170,7 +189,7 @@ pub const Reader = struct {
                 if (first and isHeaderError(err)) return error.BadVirtualOffset;
                 return err;
             };
-            if (first and block.size < offset.uoffset) return error.BadVirtualOffset;
+            if (first and skip_in_block and block.size < skip) return error.BadVirtualOffset;
             first = false;
             decoded += block.size;
         }
@@ -332,9 +351,10 @@ comptime {
 pub const WriterOptions = struct {
     level: engine.Level = .balanced,
     split: Split = .fill,
+    index: ?*IndexBuilder = null,
 };
 
-pub const WriteError = error{ ReadFailed, WriteFailed };
+pub const WriteError = error{ ReadFailed, WriteFailed, IndexFull };
 
 pub const Totals = struct { uncompressed: u64, compressed: u64 };
 
@@ -348,6 +368,7 @@ pub const Writer = struct {
     staged: usize = 0,
     splitter: BlockSplitter = .init(.fill),
     level: engine.Level = .balanced,
+    index: ?*IndexBuilder = null,
     out: *std.Io.Writer = undefined,
     compressed: u64 = 0,
     uncompressed: u64 = 0,
@@ -356,6 +377,7 @@ pub const Writer = struct {
         self.staged = 0;
         self.splitter = .init(options.split);
         self.level = options.level;
+        self.index = options.index;
         self.out = out;
         self.compressed = 0;
         self.uncompressed = 0;
@@ -390,6 +412,7 @@ pub const Writer = struct {
     fn emit(self: *Writer, len: usize) WriteError!void {
         const size = self.encoder.compressBlock(self.staging[0..len], &self.block, self.level);
         try self.out.writeAll(self.block[0..size]);
+        if (self.index) |index| try index.add(self.compressed, @intCast(len));
         self.compressed += size;
         self.uncompressed += len;
         std.mem.copyForwards(u8, self.staging[0 .. self.staged - len], self.staging[len..self.staged]);
@@ -397,7 +420,84 @@ pub const Writer = struct {
     }
 };
 
+pub const IndexEntry = struct { coffset: u64, uoffset: u64 };
+
+/// Caller-owned storage for `.gzi` entries, filled as htslib does: one per block that holds data, except
+/// the first. Blocks are added in file order, from `Scanner.next` or through `WriterOptions.index`.
+pub const IndexBuilder = struct {
+    entries: []IndexEntry,
+    len: usize = 0,
+    uoffset: u64 = 0,
+    seen_data: bool = false,
+
+    pub fn init(entries: []IndexEntry) IndexBuilder {
+        return .{ .entries = entries };
+    }
+
+    pub fn add(self: *IndexBuilder, coffset: u64, data_size: u32) error{IndexFull}!void {
+        if (data_size == 0) return;
+        if (self.seen_data) {
+            if (self.len == self.entries.len) return error.IndexFull;
+            self.entries[self.len] = .{ .coffset = coffset, .uoffset = self.uoffset };
+            self.len += 1;
+        }
+        self.seen_data = true;
+        self.uoffset += data_size;
+    }
+
+    pub fn slice(self: *const IndexBuilder) []const IndexEntry {
+        return self.entries[0..self.len];
+    }
+};
+
+/// The `.gzi` layout: the entry count, then each entry, as little-endian u64s.
+pub fn writeIndex(writer: *std.Io.Writer, entries: []const IndexEntry) std.Io.Writer.Error!void {
+    try writer.writeInt(u64, entries.len, .little);
+    for (entries) |entry| {
+        try writer.writeInt(u64, entry.coffset, .little);
+        try writer.writeInt(u64, entry.uoffset, .little);
+    }
+}
+
+/// Entries are streamed, never held whole. They must increase strictly in both
+/// offsets and point inside a BGZF file of `file_size` bytes; anything else, or a short file, is `BadIndex`.
+pub const IndexReader = struct {
+    reader: *std.Io.Reader,
+    file_size: u64,
+    remaining: u64,
+    previous: IndexEntry = .{ .coffset = 0, .uoffset = 0 },
+
+    pub fn init(reader: *std.Io.Reader, file_size: u64) Error!IndexReader {
+        var count: [8]u8 = undefined;
+        try readIndexBytes(reader, &count);
+        return .{ .reader = reader, .file_size = file_size, .remaining = std.mem.readInt(u64, &count, .little) };
+    }
+
+    pub fn next(self: *IndexReader) Error!?IndexEntry {
+        if (self.remaining == 0) {
+            var extra: [1]u8 = undefined;
+            const n = self.reader.readSliceShort(&extra) catch return error.ReadFailed;
+            if (n != 0) return error.BadIndex;
+            return null;
+        }
+        var bytes: [16]u8 = undefined;
+        try readIndexBytes(self.reader, &bytes);
+        const entry: IndexEntry = .{ .coffset = std.mem.readInt(u64, bytes[0..8], .little), .uoffset = std.mem.readInt(u64, bytes[8..16], .little) };
+        if (entry.coffset <= self.previous.coffset or entry.uoffset <= self.previous.uoffset or entry.coffset >= self.file_size) return error.BadIndex;
+        self.previous = entry;
+        self.remaining -= 1;
+        return entry;
+    }
+};
+
 const HEADER_LEN = 18;
+
+fn readIndexBytes(r: *std.Io.Reader, out: []u8) Error!void {
+    r.readSliceAll(out) catch |err| return switch (err) {
+        error.EndOfStream => error.BadIndex,
+        error.ReadFailed => error.ReadFailed,
+    };
+}
 
 fn readAll(r: *std.Io.Reader, out: []u8) Error!void {
     r.readSliceAll(out) catch |err| return switch (err) {

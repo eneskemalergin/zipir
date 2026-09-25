@@ -444,7 +444,117 @@ test "[failure] - [bgzf writer]: flush ends a block early and write failures pro
     try std.testing.expectError(error.WriteFailed, writer.finish());
 }
 
+// --- Indexes ---
+
+test "[property] - [bgzf index]: entries built by scan and while writing agree and follow htslib's rule" {
+    const writer = try std.testing.allocator.create(bgzf.Writer);
+    defer std.testing.allocator.destroy(writer);
+    const plain = try std.testing.allocator.alloc(u8, 200000);
+    defer std.testing.allocator.free(plain);
+    for (plain, 0..) |*b, i| b.* = @truncate(i * 31 / 7);
+    const out = try std.testing.allocator.alloc(u8, 260000);
+    defer std.testing.allocator.free(out);
+    var written_storage: [8]bgzf.IndexEntry = undefined;
+    var written: bgzf.IndexBuilder = .init(&written_storage);
+    var sink = std.Io.Writer.fixed(out);
+    writer.start(&sink, .{ .index = &written });
+    var source = std.Io.Reader.fixed(plain);
+    try writer.write(&source);
+    _ = try writer.finish();
+    const expected = [_]bgzf.IndexEntry{ .{ .coffset = 0, .uoffset = 65280 }, .{ .coffset = 0, .uoffset = 130560 }, .{ .coffset = 0, .uoffset = 195840 } };
+    try std.testing.expectEqual(expected.len, written.len);
+    var scanned_storage: [8]bgzf.IndexEntry = undefined;
+    var scanned: bgzf.IndexBuilder = .init(&scanned_storage);
+    var reader = std.Io.Reader.fixed(sink.buffered());
+    var scanner = bgzf.scan(&reader, .{});
+    while (try scanner.next()) |b| try scanned.add(b.coffset, b.data_size);
+    try std.testing.expectEqualSlices(bgzf.IndexEntry, scanned.slice(), written.slice());
+    for (expected, written.slice()) |e, w| try std.testing.expectEqual(e.uoffset, w.uoffset);
+    var full: bgzf.IndexBuilder = .init(written_storage[0..2]);
+    try full.add(0, 5);
+    try full.add(28, 5);
+    try full.add(56, 0);
+    try full.add(84, 5);
+    try std.testing.expectError(error.IndexFull, full.add(112, 5));
+}
+
+test "[failure] - [bgzf index]: a written index reads back, and damaged indexes are BadIndex" {
+    const entries = [_]bgzf.IndexEntry{ .{ .coffset = 100, .uoffset = 65280 }, .{ .coffset = 250, .uoffset = 130560 } };
+    var bytes: [40]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&bytes);
+    try bgzf.writeIndex(&writer, &entries);
+    try std.testing.expectEqual(@as(usize, 40), writer.end);
+    var reader = std.Io.Reader.fixed(&bytes);
+    var index = try bgzf.IndexReader.init(&reader, 300);
+    for (entries) |e| try std.testing.expectEqual(e, (try index.next()).?);
+    try std.testing.expectEqual(@as(?bgzf.IndexEntry, null), try index.next());
+    const Case = struct { bytes: []const u8, file_size: u64 };
+    var backwards = bytes;
+    std.mem.writeInt(u64, backwards[24..32], 50, .little);
+    var trailing: [41]u8 = undefined;
+    @memcpy(trailing[0..40], &bytes);
+    trailing[40] = 0;
+    for ([_]Case{ .{ .bytes = &backwards, .file_size = 300 }, .{ .bytes = &bytes, .file_size = 250 }, .{ .bytes = bytes[0..30], .file_size = 300 }, .{ .bytes = bytes[0..5], .file_size = 300 }, .{ .bytes = &trailing, .file_size = 300 } }) |case| {
+        var r = std.Io.Reader.fixed(case.bytes);
+        const result = blk: {
+            var ix = bgzf.IndexReader.init(&r, case.file_size) catch |err| break :blk err;
+            while (ix.next() catch |err| break :blk err) |_| {}
+            break :blk error.Accepted;
+        };
+        try std.testing.expectEqual(error.BadIndex, result);
+    }
+}
+
+test "[property] - [bgzf reader]: reads at uncompressed offsets through a full, sparse, or empty index match the full output" {
+    const io = std.testing.io;
+    const writer = try std.testing.allocator.create(bgzf.Writer);
+    defer std.testing.allocator.destroy(writer);
+    const decoder = try std.testing.allocator.create(bgzf.Reader);
+    defer std.testing.allocator.destroy(decoder);
+    const plain = try std.testing.allocator.alloc(u8, 300000);
+    defer std.testing.allocator.free(plain);
+    var rng = std.Random.DefaultPrng.init(1818);
+    for (plain) |*b| b.* = "ACGT\n"[rng.random().uintLessThan(u8, 5)];
+    const out = try std.testing.allocator.alloc(u8, 400000);
+    defer std.testing.allocator.free(out);
+    var storage: [8]bgzf.IndexEntry = undefined;
+    var index: bgzf.IndexBuilder = .init(&storage);
+    var sink = std.Io.Writer.fixed(out);
+    writer.start(&sink, .{ .split = .lines, .index = &index, .level = .fast });
+    var source = std.Io.Reader.fixed(plain);
+    try writer.write(&source);
+    _ = try writer.finish();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "f.gz", .data = sink.buffered() });
+    const file = try tmp.dir.openFile(io, "f.gz", .{});
+    defer file.close(io);
+    var buffer: [64]u8 = undefined;
+    var reader = file.reader(io, &buffer);
+    const got = try std.testing.allocator.alloc(u8, 70000);
+    defer std.testing.allocator.free(got);
+    for (0..100) |k| {
+        const at = if (k < 8) (if (k < index.len) index.slice()[k].uoffset else plain.len) else rng.random().uintAtMost(u64, plain.len);
+        const length = rng.random().uintAtMost(u64, 70000);
+        var w = std.Io.Writer.fixed(got);
+        const n = try decoder.readAtUncompressed(&reader, index.slice(), at, &w, length);
+        try std.testing.expectEqual(@min(length, plain.len - at), n);
+        try std.testing.expectEqualSlices(u8, plain[@intCast(at)..][0..@intCast(n)], w.buffered());
+    }
+    // Starting blocks earlier than the offset's own, the skip spans whole blocks.
+    for ([_][]const bgzf.IndexEntry{ index.slice()[1..2], &.{} }) |sparse| {
+        for (0..20) |_| {
+            const at = rng.random().uintAtMost(u64, plain.len);
+            const length = rng.random().uintAtMost(u64, 70000);
+            var w = std.Io.Writer.fixed(got);
+            const n = try decoder.readAtUncompressed(&reader, sparse, at, &w, length);
+            try std.testing.expectEqual(@min(length, plain.len - at), n);
+            try std.testing.expectEqualSlices(u8, plain[@intCast(at)..][0..@intCast(n)], w.buffered());
+        }
+    }
+}
+
 test "[unit] - [bgzf]: the public error set names exactly the documented errors" {
-    const expected = [_][]const u8{ "BadBlock", "BadBlockSize", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "BadVirtualOffset", "BlockSizeMismatch", "BlockTooLarge", "CrcMismatch", "HeaderCrcMismatch", "InputBufferTooSmall", "IsizeMismatch", "MissingEofMarker", "NotBgzf", "OutputLimitExceeded", "ReadFailed", "ReservedFlag", "TrailingData", "Truncated", "UnsupportedMethod", "WriteFailed" };
+    const expected = [_][]const u8{ "BadBlock", "BadBlockSize", "BadDistance", "BadHeader", "BadIndex", "BadHuffman", "BadStored", "BadSymbol", "BadVirtualOffset", "BlockSizeMismatch", "BlockTooLarge", "CrcMismatch", "HeaderCrcMismatch", "InputBufferTooSmall", "IsizeMismatch", "MissingEofMarker", "NotBgzf", "OutputLimitExceeded", "ReadFailed", "ReservedFlag", "TrailingData", "Truncated", "UnsupportedMethod", "WriteFailed" };
     try support.expectErrorNames(bgzf.Error, &expected);
 }
