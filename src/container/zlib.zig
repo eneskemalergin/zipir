@@ -1,4 +1,4 @@
-//! Bounded zlib decompression through caller-owned readers and writers.
+//! Bounded zlib compression and decompression through caller-owned readers and writers.
 
 const std = @import("std");
 const deflate = @import("../deflate/deflate.zig");
@@ -33,6 +33,41 @@ pub const Decompressor = struct {
 
 comptime {
     std.debug.assert(@sizeOf(Decompressor) == 196608);
+}
+
+pub const CompressError = deflate.EncodeError;
+
+pub const CompressOptions = deflate.CompressOptions;
+
+/// Reusable without initialization, including after errors. No allocation occurs during compression.
+/// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
+pub const Compressor = struct {
+    encoder: deflate.Encoder = .{},
+
+    /// Reads through EOF and writes one stream. Caller flushes writer; failures may leave partial output.
+    /// Reader capacity may be zero. A failed call cannot be resumed.
+    pub fn compress(self: *Compressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: CompressOptions) CompressError!u64 {
+        try writer.writeAll(&headerFor(options.level));
+        var check: adler32.Adler32 = .init();
+        const size = try self.encoder.encodeStream(adler32.Adler32, reader, writer, &check, options.level);
+        var trailer: [4]u8 = undefined;
+        std.mem.writeInt(u32, &trailer, check.final(), .big);
+        try writer.writeAll(&trailer);
+        return size;
+    }
+};
+
+comptime {
+    std.debug.assert(@sizeOf(Compressor) == 238848);
+}
+
+// CMF 0x78 is DEFLATE with a 32 KiB window; FLEVEL follows zlib's level convention (fastest, fast, default, maximum).
+fn headerFor(level: deflate.Level) [2]u8 {
+    return switch (level) {
+        .fast => .{ 0x78, 0x01 },
+        .balanced => .{ 0x78, 0x5e },
+        .dense => .{ 0x78, 0xda },
+    };
 }
 
 fn parseHeader(br: *deflate.BitReader) !void {

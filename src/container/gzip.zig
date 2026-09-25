@@ -36,11 +36,9 @@ comptime {
     std.debug.assert(@sizeOf(Decompressor) == 196608);
 }
 
-pub const CompressError = error{ ReadFailed, WriteFailed };
+pub const CompressError = deflate.EncodeError;
 
-pub const CompressOptions = struct {
-    level: deflate.Level = .balanced,
-};
+pub const CompressOptions = deflate.CompressOptions;
 
 /// Reusable without initialization, including after errors. No allocation occurs during compression.
 /// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.

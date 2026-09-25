@@ -1,4 +1,4 @@
-//! Bounded input and output adapters for streaming correctness and measurement.
+//! Bounded input and output adapters and shared checks for the contract suites.
 
 const std = @import("std");
 
@@ -71,3 +71,31 @@ pub const Sink = struct {
         return self.count - start;
     }
 };
+
+pub fn encodeRoundtrip(
+    comptime Codec: type,
+    encoder: *Codec.Compressor,
+    container: std.compress.flate.Container,
+    plain: []const u8,
+    options: Codec.CompressOptions,
+    chunk: usize,
+    capacity: usize,
+    encoded: []u8,
+) ![]const u8 {
+    var in_buffer: [17]u8 = undefined;
+    var source = Source.init(plain, in_buffer[0..capacity], chunk);
+    var out_buffer: [13]u8 = undefined;
+    var output = Sink{ .output = &out_buffer, .sink = encoded, .max_drain = 7 };
+    try std.testing.expectEqual(@as(u64, plain.len), try encoder.compress(&source.reader, &output.writer, options));
+    const stream = encoded[0..output.count];
+    var compressed = std.Io.Reader.fixed(stream);
+    var oracle = std.Io.Reader.fixed(plain);
+    var decoded_buffer: [1031]u8 = undefined;
+    var sink = Sink{ .output = &decoded_buffer, .oracle = &oracle };
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var decoder: std.compress.flate.Decompress = .init(&compressed, container, &window);
+    try std.testing.expectEqual(@as(u64, plain.len), try decoder.reader.streamRemaining(&sink.writer));
+    try std.testing.expect(!sink.mismatch);
+    try std.testing.expectEqual(plain.len, sink.count);
+    return stream;
+}

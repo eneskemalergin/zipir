@@ -963,6 +963,10 @@ pub const Level = enum(u4) { fast = 1, balanced = 5, dense = 9 };
 
 pub const EncodeError = error{ ReadFailed, WriteFailed };
 
+pub const CompressOptions = struct {
+    level: Level = .balanced,
+};
+
 pub const Encoder = struct {
     window: [2 * RING]u8 = undefined,
     head: [ENCODE_HASH]u16 = undefined,

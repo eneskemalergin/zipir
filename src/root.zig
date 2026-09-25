@@ -14,8 +14,10 @@ pub fn Decompressor(comptime format: Format) type {
 }
 
 pub fn Compressor(comptime format: Format) type {
-    if (format != .gzip) @compileError("zlib compression is not implemented");
-    return gzip.Compressor;
+    return switch (format) {
+        .gzip => gzip.Compressor,
+        .zlib => zlib.Compressor,
+    };
 }
 
 pub const version: std.SemanticVersion = .{

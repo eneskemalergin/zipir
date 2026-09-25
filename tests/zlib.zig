@@ -300,6 +300,93 @@ test "[failure] - [zlib decoder]: rejects undersized input buffers and preset di
     try std.testing.expectError(error.DictionaryUnsupported, decoder.decompress(&source.reader, &sink.writer, .{}));
 }
 
+// --- Compression ---
+
+const Compressor = @import("zipir").Compressor(.zlib);
+
+fn encodeRoundtrip(encoder: *Compressor, plain: []const u8, options: zlib.CompressOptions, chunk: usize, capacity: usize, encoded: []u8) ![]const u8 {
+    const stream = try support.encodeRoundtrip(zlib, encoder, .zlib, plain, options, chunk, capacity, encoded);
+    try std.testing.expectEqual(@as(u16, 0), (@as(u16, stream[0]) << 8 | stream[1]) % 31);
+    var adler: std.hash.Adler32 = .{};
+    adler.update(plain);
+    try std.testing.expectEqual(adler.adler, std.mem.readInt(u32, stream[stream.len - 4 ..][0..4], .big));
+    return stream;
+}
+
+test "[edge] - [zlib compressor]: empty input writes the level header, an empty final block, and Adler-32 one" {
+    const encoder = try std.testing.allocator.create(Compressor);
+    defer std.testing.allocator.destroy(encoder);
+    const cases = .{
+        .{ zlib.CompressOptions{ .level = .fast }, "\x78\x01\x03\x00\x00\x00\x00\x01" },
+        .{ zlib.CompressOptions{}, "\x78\x5e\x03\x00\x00\x00\x00\x01" },
+        .{ zlib.CompressOptions{ .level = .dense }, "\x78\xda\x03\x00\x00\x00\x00\x01" },
+    };
+    inline for (cases) |case| {
+        var bytes: [case[1].len]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&bytes);
+        var reader = std.Io.Reader.fixed("");
+        try std.testing.expectEqual(@as(u64, 0), try encoder.compress(&reader, &writer, case[0]));
+        try std.testing.expectEqualSlices(u8, case[1], writer.buffered());
+    }
+}
+
+test "[property] - [zlib compressor]: payload equals the gzip payload across block and window boundaries" {
+    const encoder = try std.testing.allocator.create(Compressor);
+    defer std.testing.allocator.destroy(encoder);
+    const gzip_encoder = try std.testing.allocator.create(@import("zipir").Compressor(.gzip));
+    defer std.testing.allocator.destroy(gzip_encoder);
+    const decoder = try std.testing.allocator.create(zlib.Decompressor);
+    defer std.testing.allocator.destroy(decoder);
+    // A four-letter alphabet gives long hash chains and lazy decisions in every block.
+    var plain: [131073]u8 = undefined;
+    var rng = std.Random.DefaultPrng.init(1313);
+    for (&plain) |*b| b.* = 'a' + rng.random().uintLessThan(u8, 4);
+    rng.random().bytes(plain[65536..98304]);
+    const encoded = try std.testing.allocator.alloc(u8, plain.len + 64);
+    defer std.testing.allocator.free(encoded);
+    var gzip_bytes: [131073 + 64]u8 = undefined;
+    var input_buffer: [17]u8 = undefined;
+    for ([_]zlib.CompressOptions{ .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| {
+        for ([_]usize{ 1, 257, 32767, 32768, 32769, 65537, 131073 }) |n| {
+            const stream = try encodeRoundtrip(encoder, plain[0..n], options, 997, 17, encoded);
+            var reader = std.Io.Reader.fixed(plain[0..n]);
+            var writer = std.Io.Writer.fixed(&gzip_bytes);
+            _ = try gzip_encoder.compress(&reader, &writer, options);
+            const member = writer.buffered();
+            try std.testing.expectEqualSlices(u8, member[10 .. member.len - 8], stream[2 .. stream.len - 4]);
+            const output = try std.testing.allocator.alloc(u8, n);
+            defer std.testing.allocator.free(output);
+            try decode(decoder, stream, plain[0..n], &input_buffer, output, 257, .{});
+        }
+        for ([_]usize{ 0, 1 }) |capacity| _ = try encodeRoundtrip(encoder, plain[0..65537], options, 997, capacity, encoded);
+    }
+}
+
+test "[failure] - [zlib compressor]: I/O errors propagate and the workspace compresses again" {
+    const encoder = try std.testing.allocator.create(Compressor);
+    defer std.testing.allocator.destroy(encoder);
+    var plain: [65537]u8 = undefined;
+    var rng = std.Random.DefaultPrng.init(145);
+    rng.random().bytes(&plain);
+    var encoded: [128]u8 = undefined;
+    for ([_]usize{ 0, 1, 32768, 65536 }) |fail| {
+        var buffer: [17]u8 = undefined;
+        var source = support.Source.init(&plain, &buffer, 200);
+        source.fail_at = fail;
+        var scratch: [29]u8 = undefined;
+        var sink = support.Sink{ .output = &scratch };
+        try std.testing.expectError(error.ReadFailed, encoder.compress(&source.reader, &sink.writer, .{ .level = .dense }));
+        _ = try encodeRoundtrip(encoder, "reused after read failure", .{ .level = .dense }, 1, 17, &encoded);
+    }
+    for ([_]usize{ 0, 1, 2, 500, 65543 }) |fail| {
+        var source = std.Io.Reader.fixed(&plain);
+        var scratch: [29]u8 = undefined;
+        var sink = support.Sink{ .output = &scratch, .fail_at = fail };
+        try std.testing.expectError(error.WriteFailed, encoder.compress(&source, &sink.writer, .{ .level = .fast }));
+        _ = try encodeRoundtrip(encoder, "reused after write failure", .{ .level = .fast }, 1, 17, &encoded);
+    }
+}
+
 test "[unit] - [zlib]: the public error set names exactly the documented errors" {
     const expected = [_][]const u8{ "BadAdler", "BadBlock", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "DictionaryUnsupported", "InputBufferTooSmall", "OutputLimitExceeded", "ReadFailed", "TrailingData", "Truncated", "UnsupportedMethod", "WindowTooLarge", "WriteFailed" };
     const actual = @typeInfo(zlib.Error).error_set.?;

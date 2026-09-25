@@ -287,26 +287,13 @@ test "[regression] - [gzip]: fixed tables preserve all slots across dynamic memb
 // --- Compression ---
 
 fn encodeRoundtrip(encoder: *zipir.gzip.Compressor, plain: []const u8, options: zipir.gzip.CompressOptions, chunk: usize, capacity: usize) !usize {
-    var in_buffer: [17]u8 = undefined;
-    var source = support.Source.init(plain, in_buffer[0..capacity], chunk);
     const encoded = try std.testing.allocator.alloc(u8, plain.len + 64);
     defer std.testing.allocator.free(encoded);
-    var out_buffer: [13]u8 = undefined;
-    var output = support.Sink{ .output = &out_buffer, .sink = encoded, .max_drain = 7 };
-    try std.testing.expectEqual(@as(u64, plain.len), try encoder.compress(&source.reader, &output.writer, options));
-    const trailer = encoded[output.count - 8 ..][0..8];
+    const member = try support.encodeRoundtrip(zipir.gzip, encoder, .gzip, plain, options, chunk, capacity, encoded);
+    const trailer = member[member.len - 8 ..][0..8];
     try std.testing.expectEqual(std.hash.Crc32.hash(plain), std.mem.readInt(u32, trailer[0..4], .little));
     try std.testing.expectEqual(@as(u32, @truncate(plain.len)), std.mem.readInt(u32, trailer[4..8], .little));
-    var compressed = std.Io.Reader.fixed(encoded[0..output.count]);
-    var oracle = std.Io.Reader.fixed(plain);
-    var decoded_buffer: [1031]u8 = undefined;
-    var sink = support.Sink{ .output = &decoded_buffer, .oracle = &oracle };
-    var window: [std.compress.flate.max_window_len]u8 = undefined;
-    var d: std.compress.flate.Decompress = .init(&compressed, .gzip, &window);
-    try std.testing.expectEqual(@as(u64, plain.len), try d.reader.streamRemaining(&sink.writer));
-    try std.testing.expect(!sink.mismatch);
-    try std.testing.expectEqual(plain.len, sink.count);
-    return output.count;
+    return member.len;
 }
 
 test "[integration] - [gzip compressor]: empty and repeated calls produce independent members" {

@@ -23,10 +23,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     switch (request) {
         .version => try printVersion(io),
-        .compress => |paths| {
-            if (FORMAT != .gzip) return usage();
-            try compressPath(io, paths);
-        },
+        .compress => |paths| try compressPath(FORMAT, io, paths),
         .decompress => |paths| try decompressPath(FORMAT, io, paths),
     }
 }
@@ -54,6 +51,7 @@ fn usage() error{InvalidArguments} {
     } else {
         std.debug.print(
             \\usage: zipir-zlib --version
+            \\       zipir-zlib compress --level N IN OUT
             \\       zipir-zlib decompress IN OUT
             \\
         , .{});
@@ -61,10 +59,11 @@ fn usage() error{InvalidArguments} {
     return error.InvalidArguments;
 }
 
-fn compressPath(io: Io, paths: adapter.Paths) !void {
-    const level = std.enums.fromInt(@FieldType(zipir.gzip.CompressOptions, "level"), paths.level) orelse
+fn compressPath(comptime codec_format: zipir.Format, io: Io, paths: adapter.Paths) !void {
+    const Options = @field(zipir, @tagName(codec_format)).CompressOptions;
+    const level = std.enums.fromInt(@FieldType(Options, "level"), paths.level) orelse
         return error.InvalidArguments;
-    const compressor = try std.heap.page_allocator.create(zipir.Compressor(.gzip));
+    const compressor = try std.heap.page_allocator.create(zipir.Compressor(codec_format));
     defer std.heap.page_allocator.destroy(compressor);
 
     const in_file = try adapter.openIn(io, paths.in_path);
