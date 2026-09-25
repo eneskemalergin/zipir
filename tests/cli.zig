@@ -1,4 +1,4 @@
-//! Checks gzip command output, failures and file preservation.
+//! Checks command output, failures, format selection, and file preservation.
 
 const std = @import("std");
 
@@ -64,4 +64,61 @@ test "[cli] - [gzip]: command status and byte streams preserve source files" {
     var original: [1]u8 = undefined;
     try plain_reader.interface.readSliceAll(&original);
     try std.testing.expectEqualSlices(u8, "A", &original);
+}
+
+test "[cli] - [format]: --format selects the codec and auto detects gzip and zlib only" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    const executable = try std.Io.Dir.cwd().realPathFileAlloc(io, @import("options").executable, allocator);
+    defer allocator.free(executable);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // "A" at the default level: one fixed block (73 04 00) in each wrapper; Adler-32 of "A" is 0x00420042.
+    const gzip = "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x73\x04\x00\x8b\x9e\xd9\xd3\x01\x00\x00\x00";
+    const zlib = "\x78\x5e\x73\x04\x00\x00\x42\x00\x42";
+    const raw = "\x73\x04\x00";
+    const unknown = "zipir: unknown input format; use --format\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "plain", .data = "A" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.gz", .data = gzip });
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.zlib", .data = zlib });
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.raw", .data = raw });
+    try tmp.dir.writeFile(io, .{ .sub_path = "empty", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "text", .data = "hello" });
+    const cases = .{
+        .{ &.{ executable, "compress", "--format", "gzip", "plain" }, @as(u8, 0), gzip, "" },
+        .{ &.{ executable, "compress", "--format", "zlib", "plain" }, @as(u8, 0), zlib, "" },
+        .{ &.{ executable, "compress", "--level", "9", "--format", "deflate", "plain" }, @as(u8, 0), raw, "" },
+        .{ &.{ executable, "decompress", "a.gz" }, @as(u8, 0), "A", "" },
+        .{ &.{ executable, "decompress", "a.zlib" }, @as(u8, 0), "A", "" },
+        .{ &.{ executable, "decompress", "--format", "auto", "a.zlib" }, @as(u8, 0), "A", "" },
+        .{ &.{ executable, "decompress", "--format", "deflate", "a.raw" }, @as(u8, 0), "A", "" },
+        .{ &.{ executable, "test", "--format", "zlib", "--", "a.zlib" }, @as(u8, 0), "", "" },
+        .{ &.{ executable, "decompress", "--format", "zlib", "a.gz" }, @as(u8, 1), "", "zipir: UnsupportedMethod\n" },
+        .{ &.{ executable, "decompress", "--format", "gzip", "a.zlib" }, @as(u8, 1), "", "zipir: BadHeader\n" },
+        .{ &.{ executable, "decompress", "a.raw" }, @as(u8, 2), "", unknown },
+        .{ &.{ executable, "test", "text" }, @as(u8, 2), "", unknown },
+        .{ &.{ executable, "decompress", "empty" }, @as(u8, 1), "", "zipir: Truncated\n" },
+    };
+    inline for (cases) |case| {
+        const result = try std.process.run(allocator, io, .{ .argv = case[0], .cwd = .{ .dir = tmp.dir } });
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = case[1] }, result.term);
+        try std.testing.expectEqualStrings(case[2], result.stdout);
+        try std.testing.expectEqualStrings(case[3], result.stderr);
+    }
+    const help = try std.process.run(allocator, io, .{ .argv = &.{ executable, "--help" } });
+    defer allocator.free(help.stdout);
+    defer allocator.free(help.stderr);
+    inline for (.{ &.{ "compress", "--format", "auto" }, &.{ "compress", "--format", "bgzf" }, &.{ "decompress", "--format", "Gzip" }, &.{ "decompress", "--format" }, &.{ "decompress", "--format", "zlib", "--format", "zlib" }, &.{ "test", "--format", "" } }) |args| {
+        var argv: [args.len + 1][]const u8 = undefined;
+        argv[0] = executable;
+        inline for (args, 0..) |arg, i| argv[i + 1] = arg;
+        const bad = try std.process.run(allocator, io, .{ .argv = &argv });
+        defer allocator.free(bad.stdout);
+        defer allocator.free(bad.stderr);
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 2 }, bad.term);
+        try std.testing.expectEqualStrings("", bad.stdout);
+        try std.testing.expectEqualStrings(help.stdout, bad.stderr);
+    }
 }

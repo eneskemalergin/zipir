@@ -1,17 +1,19 @@
-//! Streams gzip files and standard input through zipir.
+//! Streams gzip, zlib, and raw DEFLATE files and standard input through zipir.
 
 const std = @import("std");
 const zipir = @import("zipir");
 
 const USAGE =
-    \\Usage: zipir compress [--level 1|5|9] [--] [FILE|-]
-    \\       zipir decompress [--max-output-bytes N] [--] [FILE|-]
-    \\       zipir test [--max-output-bytes N] [--] [FILE|-]
+    \\Usage: zipir compress [--format gzip|zlib|deflate] [--level 1|5|9] [--] [FILE|-]
+    \\       zipir decompress [--format auto|gzip|zlib|deflate] [--max-output-bytes N] [--] [FILE|-]
+    \\       zipir test [--format auto|gzip|zlib|deflate] [--max-output-bytes N] [--] [FILE|-]
     \\       zipir --version
     \\       zipir --help
     \\
-    \\compress writes gzip to stdout; default level is 5.
+    \\compress writes gzip to stdout unless --format says otherwise; default level is 5.
     \\decompress writes to stdout; test verifies and discards output.
+    \\--format auto, the default for decompress and test, detects gzip and zlib;
+    \\raw DEFLATE has no signature and needs --format deflate.
     \\FILE defaults to stdin. Concatenated gzip members are supported.
     \\Corrupt, truncated, or trailing data returns a nonzero status.
     \\Output may be partial on failure. Input files are preserved.
@@ -54,9 +56,11 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     const compress = std.mem.eql(u8, args[1], "compress");
     if (!compress and !verify and !std.mem.eql(u8, args[1], "decompress")) return usage(io);
     var path: ?[]const u8 = null;
-    var options: zipir.gzip.Options = .{};
+    var format: ?zipir.Format = null;
+    var max_output_bytes: u64 = std.math.maxInt(u64);
     var compress_options: zipir.gzip.CompressOptions = .{};
     var literal = false;
+    var has_format = false;
     var has_limit = false;
     var has_level = false;
     var i: usize = 2;
@@ -66,10 +70,19 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
             literal = true;
             continue;
         }
+        if (!literal and std.mem.eql(u8, arg, "--format")) {
+            if (has_format or i + 1 == args.len) return usage(io);
+            i += 1;
+            if (std.mem.eql(u8, args[i], "auto")) {
+                if (compress) return usage(io);
+            } else format = std.meta.stringToEnum(zipir.Format, args[i]) orelse return usage(io);
+            has_format = true;
+            continue;
+        }
         if (!literal and std.mem.eql(u8, arg, "--max-output-bytes")) {
             if (compress or has_limit or i + 1 == args.len) return usage(io);
             i += 1;
-            options.max_output_bytes = std.fmt.parseInt(u64, args[i], 10) catch return usage(io);
+            max_output_bytes = std.fmt.parseInt(u64, args[i], 10) catch return usage(io);
             has_limit = true;
             continue;
         }
@@ -91,23 +104,45 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     var input_buffer: [32768]u8 = undefined;
     var reader = file.readerStreaming(io, &input_buffer);
     if (compress) {
-        const encoder = try allocator.create(zipir.Compressor(.gzip));
-        defer allocator.destroy(encoder);
-        _ = try encoder.compress(&reader.interface, &stdout.interface, compress_options);
+        switch (format orelse .gzip) {
+            inline else => |selected| {
+                const encoder = try allocator.create(zipir.Compressor(selected));
+                defer allocator.destroy(encoder);
+                _ = try encoder.compress(&reader.interface, &stdout.interface, compress_options);
+            },
+        }
         try stdout.interface.flush();
         return 0;
     }
-    const decoder = try allocator.create(zipir.Decompressor(.gzip));
-    defer allocator.destroy(decoder);
-    if (verify) {
-        var discard: std.Io.Writer.Discarding = .init(&.{});
-        _ = try decoder.decompress(&reader.interface, &discard.writer, options);
-        try discard.writer.flush();
-    } else {
-        _ = try decoder.decompress(&reader.interface, &stdout.interface, options);
-        try stdout.interface.flush();
+    const selected = format orelse try detect(&reader.interface) orelse {
+        var buffer: [128]u8 = undefined;
+        var stderr = std.Io.File.stderr().writer(io, &buffer);
+        try stderr.interface.writeAll("zipir: unknown input format; use --format\n");
+        try stderr.interface.flush();
+        return 2;
+    };
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    const writer = if (verify) &discard.writer else &stdout.interface;
+    switch (selected) {
+        inline else => |known| {
+            const decoder = try allocator.create(zipir.Decompressor(known));
+            defer allocator.destroy(decoder);
+            _ = try decoder.decompress(&reader.interface, writer, .{ .max_output_bytes = max_output_bytes });
+        },
     }
+    try writer.flush();
     return 0;
+}
+
+fn detect(reader: *std.Io.Reader) !?zipir.Format {
+    const head = reader.peek(2) catch |err| switch (err) {
+        // Inputs shorter than two bytes keep failing as truncated gzip, as they did before auto-detection.
+        error.EndOfStream => return .gzip,
+        error.ReadFailed => return err,
+    };
+    if (head[0] == 0x1f and head[1] == 0x8b) return .gzip;
+    if (head[0] & 0x0f == 8 and head[0] >> 4 <= 7 and (@as(u16, head[0]) << 8 | head[1]) % 31 == 0) return .zlib;
+    return null;
 }
 
 fn usage(io: std.Io) !u8 {
