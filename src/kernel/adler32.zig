@@ -11,23 +11,19 @@ const AVX2_MIN_LENGTH: usize = 128;
 
 extern fn zipir_adler32_x86_avx2_update(start: u32, bytes: [*]const u8, len: usize) callconv(.c) u32;
 
-pub const Stream = struct {
-    checksum: u32 = 1,
+pub const Adler32 = struct {
+    state: u32 = 1,
 
-    pub fn init() Stream {
+    pub fn init() Adler32 {
         return .{};
     }
 
-    pub fn update(self: *Stream, bytes: []const u8) void {
-        self.checksum = updateDispatched(self.checksum, bytes);
+    pub fn update(self: *Adler32, bytes: []const u8) void {
+        self.state = updateDispatched(self.state, bytes);
     }
 
-    fn updatePortable(self: *Stream, bytes: []const u8) void {
-        self.checksum = updatePortableChunk(self.checksum, bytes);
-    }
-
-    pub fn final(self: *const Stream) u32 {
-        return self.checksum;
+    pub fn final(self: Adler32) u32 {
+        return self.state;
     }
 };
 
@@ -132,10 +128,10 @@ fn reference(bytes: []const u8) u32 {
 }
 
 test "[unit] - [adler]: stream starts at the zlib Adler-32 value" {
-    const stream = Stream.init();
+    const stream = Adler32.init();
     try std.testing.expectEqual(@as(u32, 1), stream.final());
-    try std.testing.expectEqual(@sizeOf(std.hash.Adler32), @sizeOf(Stream));
-    try std.testing.expectEqual(@as(usize, 4), @sizeOf(Stream));
+    try std.testing.expectEqual(@sizeOf(std.hash.Adler32), @sizeOf(Adler32));
+    try std.testing.expectEqual(@as(usize, 4), @sizeOf(Adler32));
 }
 
 test "[property] - [adler]: stream matches an independent reference across partitions" {
@@ -148,11 +144,11 @@ test "[property] - [adler]: stream matches an independent reference across parti
         NMAX - 1, NMAX, NMAX + 1, bytes.len,
     };
     for (chunk_sizes) |chunk_size| {
-        var stream = Stream.init();
+        var stream = Adler32.init();
         var offset: usize = 0;
         while (offset < bytes.len) {
             const amount = @min(chunk_size, bytes.len - offset);
-            stream.updatePortable(bytes[offset .. offset + amount]);
+            stream.state = updatePortableChunk(stream.state, bytes[offset .. offset + amount]);
             offset += amount;
         }
         try std.testing.expectEqual(reference(&bytes), stream.final());
@@ -164,11 +160,11 @@ test "[property] - [adler]: portable and dispatched streams produce the same che
     var random = std.Random.DefaultPrng.init(0x2468_1357);
     random.fill(&bytes);
 
-    var portable = Stream.init();
-    var dispatched = Stream.init();
-    portable.updatePortable(bytes[0..31]);
-    portable.updatePortable(bytes[31..4096]);
-    portable.updatePortable(bytes[4096..]);
+    var portable = Adler32.init();
+    var dispatched = Adler32.init();
+    portable.state = updatePortableChunk(portable.state, bytes[0..31]);
+    portable.state = updatePortableChunk(portable.state, bytes[31..4096]);
+    portable.state = updatePortableChunk(portable.state, bytes[4096..]);
     dispatched.update(bytes[0..31]);
     dispatched.update(bytes[31..4096]);
     dispatched.update(bytes[4096..]);
@@ -178,28 +174,28 @@ test "[property] - [adler]: portable and dispatched streams produce the same che
 }
 
 test "[edge] - [adler]: tiny updates stay on the portable path" {
-    var stream = Stream.init();
+    var stream = Adler32.init();
     stream.update("a");
     try std.testing.expectEqual(@as(u32, 0x0062_0062), stream.final());
 }
 
 test "[edge] - [adler]: empty updates do not change state" {
-    var stream = Stream.init();
+    var stream = Adler32.init();
     stream.update("");
     try std.testing.expectEqual(@as(u32, 1), stream.final());
 }
 
 test "[unit] - [adler]: known vectors match Adler-32" {
-    var stream = Stream.init();
-    stream.updatePortable("a");
+    var stream = Adler32.init();
+    stream.state = updatePortableChunk(stream.state, "a");
     try std.testing.expectEqual(@as(u32, 0x0062_0062), stream.final());
 
-    stream = Stream.init();
-    stream.updatePortable("example");
+    stream = Adler32.init();
+    stream.state = updatePortableChunk(stream.state, "example");
     try std.testing.expectEqual(@as(u32, 0x0bc0_02ed), stream.final());
 
-    stream = Stream.init();
-    stream.updatePortable("123456789");
+    stream = Adler32.init();
+    stream.state = updatePortableChunk(stream.state, "123456789");
     try std.testing.expectEqual(@as(u32, 0x091e_01de), stream.final());
 }
 

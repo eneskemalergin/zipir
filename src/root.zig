@@ -3,7 +3,7 @@
 const std = @import("std");
 
 pub const gzip = @import("container/gzip.zig");
-pub const zlib = @import("zlib.zig");
+pub const zlib = @import("container/zlib.zig");
 pub const Format = enum { gzip, zlib };
 
 pub fn Decompressor(comptime format: Format) type {
