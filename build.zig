@@ -113,7 +113,7 @@ fn addAdlerBackend(
     const avx2 = b.addObject(.{
         .name = "adler32_x86_avx2",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/adler32_x86_avx2.zig"),
+            .root_source_file = b.path("src/kernel/adler32_x86_avx2.zig"),
             .target = avx2_target,
             .optimize = optimize,
         }),

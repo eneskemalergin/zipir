@@ -1,8 +1,8 @@
 //! Bounded gzip compression and decompression through caller-owned readers and writers.
 
 const std = @import("std");
-const copy = @import("match.zig");
-const crc = @import("crc.zig");
+const copy = @import("kernel/copy.zig");
+const crc = @import("kernel/crc32.zig");
 
 pub const Error = error{
     InputBufferTooSmall,

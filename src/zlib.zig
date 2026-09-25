@@ -1,8 +1,8 @@
 //! Bounded zlib decompression through caller-owned readers and writers.
 
 const std = @import("std");
-const adler32 = @import("adler32.zig");
-const copy = @import("match.zig");
+const adler32 = @import("kernel/adler32.zig");
+const copy = @import("kernel/copy.zig");
 
 pub const Error = error{
     InputBufferTooSmall,

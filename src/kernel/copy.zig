@@ -12,7 +12,7 @@ pub fn dist1Broadcast32(dst: []u8, v: u8) void {
     if (i < dst.len) @memset(dst[i..], v);
 }
 
-pub fn matchByte(buf: []u8, start: usize, dist: usize, len: usize) void {
+fn matchByte(buf: []u8, start: usize, dist: usize, len: usize) void {
     var i: usize = 0;
     while (i < len) : (i += 1) {
         buf[start + i] = buf[start + i - dist];
