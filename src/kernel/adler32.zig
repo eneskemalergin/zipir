@@ -1,21 +1,15 @@
 //! Streaming Adler-32 with a runtime-selected accelerated backend.
 
 const std = @import("std");
-const builtin = @import("builtin");
-const adler_options = @import("adler_options");
+const options = @import("kernel_options");
 const cpu = @import("../cpu.zig");
+const avx2 = if (options.adler32_x86_avx2 == .direct) @import("adler32_x86_avx2.zig") else struct {};
 
 const MODULUS: u32 = 65_521;
 const NMAX: usize = 5_552;
 const AVX2_MIN_LENGTH: usize = 128;
-const USE_SCALAR = std.mem.eql(u8, adler_options.backend, "scalar");
 
-const Backend = enum(u8) {
-    portable,
-    x86_avx2,
-};
-
-extern fn adler32_x86_avx2_update(start: u32, bytes: [*]const u8, len: usize) callconv(.c) u32;
+extern fn zipir_adler32_x86_avx2_update(start: u32, bytes: [*]const u8, len: usize) callconv(.c) u32;
 
 pub const Stream = struct {
     checksum: u32 = 1,
@@ -25,11 +19,7 @@ pub const Stream = struct {
     }
 
     pub fn update(self: *Stream, bytes: []const u8) void {
-        if (comptime USE_SCALAR) {
-            self.updatePortable(bytes);
-        } else {
-            self.checksum = updateDispatched(self.checksum, bytes);
-        }
+        self.checksum = updateDispatched(self.checksum, bytes);
     }
 
     fn updatePortable(self: *Stream, bytes: []const u8) void {
@@ -43,28 +33,21 @@ pub const Stream = struct {
 
 // --- Backend dispatch ---
 
-fn chooseBackend(features: cpu.Features) Backend {
-    if (comptime builtin.cpu.arch == .x86_64) {
-        if (features.x86_avx2) return .x86_avx2;
-    }
-    return .portable;
+inline fn useAvx2() bool {
+    if (comptime options.adler32_x86_avx2 == .absent) return false;
+    return cpu.has(.avx2);
 }
 
-fn updateWithBackend(start: u32, bytes: []const u8, backend: Backend) u32 {
-    return switch (backend) {
-        .portable => updatePortableChunk(start, bytes),
-        .x86_avx2 => {
-            if (comptime builtin.cpu.arch != .x86_64) return updatePortableChunk(start, bytes);
-            if (bytes.len < AVX2_MIN_LENGTH) return updatePortableChunk(start, bytes);
-            return adler32_x86_avx2_update(start, bytes.ptr, bytes.len);
-        },
-    };
+inline fn avx2Update(start: u32, bytes: []const u8) u32 {
+    // Measured 2026-09-24: inlining the AVX2 kernel into zlib decode cost 1.3% to 1.7% on sequencing medium.
+    if (comptime options.adler32_x86_avx2 == .direct) return @call(.never_inline, avx2.update, .{ start, bytes });
+    return zipir_adler32_x86_avx2_update(start, bytes.ptr, bytes.len);
 }
 
 fn updateDispatched(start: u32, bytes: []const u8) u32 {
     if (bytes.len == 0) return start;
-    if (bytes.len < AVX2_MIN_LENGTH) return updatePortableChunk(start, bytes);
-    return updateWithBackend(start, bytes, chooseBackend(cpu.features()));
+    if (bytes.len >= AVX2_MIN_LENGTH and useAvx2()) return avx2Update(start, bytes);
+    return updatePortableChunk(start, bytes);
 }
 
 // --- Portable update ---
@@ -220,11 +203,26 @@ test "[unit] - [adler]: known vectors match Adler-32" {
     try std.testing.expectEqual(@as(u32, 0x091e_01de), stream.final());
 }
 
-test "[unit] - [adler]: backend selection keeps the portable fallback" {
-    try std.testing.expectEqual(Backend.portable, chooseBackend(.{}));
-    if (comptime builtin.cpu.arch == .x86_64) {
-        try std.testing.expectEqual(Backend.x86_avx2, chooseBackend(.{ .x86_avx2 = true }));
-    } else {
-        try std.testing.expectEqual(Backend.portable, chooseBackend(.{ .x86_avx2 = true }));
+test "[property] - [adler]: the AVX2 backend matches an independent reference at every length and alignment" {
+    if (comptime options.adler32_x86_avx2 == .absent) return error.SkipZigTest;
+    if (!cpu.features().avx2) return error.SkipZigTest;
+    var bytes: [4096 + 64]u8 = undefined;
+    var random = std.Random.DefaultPrng.init(0x5eed_a0d1);
+    random.fill(&bytes);
+    for (0..64) |alignment| {
+        const data = bytes[alignment..][0..4096];
+        var a: u32 = 1;
+        var b: u32 = 0;
+        for (0..data.len + 1) |length| {
+            try std.testing.expectEqual(a | (b << 16), avx2Update(1, data[0..length]));
+            if (length == data.len) break;
+            a = (a + data[length]) % MODULUS;
+            b = (b + a) % MODULUS;
+        }
+    }
+    var large: [3 * NMAX + 8193]u8 = undefined;
+    random.fill(&large);
+    for ([_]usize{ NMAX - 1, NMAX, NMAX + 1, 8191, 8192, 8193, large.len }) |length| {
+        try std.testing.expectEqual(reference(large[0..length]), avx2Update(1, large[0..length]));
     }
 }

@@ -58,7 +58,7 @@ The future rows are possibilities, not a delivery order or a promise to support 
 
 Raw DEFLATE and zlib compression are not implemented yet.
 
-> [!INFO]
+> [!NOTE]
 > `zipir` will slowly build its accelerators in the form of hand-rolled SIMD tested on specific architecture. Currently I cannot promise a full and comprehensive support. I am building things that specifically suits my needs and will target my computer and my os first. I always keep in mind portability, and compatibility but for the work for actually pushing performance they are extremely time consuming to build for across a wide range of cpu, os archtectures. So I wanted to mention I will always keep fallbacks so the there won't be missing functionality, but speed and memory optimizations might be missing. My first target is `linux, x86-64, axv2`. I have test environments for various others but they will have to come later.
 
 ## Quick start
@@ -71,6 +71,8 @@ zig build -Doptimize=ReleaseFast
 ./zig-out/bin/zipir decompress input.gz > output
 cat input.gz | ./zig-out/bin/zipir test > /dev/null
 ```
+
+The default build targets the host CPU. `-Dcpu=baseline` builds a portable binary that still picks the PCLMUL CRC-32 and AVX2 Adler-32 kernels at run time when the CPU has them.
 
 ## Library
 
@@ -107,6 +109,8 @@ The comparison adapters, corpus definitions, qualification checks, and report ge
 zig fmt --check src tests build.zig
 zig build test --summary all
 zig build test -Doptimize=ReleaseSafe --summary all
+zig build test -Dkernel-backend=portable --summary all
+zig build test -Dcpu=baseline --summary all
 ```
 
 ---

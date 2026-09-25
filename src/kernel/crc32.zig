@@ -1,12 +1,15 @@
-//! Incremental gzip CRC with portable slicing and target-guarded acceleration.
+//! Incremental gzip CRC-32: portable slicing plus a PCLMUL fold chosen at run time.
 
 const std = @import("std");
 const builtin = @import("builtin");
+const options = @import("kernel_options");
+const cpu = @import("../cpu.zig");
+const pclmul = if (options.crc32_x86_pclmul == .direct) @import("crc32_x86_pclmul.zig") else struct {};
 
-const HAVE_PCLMUL = switch (builtin.cpu.arch) {
-    .x86, .x86_64 => std.Target.x86.featureSetHas(builtin.cpu.features, .pclmul),
-    else => false,
-};
+extern fn zipir_crc32_x86_pclmul_update(crc_in: u32, data: [*]const u8, len: usize) callconv(.c) u32;
+extern fn zipir_crc32_x86_pclmul_copy_update(crc_in: u32, data: [*]const u8, dest: [*]u8, len: usize) callconv(.c) u32;
+
+const PCLMUL_MIN_BULK: usize = 64;
 
 const POLY: u32 = 0xEDB88320;
 
@@ -56,135 +59,26 @@ fn updatePortable(crc_in: u32, data: []const u8) u32 {
     return tail(crc, data[i..]);
 }
 
-const X = @Vector(2, u64);
-
-// IEEE CRC-32 fold constants (reflected). Same POLYNOMIAL as gzip. Barrett at the end.
-// Source: Intel PCLMUL CRC paper via zlib/chromium SSE path (k1..k5, POLYNOMIAL).
-const K1K2: X = .{ 0x0154442bd4, 0x01c6e41596 };
-const K3K4: X = .{ 0x01751997d0, 0x00ccaa009e };
-const K5K0: X = .{ 0x0163cd6124, 0 };
-const POLYNOMIAL: X = .{ 0x01db710641, 0x01f7011641 };
-const MASK32: X = .{ 0x00000000ffffffff, 0x00000000ffffffff };
-
-inline fn clmul(a: X, b: X, comptime imm: u8) X {
-    return switch (imm) {
-        0x00 => asm volatile ("pclmulqdq $0x00, %[b], %[out]"
-            : [out] "=x" (-> X),
-            : [_] "0" (a),
-              [b] "x" (b),
-        ),
-        0x10 => asm volatile ("pclmulqdq $0x10, %[b], %[out]"
-            : [out] "=x" (-> X),
-            : [_] "0" (a),
-              [b] "x" (b),
-        ),
-        0x11 => asm volatile ("pclmulqdq $0x11, %[b], %[out]"
-            : [out] "=x" (-> X),
-            : [_] "0" (a),
-              [b] "x" (b),
-        ),
-        else => unreachable,
-    };
+inline fn usePclmul() bool {
+    if (comptime options.crc32_x86_pclmul == .absent) return false;
+    return cpu.has(.pclmul) and cpu.has(.sse4_1);
 }
 
-inline fn loadu(p: [*]const u8) X {
-    const b: [16]u8 = p[0..16].*;
-    return @bitCast(b);
+inline fn pclmulUpdate(crc_in: u32, data: []const u8) u32 {
+    if (comptime options.crc32_x86_pclmul == .direct) return pclmul.update(crc_in, data);
+    return zipir_crc32_x86_pclmul_update(crc_in, data.ptr, data.len);
 }
 
-inline fn psrldq(v: X, comptime n: u8) X {
-    const in: @Vector(16, u8) = @bitCast(v);
-    var out: @Vector(16, u8) = @splat(0);
-    comptime var i: usize = 0;
-    inline while (i < 16) : (i += 1) {
-        if (i + n < 16) out[i] = in[i + n];
-    }
-    return @bitCast(out);
-}
-
-inline fn extract1(v: X) u32 {
-    const b: [16]u8 = @bitCast(v);
-    return std.mem.readInt(u32, b[4..8], .little);
-}
-
-fn reduce128(x1_in: X) u32 {
-    var x1 = x1_in;
-    var x0 = K3K4;
-    const x2 = clmul(x1, x0, 0x10);
-    x1 = psrldq(x1, 8) ^ x2;
-    x0 = K5K0;
-    var t = psrldq(x1, 4);
-    x1 = x1 & MASK32;
-    x1 = clmul(x1, x0, 0x00) ^ t;
-    x0 = POLYNOMIAL;
-    t = x1 & MASK32;
-    t = clmul(t, x0, 0x10) & MASK32;
-    t = clmul(t, x0, 0x00);
-    x1 = x1 ^ t;
-    return extract1(x1);
-}
-
-inline fn storeu(p: [*]u8, value: X) void {
-    p[0..16].* = @bitCast(value);
-}
-
-fn pclmul64Body(comptime copying: bool, data: []const u8, crc_in: u32, dest: []u8) u32 {
-    std.debug.assert(data.len >= 64);
-    std.debug.assert(data.len % 16 == 0);
-    var x1 = loadu(data.ptr + 0);
-    var x2 = loadu(data.ptr + 16);
-    var x3 = loadu(data.ptr + 32);
-    var x4 = loadu(data.ptr + 48);
-    if (copying) {
-        storeu(dest.ptr, x1);
-        storeu(dest.ptr + 16, x2);
-        storeu(dest.ptr + 32, x3);
-        storeu(dest.ptr + 48, x4);
-    }
-    x1[0] ^= crc_in;
-    const k64 = K1K2;
-    var off: usize = 64;
-    while (off + 64 <= data.len) : (off += 64) {
-        const y1 = loadu(data.ptr + off + 0);
-        const y2 = loadu(data.ptr + off + 16);
-        const y3 = loadu(data.ptr + off + 32);
-        const y4 = loadu(data.ptr + off + 48);
-        if (copying) {
-            storeu(dest.ptr + off, y1);
-            storeu(dest.ptr + off + 16, y2);
-            storeu(dest.ptr + off + 32, y3);
-            storeu(dest.ptr + off + 48, y4);
-        }
-        const a1 = clmul(x1, k64, 0x00);
-        const a2 = clmul(x2, k64, 0x00);
-        const a3 = clmul(x3, k64, 0x00);
-        const a4 = clmul(x4, k64, 0x00);
-        x1 = clmul(x1, k64, 0x11) ^ a1 ^ y1;
-        x2 = clmul(x2, k64, 0x11) ^ a2 ^ y2;
-        x3 = clmul(x3, k64, 0x11) ^ a3 ^ y3;
-        x4 = clmul(x4, k64, 0x11) ^ a4 ^ y4;
-    }
-    const k16 = K3K4;
-    var t = clmul(x1, k16, 0x00);
-    x1 = clmul(x1, k16, 0x11) ^ x2 ^ t;
-    t = clmul(x1, k16, 0x00);
-    x1 = clmul(x1, k16, 0x11) ^ x3 ^ t;
-    t = clmul(x1, k16, 0x00);
-    x1 = clmul(x1, k16, 0x11) ^ x4 ^ t;
-    while (off < data.len) : (off += 16) {
-        const nxt = loadu(data.ptr + off);
-        if (copying) storeu(dest.ptr + off, nxt);
-        t = clmul(x1, k16, 0x00);
-        x1 = clmul(x1, k16, 0x11) ^ nxt ^ t;
-    }
-    return reduce128(x1);
+inline fn pclmulCopyUpdate(crc_in: u32, data: []const u8, dest: []u8) u32 {
+    if (comptime options.crc32_x86_pclmul == .direct) return pclmul.copyUpdate(crc_in, data, dest);
+    return zipir_crc32_x86_pclmul_copy_update(crc_in, data.ptr, dest.ptr, data.len);
 }
 
 pub fn finish(crc_in: u32) u32 {
     return crc_in ^ 0xffffffff;
 }
 
-const HAVE_ARM_CRC = switch (builtin.cpu.arch) {
+const HAVE_ARM_CRC = options.kernel_backend != .portable and switch (builtin.cpu.arch) {
     .aarch64 => std.Target.aarch64.featureSetHas(builtin.cpu.features, .crc),
     else => false,
 };
@@ -207,13 +101,9 @@ fn updateArm(crc_in: u32, data: []const u8) u32 {
 pub fn update(crc_in: u32, data: []const u8) u32 {
     if (comptime HAVE_ARM_CRC) return updateArm(crc_in, data);
     if (data.len == 0) return crc_in;
-    if (comptime HAVE_PCLMUL) {
-        if (data.len >= 64) {
-            const bulk = data.len & ~@as(usize, 15);
-            if (bulk >= 64) {
-                return tail(pclmul64Body(false, data[0..bulk], crc_in, &.{}), data[bulk..]);
-            }
-        }
+    if (data.len >= PCLMUL_MIN_BULK and usePclmul()) {
+        const bulk = data.len & ~@as(usize, 15);
+        return tail(pclmulUpdate(crc_in, data[0..bulk]), data[bulk..]);
     }
     return updatePortable(crc_in, data);
 }
@@ -221,13 +111,11 @@ pub fn update(crc_in: u32, data: []const u8) u32 {
 /// Copies non-overlapping slices of equal length and updates the raw gzip CRC.
 pub fn copyUpdate(crc_in: u32, data: []const u8, dest: []u8) u32 {
     std.debug.assert(data.len == dest.len);
-    if (comptime HAVE_PCLMUL) {
-        if (data.len >= 64) {
-            const bulk = data.len & ~@as(usize, 15);
-            const value = pclmul64Body(true, data[0..bulk], crc_in, dest[0..bulk]);
-            @memcpy(dest[bulk..], data[bulk..]);
-            return tail(value, data[bulk..]);
-        }
+    if (data.len >= PCLMUL_MIN_BULK and usePclmul()) {
+        const bulk = data.len & ~@as(usize, 15);
+        const value = pclmulCopyUpdate(crc_in, data[0..bulk], dest[0..bulk]);
+        @memcpy(dest[bulk..], data[bulk..]);
+        return tail(value, data[bulk..]);
     }
     @memcpy(dest, data);
     return update(crc_in, data);
@@ -284,4 +172,29 @@ test "[property] - [crc]: fused copies preserve bytes, incremental CRC and exact
             }
         }
     }
+}
+
+test "[property] - [crc]: the PCLMUL backend matches the portable fold at every bulk length and alignment" {
+    if (comptime options.crc32_x86_pclmul == .absent) return error.SkipZigTest;
+    if (!cpu.features().pclmul or !cpu.features().sse4_1) return error.SkipZigTest;
+    var bytes: [4096 + 64]u8 = undefined;
+    var copied: [4096 + 64]u8 = undefined;
+    var random = std.Random.DefaultPrng.init(0x5eed_c3c3);
+    random.fill(&bytes);
+    for (0..64) |alignment| {
+        const data = bytes[alignment..][0..4096];
+        var length: usize = PCLMUL_MIN_BULK;
+        while (length <= data.len) : (length += 16) {
+            const expected = updatePortable(0xffffffff, data[0..length]);
+            try std.testing.expectEqual(expected, pclmulUpdate(0xffffffff, data[0..length]));
+            @memset(&copied, 0xa5);
+            const dest = copied[63 - alignment ..][0..length];
+            try std.testing.expectEqual(expected, pclmulCopyUpdate(0xffffffff, data[0..length], dest));
+            try std.testing.expectEqualSlices(u8, data[0..length], dest);
+        }
+    }
+    const large = try std.testing.allocator.alloc(u8, 16 << 20);
+    defer std.testing.allocator.free(large);
+    random.fill(large);
+    try std.testing.expectEqual(updatePortable(0x1234_5678, large), pclmulUpdate(0x1234_5678, large));
 }

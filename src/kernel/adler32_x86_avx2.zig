@@ -1,4 +1,7 @@
-//! AVX2 Adler-32 update kernel for the baseline production module.
+//! AVX2 Adler-32 update, imported directly when the target guarantees AVX2, otherwise built as an
+//! object that exports a C symbol.
+
+const options = @import("kernel_options");
 
 const Bytes = @Vector(32, u8);
 const Words = @Vector(16, i16);
@@ -13,7 +16,15 @@ const mults_b: Words = .{ 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35
 const mults_c: Words = .{ 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17 };
 const mults_d: Words = .{ 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 };
 
-pub export fn adler32_x86_avx2_update(start: u32, bytes: [*]const u8, len: usize) callconv(.c) u32 {
+pub fn update(start: u32, bytes: []const u8) u32 {
+    return updateRaw(start, bytes.ptr, bytes.len);
+}
+
+comptime {
+    if (options.as_object) @export(&updateRaw, .{ .name = "zipir_adler32_x86_avx2_update" });
+}
+
+fn updateRaw(start: u32, bytes: [*]const u8, len: usize) callconv(.c) u32 {
     var a: u64 = start & 0xffff;
     var b: u64 = start >> 16;
     var offset: usize = 0;
@@ -89,16 +100,16 @@ fn widenHighHalf(data: Bytes) Words {
 
 fn madd16(a: Words, b: Words) Dwords {
     return asm volatile ("vpmaddwd %[a], %[b], %[out]"
-        : [out] "=v" (-> Dwords),
-        : [a] "v" (a),
-          [b] "v" (b),
+        : [out] "=x" (-> Dwords),
+        : [a] "x" (a),
+          [b] "x" (b),
     );
 }
 
 fn sadBytes(data: Bytes) Dwords {
     return asm volatile ("vpsadbw %[zero], %[data], %[out]"
-        : [out] "=v" (-> Dwords),
-        : [data] "v" (data),
-          [zero] "v" (zero_bytes),
+        : [out] "=x" (-> Dwords),
+        : [data] "x" (data),
+          [zero] "x" (zero_bytes),
     );
 }
