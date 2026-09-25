@@ -1,10 +1,10 @@
 //! Bounded zlib compression and decompression through caller-owned readers and writers.
 
 const std = @import("std");
-const deflate = @import("../deflate/deflate.zig");
+const engine = @import("../deflate/deflate.zig");
 const adler32 = @import("../kernel/adler32.zig");
 
-pub const Error = deflate.Error || error{
+pub const Error = engine.Error || error{
     InputBufferTooSmall,
     BadHeader,
     UnsupportedMethod,
@@ -14,15 +14,12 @@ pub const Error = deflate.Error || error{
     TrailingData,
 };
 
-pub const Options = struct {
-    max_output_bytes: u64 = std.math.maxInt(u64),
-    trailing_data: enum { reject, leave } = .reject,
-};
+pub const Options = engine.DecompressOptions;
 
 /// Reusable without initialization, including after errors. No allocation occurs during decode.
 /// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
 pub const Decompressor = struct {
-    decoder: deflate.Decoder = .{},
+    decoder: engine.Decoder = .{},
 
     /// Reader capacity must be >=16; underlying reads may be shorter. Caller flushes writer.
     /// Output is provisional until success. Errors abort; a failed call cannot be resumed.
@@ -35,14 +32,14 @@ comptime {
     std.debug.assert(@sizeOf(Decompressor) == 196608);
 }
 
-pub const CompressError = deflate.EncodeError;
+pub const CompressError = engine.EncodeError;
 
-pub const CompressOptions = deflate.CompressOptions;
+pub const CompressOptions = engine.CompressOptions;
 
 /// Reusable without initialization, including after errors. No allocation occurs during compression.
 /// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
 pub const Compressor = struct {
-    encoder: deflate.Encoder = .{},
+    encoder: engine.Encoder = .{},
 
     /// Reads through EOF and writes one stream. Caller flushes writer; failures may leave partial output.
     /// Reader capacity may be zero. A failed call cannot be resumed.
@@ -62,7 +59,7 @@ comptime {
 }
 
 // CMF 0x78 is DEFLATE with a 32 KiB window; FLEVEL follows zlib's level convention (fastest, fast, default, maximum).
-fn headerFor(level: deflate.Level) [2]u8 {
+fn headerFor(level: engine.Level) [2]u8 {
     return switch (level) {
         .fast => .{ 0x78, 0x01 },
         .balanced => .{ 0x78, 0x5e },
@@ -70,7 +67,7 @@ fn headerFor(level: deflate.Level) [2]u8 {
     };
 }
 
-fn parseHeader(br: *deflate.BitReader) !void {
+fn parseHeader(br: *engine.BitReader) !void {
     const header = try br.getBytes(2);
     const cmf = header[0];
     const flg = header[1];
@@ -82,7 +79,7 @@ fn parseHeader(br: *deflate.BitReader) !void {
 
 fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) Error!u64 {
     if (reader.buffer.len < 16) return error.InputBufferTooSmall;
-    var br: deflate.BitReader = .{ .reader = reader };
+    var br: engine.BitReader = .{ .reader = reader };
     defer br.release();
     var session = work.decoder.session(adler32.Adler32, writer, .{ .max_output_bytes = options.max_output_bytes });
     try parseHeader(&br);

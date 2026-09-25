@@ -1,10 +1,10 @@
 //! Bounded gzip compression and decompression through caller-owned readers and writers.
 
 const std = @import("std");
-const deflate = @import("../deflate/deflate.zig");
+const engine = @import("../deflate/deflate.zig");
 const crc = @import("../kernel/crc32.zig");
 
-pub const Error = deflate.Error || error{
+pub const Error = engine.Error || error{
     InputBufferTooSmall,
     BadHeader,
     UnsupportedMethod,
@@ -15,15 +15,12 @@ pub const Error = deflate.Error || error{
     TrailingData,
 };
 
-pub const Options = struct {
-    max_output_bytes: u64 = std.math.maxInt(u64),
-    trailing_data: enum { reject, leave } = .reject,
-};
+pub const Options = engine.DecompressOptions;
 
 /// Reusable without initialization, including after errors. No allocation occurs during decode.
 /// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
 pub const Decompressor = struct {
-    decoder: deflate.Decoder = .{},
+    decoder: engine.Decoder = .{},
 
     /// Reader capacity must be >=16; underlying reads may be shorter. Caller flushes writer.
     /// Output is provisional until success. Errors abort; a failed call cannot be resumed.
@@ -36,14 +33,14 @@ comptime {
     std.debug.assert(@sizeOf(Decompressor) == 196608);
 }
 
-pub const CompressError = deflate.EncodeError;
+pub const CompressError = engine.EncodeError;
 
-pub const CompressOptions = deflate.CompressOptions;
+pub const CompressOptions = engine.CompressOptions;
 
 /// Reusable without initialization, including after errors. No allocation occurs during compression.
 /// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
 pub const Compressor = struct {
-    encoder: deflate.Encoder = .{},
+    encoder: engine.Encoder = .{},
 
     /// Reads through EOF and writes one member. Caller flushes writer; failures may leave partial output.
     /// Reader capacity may be zero. A failed call cannot be resumed.
@@ -63,7 +60,7 @@ comptime {
     std.debug.assert(@sizeOf(Compressor) == 238848);
 }
 
-fn parseHeader(br: *deflate.BitReader) !void {
+fn parseHeader(br: *engine.BitReader) !void {
     const header = try br.getBytes(10);
     if (header[0] != 0x1f or header[1] != 0x8b) return error.BadHeader;
     if (header[2] != 8) return error.UnsupportedMethod;
@@ -101,7 +98,7 @@ fn parseHeader(br: *deflate.BitReader) !void {
     }
 }
 
-fn inflateMember(session: *deflate.Session(crc.Crc32), br: *deflate.BitReader) Error!void {
+fn inflateMember(session: *engine.Session(crc.Crc32), br: *engine.BitReader) Error!void {
     try parseHeader(br);
     var check: crc.Crc32 = .init();
     const size = try session.stream(br, &check);
@@ -114,7 +111,7 @@ fn inflateMember(session: *deflate.Session(crc.Crc32), br: *deflate.BitReader) E
 
 fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) Error!u64 {
     if (reader.buffer.len < 16) return error.InputBufferTooSmall;
-    var br: deflate.BitReader = .{ .reader = reader };
+    var br: engine.BitReader = .{ .reader = reader };
     defer br.release();
     var session = work.decoder.session(crc.Crc32, writer, .{ .max_output_bytes = options.max_output_bytes });
     var have_member = false;

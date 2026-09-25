@@ -6,6 +6,11 @@ const copy = @import("../kernel/copy.zig");
 
 pub const Error = error{ Truncated, BadHuffman, BadSymbol, BadDistance, BadStored, BadBlock, OutputLimitExceeded, ReadFailed, WriteFailed };
 
+pub const DecompressOptions = struct {
+    max_output_bytes: u64 = std.math.maxInt(u64),
+    trailing_data: enum { reject, leave } = .reject,
+};
+
 pub const Limits = struct {
     max_output_bytes: u64 = std.math.maxInt(u64),
 };
