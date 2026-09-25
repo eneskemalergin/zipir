@@ -74,7 +74,7 @@ inline fn pclmulCopyUpdate(crc_in: u32, data: []const u8, dest: []u8) u32 {
     return zipir_crc32_x86_pclmul_copy_update(crc_in, data.ptr, dest.ptr, data.len);
 }
 
-pub fn finish(crc_in: u32) u32 {
+fn finish(crc_in: u32) u32 {
     return crc_in ^ 0xffffffff;
 }
 
@@ -118,7 +118,7 @@ fn updateArm(crc_in: u32, data: []const u8) u32 {
     return tail(value, data[i..]);
 }
 
-pub fn updateState(crc_in: u32, data: []const u8) u32 {
+fn updateState(crc_in: u32, data: []const u8) u32 {
     if (comptime HAVE_ARM_CRC) return updateArm(crc_in, data);
     if (data.len == 0) return crc_in;
     if (data.len >= PCLMUL_MIN_BULK and usePclmul()) {
@@ -129,7 +129,7 @@ pub fn updateState(crc_in: u32, data: []const u8) u32 {
 }
 
 /// Copies non-overlapping slices of equal length and updates the raw gzip CRC.
-pub fn copyUpdateState(crc_in: u32, data: []const u8, dest: []u8) u32 {
+fn copyUpdateState(crc_in: u32, data: []const u8, dest: []u8) u32 {
     std.debug.assert(data.len == dest.len);
     if (data.len >= PCLMUL_MIN_BULK and usePclmul()) {
         const bulk = data.len & ~@as(usize, 15);
