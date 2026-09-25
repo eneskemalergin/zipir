@@ -1,12 +1,10 @@
 //! Streaming zlib decompression adapter for `std.compress.flate`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const flate = std.compress.flate;
 const Io = std.Io;
-const args = @import("args");
-
-const version = "0.16.0";
-const IO_BUFFER_LEN = 64 * 1024;
+const adapter = @import("adapter");
 
 pub fn main(init: std.process.Init.Minimal) !void {
     var threaded: std.Io.Threaded = .init_single_threaded;
@@ -14,13 +12,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var it = std.process.Args.Iterator.init(init.args);
     _ = it.next();
-    const request = args.parse(&it) catch return usage();
+    const request = adapter.parse(&it) catch return usage();
 
     switch (request) {
         .version => {
             var buf: [64]u8 = undefined;
             var stdout = std.Io.File.stdout().writer(io, &buf);
-            try stdout.interface.print("std-zlib {s}\n", .{version});
+            try stdout.interface.print("std-zlib {s}\n", .{builtin.zig_version_string});
             try stdout.interface.flush();
         },
         .compress => return usage(),
@@ -37,10 +35,10 @@ fn usage() error{InvalidArguments} {
     return error.InvalidArguments;
 }
 
-fn decompressPath(io: Io, paths: args.Paths) !void {
-    const in_file = try openIn(io, paths.in_path);
-    defer closeIfOwned(io, in_file, paths.in_path);
-    var in_buf: [IO_BUFFER_LEN]u8 = undefined;
+fn decompressPath(io: Io, paths: adapter.Paths) !void {
+    const in_file = try adapter.openIn(io, paths.in_path);
+    defer adapter.closeIfOwned(io, in_file, paths.in_path);
+    var in_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
     var in_reader = in_file.readerStreaming(io, &in_buf);
 
     const header = try in_reader.interface.peekArray(2);
@@ -49,14 +47,14 @@ fn decompressPath(io: Io, paths: args.Paths) !void {
     if ((@as(u16, header[0]) << 8 | header[1]) % 31 != 0) return error.BadHeader;
     if ((header[1] & 0x20) != 0) return error.DictionaryUnsupported;
 
-    const out_file = try openOut(io, paths.out_path);
-    defer closeIfOwned(io, out_file, paths.out_path);
-    var out_buf: [IO_BUFFER_LEN]u8 = undefined;
+    const out_file = try adapter.openOut(io, paths.out_path);
+    defer adapter.closeIfOwned(io, out_file, paths.out_path);
+    var out_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
     var out_writer = out_file.writerStreaming(io, &out_buf);
 
     var window: [flate.max_window_len]u8 = undefined;
     var d: flate.Decompress = .init(&in_reader.interface, .zlib, &window);
-    var adler_buf: [IO_BUFFER_LEN]u8 = undefined;
+    var adler_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
     var adler_writer = out_writer.interface.hashed(std.hash.Adler32{}, &adler_buf);
     _ = d.reader.streamRemaining(&adler_writer.writer) catch |err| switch (err) {
         error.ReadFailed => {
@@ -83,24 +81,4 @@ fn decompressPath(io: Io, paths: args.Paths) !void {
     };
     if (trailing.len != 0) return error.TrailingData;
     try out_writer.interface.flush();
-}
-
-fn isDash(path: []const u8) bool {
-    return std.mem.eql(u8, path, "-");
-}
-
-fn openIn(io: Io, path: []const u8) !std.Io.File {
-    if (isDash(path)) return .stdin();
-    if (std.fs.path.isAbsolute(path)) return std.Io.Dir.openFileAbsolute(io, path, .{});
-    return std.Io.Dir.cwd().openFile(io, path, .{});
-}
-
-fn openOut(io: Io, path: []const u8) !std.Io.File {
-    if (isDash(path)) return .stdout();
-    if (std.fs.path.isAbsolute(path)) return std.Io.Dir.createFileAbsolute(io, path, .{});
-    return std.Io.Dir.cwd().createFile(io, path, .{});
-}
-
-fn closeIfOwned(io: Io, file: std.Io.File, path: []const u8) void {
-    if (!isDash(path)) file.close(io);
 }
