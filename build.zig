@@ -74,25 +74,17 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
-    const contracts = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/gzip.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "zipir", .module = mod }},
-        }),
-    });
-    test_step.dependOn(&b.addRunArtifact(contracts).step);
-
-    const zlib_contracts = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/zlib.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "zipir", .module = mod }},
-        }),
-    });
-    test_step.dependOn(&b.addRunArtifact(zlib_contracts).step);
+    for ([_][]const u8{ "tests/gzip.zig", "tests/zlib.zig", "tests/deflate.zig" }) |suite| {
+        const contracts = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(suite),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "zipir", .module = mod }},
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(contracts).step);
+    }
 
     const cli_options = b.addOptions();
     cli_options.addOptionPath("executable", exe.getEmittedBin());

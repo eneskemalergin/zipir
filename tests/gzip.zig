@@ -400,11 +400,5 @@ test "[failure] - [gzip compressor]: I/O errors propagate and workspace resets" 
 
 test "[unit] - [gzip]: the public error set names exactly the documented errors" {
     const expected = [_][]const u8{ "BadBlock", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "CrcMismatch", "HeaderCrcMismatch", "InputBufferTooSmall", "IsizeMismatch", "OutputLimitExceeded", "ReadFailed", "ReservedFlag", "TrailingData", "Truncated", "UnsupportedMethod", "WriteFailed" };
-    const actual = @typeInfo(zipir.gzip.Error).error_set.?;
-    try std.testing.expectEqual(expected.len, actual.len);
-    for (expected) |name| {
-        for (actual) |err| {
-            if (std.mem.eql(u8, err.name, name)) break;
-        } else return error.MissingError;
-    }
+    try support.expectErrorNames(zipir.gzip.Error, &expected);
 }

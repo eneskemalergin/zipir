@@ -99,3 +99,13 @@ pub fn encodeRoundtrip(
     try std.testing.expectEqual(plain.len, sink.count);
     return stream;
 }
+
+pub fn expectErrorNames(comptime Set: type, expected: []const []const u8) !void {
+    const actual = @typeInfo(Set).error_set.?;
+    try std.testing.expectEqual(expected.len, actual.len);
+    for (expected) |name| {
+        for (actual) |err| {
+            if (std.mem.eql(u8, err.name, name)) break;
+        } else return error.MissingError;
+    }
+}

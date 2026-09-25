@@ -4,12 +4,14 @@ const std = @import("std");
 
 pub const gzip = @import("container/gzip.zig");
 pub const zlib = @import("container/zlib.zig");
-pub const Format = enum { gzip, zlib };
+pub const deflate = @import("container/deflate.zig");
+pub const Format = enum { gzip, zlib, deflate };
 
 pub fn Decompressor(comptime format: Format) type {
     return switch (format) {
         .gzip => gzip.Decompressor,
         .zlib => zlib.Decompressor,
+        .deflate => deflate.Decompressor,
     };
 }
 
@@ -17,6 +19,7 @@ pub fn Compressor(comptime format: Format) type {
     return switch (format) {
         .gzip => gzip.Compressor,
         .zlib => zlib.Compressor,
+        .deflate => deflate.Compressor,
     };
 }
 
@@ -29,4 +32,5 @@ pub const version: std.SemanticVersion = .{
 test {
     _ = gzip;
     _ = zlib;
+    _ = deflate;
 }
