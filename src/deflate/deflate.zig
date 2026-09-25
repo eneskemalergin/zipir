@@ -1462,6 +1462,25 @@ test "[edge] - [deflate decoder]: decoded counters stop at the u64 output bound"
     try std.testing.expectEqual(@as(u64, 1), sink.fullCount());
 }
 
+test "[edge] - [deflate decoder]: a finished or failed stream keeps no pointer to the caller's check" {
+    const decoder = try std.testing.allocator.create(Decoder);
+    defer std.testing.allocator.destroy(decoder);
+    var output: [8]u8 = undefined;
+    for ([_][]const u8{ &.{ 0x01, 0x03, 0x00, 0xfc, 0xff, 'a', 'b', 'c' }, &.{ 0x01, 0x03, 0x00, 0xfc, 0xfe } }) |input| {
+        var reader = std.Io.Reader.fixed(input);
+        var br: BitReader = .{ .reader = &reader };
+        var writer = std.Io.Writer.fixed(&output);
+        var check: TestCheck = .{};
+        var session = decoder.session(TestCheck, &writer, .{});
+        if (input.len == 8) {
+            try std.testing.expectEqual(@as(u64, 3), try session.stream(&br, &check));
+        } else {
+            try std.testing.expectError(error.BadStored, session.stream(&br, &check));
+        }
+        try std.testing.expectEqual(@as(?*TestCheck, null), session.check);
+    }
+}
+
 test "[property] - [deflate decoder]: fast literals consume exact bits within output room" {
     const decoder = try std.testing.allocator.create(Decoder);
     defer std.testing.allocator.destroy(decoder);

@@ -109,3 +109,15 @@ test "[unit] - [cpu]: detection agrees with every feature the build target guara
     }
     try std.testing.expectEqual(detected, features());
 }
+
+test "[unit] - [cpu]: has() follows the portable override, then target guarantees, then detection" {
+    const detected = features();
+    inline for (std.meta.fields(Feature)) |field| {
+        const feature: Feature = @enumFromInt(field.value);
+        const expected = if (options.kernel_backend == .portable)
+            false
+        else
+            guaranteed(feature) or (builtin.cpu.arch == .x86_64 and @field(detected, field.name));
+        try std.testing.expectEqual(expected, has(feature));
+    }
+}

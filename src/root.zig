@@ -24,12 +24,6 @@ pub const version: std.SemanticVersion = .{
     .patch = 2,
 };
 
-test "[unit] - [root]: reports version 0.1.2" {
-    try std.testing.expectEqual(@as(usize, 0), version.major);
-    try std.testing.expectEqual(@as(usize, 1), version.minor);
-    try std.testing.expectEqual(@as(usize, 2), version.patch);
-}
-
 test {
     _ = gzip;
     _ = zlib;

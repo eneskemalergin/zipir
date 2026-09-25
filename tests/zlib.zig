@@ -299,3 +299,14 @@ test "[failure] - [zlib decoder]: rejects undersized input buffers and preset di
     source = support.Source.init(&dictionary_header, &dictionary_buffer, 1);
     try std.testing.expectError(error.DictionaryUnsupported, decoder.decompress(&source.reader, &sink.writer, .{}));
 }
+
+test "[unit] - [zlib]: the public error set names exactly the documented errors" {
+    const expected = [_][]const u8{ "BadAdler", "BadBlock", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "DictionaryUnsupported", "InputBufferTooSmall", "OutputLimitExceeded", "ReadFailed", "TrailingData", "Truncated", "UnsupportedMethod", "WindowTooLarge", "WriteFailed" };
+    const actual = @typeInfo(zlib.Error).error_set.?;
+    try std.testing.expectEqual(expected.len, actual.len);
+    for (expected) |name| {
+        for (actual) |err| {
+            if (std.mem.eql(u8, err.name, name)) break;
+        } else return error.MissingError;
+    }
+}
