@@ -57,6 +57,8 @@ run_batch() {
         printf 'skip: %s (complete)\n' "${base#"$ROOT_DIR"/}"
         return
     fi
+    # Decoded only when a batch actually runs; large files are slow to decode.
+    [[ -f "$plain" ]] || plain_of "$format" "$input" "$plain"
     plain_bytes="$(stat -c '%s' "$plain")"
     for subject in "$@"; do
         read -r tool level <<<"$subject"
@@ -90,8 +92,10 @@ run_batch() {
         git_state | sed 's/^/# /'
         printf 'tool\tlevel\tlane\tdecode\tcompressed_bytes\n'
         printf '%s\n' "${rows[@]}"
-    } >"$base.tsv"
+    } >"$base.part.tsv"
+    # JSON first: a crash between the two moves leaves the old key, so the batch is re-timed.
     mv -f -- "$base.part.json" "$base.json"
+    mv -f -- "$base.part.tsv" "$base.tsv"
 }
 
 main() {
@@ -141,7 +145,6 @@ main() {
         for row in "${rows[@]}"; do
             IFS=$'\t' read -r category class filename <<<"$row"
             input="$(data_path "$category" "$format" "$class" "$filename")"
-            plain_of "$format" "$input" "$WORK/plain"
             if [[ ${#comp[@]} -gt 0 ]]; then
                 run_batch "$format" compress "$category" "$class" "$input" "${comp[@]}"
             fi

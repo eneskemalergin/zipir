@@ -238,7 +238,7 @@ qualify_gzip_file() {
 }
 
 qualify_tool() {
-    local dir category class filename
+    local dir row rows category class filename
     TOOL="$1" BLOCKING_FAILS=0
     LEVELS="$(tool_levels "$TOOL")"
     "$TOOLS_DIR/install.sh" --check "$TOOL"
@@ -250,7 +250,10 @@ qualify_tool() {
     printf 'qualify %s levels: %s classes: %s\n' "$TOOL" "${LEVELS:--}" "$CLASSES"
 
     qualify_empty
-    while IFS=$'\t' read -r category class filename; do
+    # Rows are read up front so no tool under test can consume the loop's input.
+    mapfile -t rows < <(corpus_rows "${P_FORMAT[$TOOL]}")
+    for row in "${rows[@]}"; do
+        IFS=$'\t' read -r category class filename <<<"$row"
         CAT="$category" CLS="$class" FILE="$filename"
         if [[ "${P_FORMAT[$TOOL]}" == gzip ]]; then
             qualify_gzip_file "$(data_path "$category" gzip "$class" "$filename")"
@@ -258,7 +261,7 @@ qualify_tool() {
             qualify_zlib_file "$(data_path "$category" zlib "$class" "$filename")"
         fi
         rm -f -- "$WORK"/plain* "$WORK"/bad.* "$WORK"/out "$WORK"/tool.gz
-    done < <(corpus_rows "${P_FORMAT[$TOOL]}")
+    done
 
     {
         printf 'schema\tzipir-qualify-v3\n'

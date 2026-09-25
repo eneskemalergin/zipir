@@ -150,6 +150,12 @@ load_peers() {
         PEER_TOOLS+=("$tool")
         P_FORMAT[$tool]="$format" P_TIER[$tool]="$tier" P_LEVELS[$tool]="$levels" P_DECODE[$tool]="$decode"
         P_FAST[$tool]="$fast" P_BALANCED[$tool]="$balanced" P_DENSE[$tool]="$dense"
+        if [[ "$format" == gzip ]]; then
+            [[ "$crc $isize $concat" =~ ^(yes|no|hint)\ (yes|no|hint)\ (yes|no|hint)$ ]] ||
+                die "peers.tsv: $tool crc, isize, and concat must be yes, no, or hint"
+        else
+            [[ "$crc$isize$concat" == --- ]] || die "peers.tsv: zlib tool $tool needs - for crc, isize, and concat"
+        fi
         P_CRC[$tool]="$crc" P_ISIZE[$tool]="$isize" P_CONCAT[$tool]="$concat"
     done <"$PEERS_TSV"
     [[ ${#PEER_TOOLS[@]} -gt 0 ]] || die "peers.tsv has no rows"
@@ -401,7 +407,7 @@ receipt_value() {
 
 # A tool may be timed only when its qualify receipt passed on the current binary and covers LEVELS.
 require_qualified() {
-    local tool="$1" level
+    local tool="$1" level class
     shift
     [[ "$(receipt_value "$tool" schema)" == zipir-qualify-v3 ]] || die "$tool has no current qualify receipt; run tools/qualify.sh $tool"
     [[ "$(receipt_value "$tool" status)" == pass ]] || die "$tool failed qualify; see $LOCAL_DIR/qualify/$tool/checks.tsv"
@@ -411,4 +417,11 @@ require_qualified() {
         [[ " $(receipt_value "$tool" levels) " == *" $level "* ]] ||
             die "$tool level $level was not qualified; run tools/qualify.sh --levels $LEVEL_SET $tool"
     done
+    # The receipt must cover every file that will be timed.
+    for class in $CLASSES; do
+        [[ " $(receipt_value "$tool" classes) " == *" $class "* ]] ||
+            die "$tool was not qualified on $class files; run tools/qualify.sh --class $class $tool (or --full)"
+    done
+    [[ "$(receipt_value "$tool" category)" =~ ^(all|$CATEGORY)$ ]] ||
+        die "$tool was qualified on $(receipt_value "$tool" category) files only; run tools/qualify.sh $tool"
 }

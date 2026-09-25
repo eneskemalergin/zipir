@@ -72,6 +72,14 @@ cmake_install() {
     cmake --install "$build"
 }
 
+# Newest mtime (seconds) of the sources a Zig adapter is built from. No digest: an adapter is
+# stale when any of these files is newer than the build that the receipt records.
+zig_source_mtime() {
+    local sources=("$TOOLS_DIR/build.zig" "$TOOLS_DIR/build.zig.zon" "$TOOLS_DIR/zig")
+    [[ "$1" != zipir-* ]] || sources+=("$ROOT_DIR/src" "$ROOT_DIR/build.zig" "$ROOT_DIR/build.zig.zon")
+    find "${sources[@]}" -type f -printf '%T@\n' | sort -n | tail -1 | cut -d. -f1
+}
+
 cc_version() {
     cc --version | awk 'NR==1{print $1, $NF}'
 }
@@ -113,6 +121,7 @@ publish() {
         printf 'name\t%s\nversion\t%s\nsource\t%s\n' "$name" "$version" "$source"
         printf 'compiler\t%s\njobs\t%s\nbuild_profile\t%s\n' "$compiler" "$TOOL_JOBS" "$profile"
         git_state | sed 's/^commit/suite_commit/; s/^dirty/suite_dirty/'
+        if [[ "$name" =~ ^(std|zipir)- ]]; then printf 'source_mtime\t%s\n' "$(zig_source_mtime "$name")"; fi
     } >"$STAGE/receipt.tsv"
     [[ "$dest" == "$INSTALLS_DIR"/*/* ]] || die "invalid install path: $dest"
     rm -rf -- "$dest"
@@ -159,6 +168,12 @@ check_target() {
             ;;
     esac
     [[ -x "$path" ]] || { printf 'missing: %s %s\n' "$name" "$version" >&2 && return 1; }
+    if [[ "$name" =~ ^(std|zipir)- ]]; then
+        local built
+        built="$(awk -F'\t' '$1 == "source_mtime" { print $2 }' "$INSTALLS_DIR/$name/$version/receipt.tsv")"
+        [[ -n "$built" && "$built" -ge "$(zig_source_mtime "$name")" ]] ||
+            { printf 'stale: %s was built before its sources last changed; run tools/install.sh %s\n' "$name" "$name" >&2 && return 1; }
+    fi
     case "$name" in
         libdeflate-gzip | igzip | zlib-ng)
             ! file -b "$path" | grep -q 'statically linked' ||
@@ -190,10 +205,10 @@ check_target() {
 build_zig_adapter() {
     local name="$1" work="$WORK/$1" source
     require_zig
-    mkdir -p "$work/global-cache" "$work/local-cache" "$work/prefix"
+    mkdir -p "$work/prefix"
     printf 'build: %s Zig adapter\n' "$name"
-    ZIG_GLOBAL_CACHE_DIR="$work/global-cache" ZIG_LOCAL_CACHE_DIR="$work/local-cache" \
-        zig build --build-file "$TOOLS_DIR/build.zig" -Dadapter="$name" \
+    # The configured zig owns cache selection (plan/RULES.md): no task-specific cache directories.
+    zig build --build-file "$TOOLS_DIR/build.zig" -Dadapter="$name" \
         -Doptimize=ReleaseFast -Dstrip=true -Dcpu=native --prefix "$work/prefix" -j"$TOOL_JOBS"
     case "$name" in
         std-*) source="Zig ${ZIG_VERSION} standard library" ;;

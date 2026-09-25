@@ -10,6 +10,7 @@ validates the batches and exits non-zero on any problem.
 """
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -53,11 +54,11 @@ def read_batch(tsv):
 
 def load(run):
     """All batches of a run as fact rows, plus a list of problems."""
-    facts, problems = [], []
+    facts, problems, anchors = [], [], {}
     base = BENCH / run
     if not base.is_dir():
         die(f"no bench results for {run}: {base}")
-    for tsv in sorted(base.glob("*/*/*.tsv")):
+    for tsv in sorted(p for p in base.glob("*/*/*.tsv") if not p.name.endswith(".part.tsv")):
         json_path = tsv.with_suffix(".json")
         if not json_path.exists():
             problems.append(f"{tsv}: no matching .json")
@@ -87,6 +88,9 @@ def load(run):
                 "commit": meta["commit"][:12], "dirty": meta["dirty"],
             })
         anchor_tool = f"zipir-{meta['format']}"
+        # The batch key names each subject's binary (path, size, mtime); one run must use one zipir.
+        for identity in re.findall(rf"; {anchor_tool} \S+ \S+ (\S+ \d+ \d+)", meta.get("key", "")):
+            anchors.setdefault(anchor_tool, set()).add(identity)
         if not any(a["tool"] == anchor_tool for a in batch):
             problems.append(f"{json_path}: no {anchor_tool} anchor in the batch")
         for row in batch:
@@ -100,6 +104,10 @@ def load(run):
                                     if anchor and meta["op"] == "compress" else None)
             row["rss_vs_zipir"] = row["rss_median_bytes"] / anchor["rss_median_bytes"] if anchor else None
         facts.extend(batch)
+    for tool, identities in anchors.items():
+        if len(identities) > 1:
+            problems.append(f"{base}: batches use {len(identities)} different {tool} binaries; "
+                            f"re-run tools/bench.sh with the same selection and --force")
     if not facts and not problems:
         problems.append(f"{base}: no batches")
     order = peer_order()
@@ -163,8 +171,12 @@ def summary(run, facts):
     lanes = []
     for fmt, op in sorted({(r["format"], r["op"]) for r in facts}):
         rows = [r for r in facts if r["format"] == fmt and r["op"] == op]
-        lanes.append(f"## {fmt} {op}\n\n{lane_table(rows)}")
-        lines += [lanes[-1], "", f"### {fmt} {op} per file", "", file_table(rows), ""]
+        # Sanity files measure process start-up more than the codec: averaged only when alone.
+        classes = sorted({r["class"] for r in rows} - {"sanity"}, key=CLASS_ORDER.get) or ["sanity"]
+        for cls in classes:
+            lanes.append(f"## {fmt} {op}, {cls} files\n\n{lane_table([r for r in rows if r['class'] == cls])}")
+            lines += [lanes[-1], ""]
+        lines += [f"### {fmt} {op} per file", "", file_table(rows), ""]
     return "\n".join(lines), "\n\n".join(lanes)
 
 
@@ -178,7 +190,7 @@ def main():
     facts, problems = load(run)
     for problem in problems:
         print(f"problem: {problem}", file=sys.stderr)
-    if check:
+    if check or not facts:
         print(f"report check: {run}: {len(facts)} rows, {len(problems)} problems")
         return 1 if problems else 0
     out = REPORT / run
