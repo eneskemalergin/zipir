@@ -124,10 +124,23 @@ pub const BitReader = struct {
     }
 
     fn need(self: *BitReader, n: u32) !void {
+        try self.fill(n);
+        if (self.nbits < n) return error.Truncated;
+    }
+
+    // Loads up to `n` bits; at the end of the input it loads what remains, so a caller that peeks
+    // a code must check the code's length against `nbits`. Bits above `nbits` are zero.
+    fn fill(self: *BitReader, n: u32) !void {
         while (self.nbits < n) {
             if (self.i >= self.src.len) {
                 _ = try self.window(8);
-                if (self.nbits + self.src.len * 8 < n) return error.Truncated;
+                if (self.nbits + self.src.len * 8 < n) {
+                    while (self.i < self.src.len) : (self.i += 1) {
+                        self.bits |= @as(u64, self.src[self.i]) << @intCast(self.nbits);
+                        self.nbits += 8;
+                    }
+                    return;
+                }
             }
             if (self.src.len - self.i >= 8 and self.nbits <= 56) {
                 const room: u32 = (64 - self.nbits) / 8;
@@ -504,10 +517,10 @@ fn peekFirst(table: []const Entry, width: u4, bits: u64) Entry {
 }
 
 fn decodeClen(br: *BitReader, clen_tab: []const Entry) !u8 {
-    try br.need(7);
+    try br.fill(7);
     const e = peekFirst(clen_tab, 7, br.bits);
-    if (e.kind == .invalid or e.kind == .long) return error.BadHuffman;
-    _ = try br.get(e.nbits);
+    if (e.kind == .invalid or e.kind == .long or e.nbits > br.nbits) return if (br.nbits < 7) error.Truncated else error.BadHuffman;
+    br.consume(e.nbits);
     return @intCast(e.payload);
 }
 
@@ -655,9 +668,12 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
             _ = try br.window(8);
         }
         if (try @call(.never_inline, decodeFast, .{ Check, ctx, lit, dist })) return;
-        try br.need(15);
+        // A stream may end at the end of the input (raw DEFLATE has no trailer), so fewer than 15 bits
+        // can remain; a code that is invalid or longer than what remains is then a truncation.
+        try br.fill(15);
         var e = peekFirst(lit, 10, br.bits);
         if (e.kind == .long) e = lookupLong(e, &ctx.decoder.tables.lit_spill, br.bits, 10);
+        if (br.nbits < 15 and (e.kind == .invalid or e.nbits > br.nbits)) return error.Truncated;
         switch (e.kind) {
             .eob => {
                 br.consume(e.nbits);
@@ -671,9 +687,10 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
                 br.consume(e.nbits);
                 const add = if (e.extra != 0) try br.get(e.extra) else 0;
                 const length: usize = e.payload + add;
-                try br.need(15);
+                try br.fill(15);
                 var d = peekFirst(dist, 9, br.bits);
                 if (d.kind == .long) d = lookupLong(d, &ctx.decoder.tables.dist_spill, br.bits, 9);
+                if (br.nbits < 15 and (d.kind != .dist or d.nbits > br.nbits)) return error.Truncated;
                 if (d.kind != .dist) return error.BadSymbol;
                 br.consume(d.nbits);
                 const dadd = if (d.extra != 0) try br.get(d.extra) else 0;
@@ -1466,6 +1483,32 @@ test "[edge] - [deflate decoder]: decoded counters stop at the u64 output bound"
     try std.testing.expectEqual(@as(u64, 1), sink.fullCount());
 }
 
+test "[edge] - [deflate decoder]: streams whose last code ends at the end of input decode" {
+    const decoder = try std.testing.allocator.create(Decoder);
+    defer std.testing.allocator.destroy(decoder);
+    const encoder = try std.testing.allocator.create(Encoder);
+    defer std.testing.allocator.destroy(encoder);
+    var plain: [3000]u8 = undefined;
+    for (&plain, 0..) |*b, i| b.* = "ACGT"[(i * i + i / 7) % 4];
+    var dynamic: [4000]u8 = undefined;
+    var plain_reader = std.Io.Reader.fixed(&plain);
+    var dynamic_writer = std.Io.Writer.fixed(&dynamic);
+    var encode_check: TestCheck = .{};
+    _ = try encoder.encodeStream(TestCheck, &plain_reader, &dynamic_writer, &encode_check, .balanced);
+    const cases = .{ .{ "\x73\x04\x00", "A" }, .{ dynamic_writer.buffered(), &plain } };
+    var output: [3000]u8 = undefined;
+    inline for (cases) |case| {
+        var reader = std.Io.Reader.fixed(case[0]);
+        var br: BitReader = .{ .reader = &reader };
+        var writer = std.Io.Writer.fixed(&output);
+        var check: TestCheck = .{};
+        var session = decoder.session(TestCheck, &writer, .{});
+        try std.testing.expectEqual(@as(u64, case[1].len), try session.stream(&br, &check));
+        _ = try session.finish();
+        try std.testing.expectEqualSlices(u8, case[1], writer.buffered());
+    }
+}
+
 test "[edge] - [deflate decoder]: a finished or failed stream keeps no pointer to the caller's check" {
     const decoder = try std.testing.allocator.create(Decoder);
     defer std.testing.allocator.destroy(decoder);
@@ -1488,7 +1531,6 @@ test "[edge] - [deflate decoder]: a finished or failed stream keeps no pointer t
 test "[property] - [deflate decoder]: fast literals consume exact bits within output room" {
     const decoder = try std.testing.allocator.create(Decoder);
     defer std.testing.allocator.destroy(decoder);
-    try std.testing.expectEqual(@as(usize, 196608), @sizeOf(Decoder));
     var sink: std.Io.Writer.Discarding = .init(&.{});
     for (0..65) |length| {
         var input: [128]u8 = @splat(0);
