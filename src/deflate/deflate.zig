@@ -1074,7 +1074,8 @@ pub const Encoder = struct {
         // `previous` is never cleared: with `head` clear, every position a chain reaches was inserted in this
         // stream, which wrote its `previous` slot; a slot reused by a later position is behind `lower` and
         // rejected before it is read. BGZF pays this once per 64 KiB block.
-        @memset(&self.head, 0);
+        // 64 KiB: `@memset` here would call compiler_rt's byte-per-iteration `memset` (see `copy.zero`).
+        copy.zero(std.mem.asBytes(&self.head));
         var bits: BitWriter = .{ .writer = writer };
         var history: usize = 0;
         var size: u64 = 0;

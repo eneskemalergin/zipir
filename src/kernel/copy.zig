@@ -1,6 +1,22 @@
-//! Bounded overlap-safe DEFLATE match copies.
+//! Bounded overlap-safe DEFLATE match copies, and zeroing that stays vectorized.
 
 const std = @import("std");
+
+/// Zeroes `bytes` with 32-byte vector stores. `@memset` of a large buffer becomes a call to the runtime
+/// `memset`, which Zig 0.16's compiler_rt implements one byte per iteration; volatile stores keep LLVM
+/// from turning this loop back into that call.
+pub fn zero(bytes: []u8) void {
+    if (@inComptime()) return @memset(bytes, 0);
+    var i: usize = 0;
+    while (i + 32 <= bytes.len) : (i += 32) {
+        const block: *align(1) volatile @Vector(32, u8) = @ptrCast(bytes[i..][0..32].ptr);
+        block.* = @splat(0);
+    }
+    while (i < bytes.len) : (i += 1) {
+        const byte: *volatile u8 = &bytes[i];
+        byte.* = 0;
+    }
+}
 
 pub fn dist1Broadcast32(dst: []u8, v: u8) void {
     const V = @Vector(32, u8);
@@ -86,6 +102,20 @@ test "[property] - [match]: periodic vectors preserve history and bounded tail" 
                 repeatSmall(&actual, start, distance, length);
                 try std.testing.expectEqualSlices(u8, expected[0 .. start + length], actual[0 .. start + length]);
                 try std.testing.expectEqualSlices(u8, expected[start + length + 31 ..], actual[start + length + 31 ..]);
+            }
+        }
+    }
+}
+
+test "[property] - [copy]: zero clears exactly its bytes at every length and offset" {
+    var buf: [160]u8 = undefined;
+    for (0..8) |offset| {
+        for (0..130) |len| {
+            @memset(&buf, 0xa5);
+            zero(buf[offset..][0..len]);
+            for (buf, 0..) |byte, i| {
+                const inside = i >= offset and i < offset + len;
+                try std.testing.expectEqual(@as(u8, if (inside) 0 else 0xa5), byte);
             }
         }
     }
