@@ -203,6 +203,17 @@ test "[edge] - [tar reader]: a checksum summed over signed bytes is accepted, as
     try std.testing.expectError(error.BadHeaderChecksum, transcribe(&archive, 512, &storage));
 }
 
+test "[unit] - [tar]: isHeader accepts header blocks with a right checksum and nothing else" {
+    try std.testing.expect(tar.isHeader(GNU[0..512]));
+    try std.testing.expect(tar.isHeader(BASE256[0..512]));
+    try std.testing.expect(!tar.isHeader(GNU[GNU.len - 512 ..][0..512]));
+    var block: [512]u8 = GNU[0..512].*;
+    block[0] ^= 1;
+    try std.testing.expect(!tar.isHeader(&block));
+    try std.testing.expect(tar.isHeader(GNU[512..1024]));
+    try std.testing.expect(!tar.isHeader(GNU[1024..1536]));
+}
+
 test "[edge] - [tar reader]: skipped entries get no data and still end" {
     var name: [256]u8 = undefined;
     var link: [256]u8 = undefined;

@@ -280,6 +280,15 @@ pub fn Reader(comptime Visitor: type) type {
     };
 }
 
+/// A header block that is not all zeros and whose checksum is right, for telling a plain archive from other
+/// data. Pre-POSIX headers have no magic, so the magic is not checked.
+pub fn isHeader(block: *const [512]u8) bool {
+    const sum = byteSum(block);
+    if (sum == 0) return false;
+    checkChecksum(block, sum) catch return false;
+    return true;
+}
+
 /// Every header gets `mtime`, so an archive of the same entries is the same bytes.
 pub const WriterOptions = struct { mtime: i64 = 0 };
 

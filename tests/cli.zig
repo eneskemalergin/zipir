@@ -213,3 +213,91 @@ test "[cli] - [bgzf]: compress, EOF policy, and index follow bgzip's behavior" {
         try std.testing.expectEqualStrings(help.stdout, bad.stderr);
     }
 }
+
+test "[cli] - [tar]: create, list, and test agree in every format, with the end-block policy and path checks" {
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    const executable = try std.Io.Dir.cwd().realPathFileAlloc(io, @import("options").executable, allocator);
+    defer allocator.free(executable);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "d/sub");
+    try tmp.dir.writeFile(io, .{ .sub_path = "d/a.txt", .data = "hello\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "d/sub/b", .data = "x" ** 700 });
+    try tmp.dir.symLink(io, "a.txt", "d/s", .{});
+    for ([_][]const u8{ "d", "d/a.txt", "d/sub", "d/sub/b" }, [_]u32{ 0o755, 0o640, 0o700, 0o600 }) |path, mode| {
+        try tmp.dir.setFilePermissions(io, path, @enumFromInt(mode), .{});
+    }
+    // Symlink permission bits differ between systems; the listing prints what lstat reports.
+    const link_mode: u32 = @intCast(@intFromEnum((try tmp.dir.statFile(io, "d/s", .{ .follow_symlinks = false })).permissions) & 0o777);
+    var link_bits: [9]u8 = undefined;
+    for (&link_bits, 0..) |*c, bit| c.* = if (link_mode & (@as(u32, 0o400) >> @intCast(bit)) != 0) "rwxrwxrwx"[bit] else '-';
+    var expected_storage: [512]u8 = undefined;
+    const expected = try std.fmt.bufPrint(&expected_storage,
+        \\drwxr-xr-x 0 1970-01-01 00:00:00 d/
+        \\-rw-r----- 6 1970-01-01 00:00:00 d/a.txt
+        \\l{s} 0 1970-01-01 00:00:00 d/s -> a.txt
+        \\drwx------ 0 1970-01-01 00:00:00 d/sub/
+        \\-rw------- 700 1970-01-01 00:00:00 d/sub/b
+        \\
+    , .{&link_bits});
+    const Run = struct {
+        fn run(argv: []const []const u8, dir: std.Io.Dir) !std.process.RunResult {
+            return std.process.run(std.testing.allocator, std.testing.io, .{ .argv = argv, .cwd = .{ .dir = dir }, .stdout_limit = .limited(1 << 20) });
+        }
+    };
+    var plain: ?[]u8 = null;
+    defer if (plain) |bytes| allocator.free(bytes);
+    inline for (.{ "gzip", "zlib", "bgzf", "none" }) |format| {
+        const created = try Run.run(&.{ executable, "tar", "create", "--format", format, "--level", "1", "d" }, tmp.dir);
+        defer allocator.free(created.stderr);
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, created.term);
+        try std.testing.expectEqualStrings("", created.stderr);
+        try tmp.dir.writeFile(io, .{ .sub_path = "d." ++ format, .data = created.stdout });
+        if (std.mem.eql(u8, format, "none")) plain = created.stdout else allocator.free(created.stdout);
+        const listed = try Run.run(&.{ executable, "tar", "list", "d." ++ format }, tmp.dir);
+        defer allocator.free(listed.stdout);
+        defer allocator.free(listed.stderr);
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, listed.term);
+        try std.testing.expectEqualStrings(expected, listed.stdout);
+        try std.testing.expectEqualStrings("", listed.stderr);
+    }
+    const archive = plain.?;
+    try tmp.dir.writeFile(io, .{ .sub_path = "cut.tar", .data = archive[0 .. archive.len - 1024] });
+    var corrupt: [512]u8 = archive[0..512].*;
+    corrupt[0] ^= 1;
+    try tmp.dir.writeFile(io, .{ .sub_path = "corrupt.tar", .data = &corrupt });
+    const cases = .{
+        .{ &.{ executable, "tar", "test", "d.gzip" }, @as(u8, 0), "", "" },
+        .{ &.{ executable, "tar", "test", "--format", "none", "--", "d.none" }, @as(u8, 0), "", "" },
+        .{ &.{ executable, "tar", "list", "cut.tar" }, @as(u8, 0), expected, "zipir: warning: end-of-archive blocks are absent. The archive may be truncated\n" },
+        .{ &.{ executable, "tar", "test", "cut.tar" }, @as(u8, 1), "", "zipir: MissingEndMarker\n" },
+        .{ &.{ executable, "tar", "test", "--format", "none", "corrupt.tar" }, @as(u8, 1), "", "zipir: BadHeaderChecksum\n" },
+        .{ &.{ executable, "tar", "test", "corrupt.tar" }, @as(u8, 2), "", "zipir: unknown input format; use --format\n" },
+        .{ &.{ executable, "decompress", "d.none" }, @as(u8, 2), "", "zipir: unknown input format; use --format\n" },
+        .{ &.{ executable, "tar", "create", "/d" }, @as(u8, 1), "", "zipir: UnsafePath\n" },
+        .{ &.{ executable, "tar", "create", "d/../d" }, @as(u8, 1), "", "zipir: UnsafePath\n" },
+        .{ &.{ executable, "tar", "list", "missing.tar" }, @as(u8, 1), "", "zipir: FileNotFound\n" },
+    };
+    inline for (cases) |case| {
+        const result = try Run.run(case[0], tmp.dir);
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = case[1] }, result.term);
+        try std.testing.expectEqualStrings(case[2], result.stdout);
+        try std.testing.expectEqualStrings(case[3], result.stderr);
+    }
+    const help = try std.process.run(allocator, io, .{ .argv = &.{ executable, "--help" } });
+    defer allocator.free(help.stdout);
+    defer allocator.free(help.stderr);
+    inline for (.{ &.{"tar"}, &.{ "tar", "frob" }, &.{ "tar", "list", "a", "b" }, &.{ "tar", "create" }, &.{ "tar", "list", "--level", "5" }, &.{ "tar", "create", "--format", "auto", "d" }, &.{ "tar", "list", "--format", "deflate" }, &.{ "tar", "create", "--level", "2", "d" }, &.{ "tar", "list", "--format", "none", "--format", "none" }, &.{ "tar", "list", "-x" } }) |args| {
+        var argv: [args.len + 1][]const u8 = undefined;
+        argv[0] = executable;
+        inline for (args, 0..) |arg, i| argv[i + 1] = arg;
+        const bad = try std.process.run(allocator, io, .{ .argv = &argv });
+        defer allocator.free(bad.stdout);
+        defer allocator.free(bad.stderr);
+        try std.testing.expectEqual(std.process.Child.Term{ .exited = 2 }, bad.term);
+        try std.testing.expectEqualStrings(help.stdout, bad.stderr);
+    }
+}
