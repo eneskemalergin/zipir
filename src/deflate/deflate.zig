@@ -1139,9 +1139,14 @@ pub const Encoder = struct {
         while (entry != 0 and attempts != 0) : (attempts -= 1) {
             const q: usize = entry - 1;
             if (q < lower or q >= p) break;
-            if (self.window[q + best.len] == self.window[p + best.len] and
-                self.window[q] == self.window[p] and self.window[q + 1] == self.window[p + 1])
-            {
+            // Only a candidate matching every byte up to best.len can win, so the four bytes ending there are
+            // compared at once; the output is the same as checking the last one, but most losers stop here.
+            const head_same = std.mem.readInt(u16, self.window[q..][0..2], .little) == std.mem.readInt(u16, self.window[p..][0..2], .little);
+            const end_same = if (best.len >= 3)
+                std.mem.readInt(u32, self.window[q + best.len - 3 ..][0..4], .little) == std.mem.readInt(u32, self.window[p + best.len - 3 ..][0..4], .little)
+            else
+                self.window[q + best.len] == self.window[p + best.len];
+            if (head_same and end_same) {
                 const len = matchLength(self.window[p..][0..limit], self.window[q..][0..limit]);
                 if (len > best.len) {
                     best = .{ .len = len, .dist = p - q };
