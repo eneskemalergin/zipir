@@ -1,4 +1,5 @@
-//! Public tar reading contracts: entry kinds, names, pax and GNU extensions, end marker, and failures.
+//! Public tar contracts: reading (entry kinds, names, pax and GNU extensions, end marker, failures) and
+//! writing (header formats, round trips through the reader and a compressor, failures).
 
 const std = @import("std");
 const support = @import("support.zig");
@@ -311,6 +312,193 @@ test "[property] - [tar reader]: bounded bit flips end in success or a documente
     }
 }
 
-test "[unit] - [tar]: the public error set names exactly the documented errors" {
+// --- Writing ---
+
+const File = struct { entry: tar.Entry, bytes: []const u8 = "" };
+
+// Yields `files` in order; `short` hands out one byte fewer than the entry's size.
+const Files = struct {
+    files: []const File,
+    index: usize = 0,
+    data_reader: std.Io.Reader = .fixed(""),
+    short: bool = false,
+    fail_at: ?usize = null,
+
+    pub fn next(self: *Files) !?tar.Entry {
+        if (self.fail_at == self.index) return error.SourceBroke;
+        if (self.index == self.files.len) return null;
+        const file = self.files[self.index];
+        self.index += 1;
+        self.data_reader = .fixed(if (self.short) file.bytes[0 .. file.bytes.len - 1] else file.bytes);
+        return file.entry;
+    }
+
+    pub fn data(self: *Files) *std.Io.Reader {
+        return &self.data_reader;
+    }
+};
+
+fn entry(name: []const u8, kind: tar.Kind, size: u64, link: []const u8) tar.Entry {
+    return .{ .name = name, .link_name = link, .kind = kind, .size = size, .mode = if (kind == .symlink) 0o777 else 0o644, .mtime = 12345 };
+}
+
+const LONG = "l/" ++ "x" ** 298;
+const LONG_TARGET = "y" ** 200;
+const SPLIT = "p" ** 60 ++ "/" ++ "q" ** 60;
+const EXACT = "e" ** 100;
+
+fn sampleFiles() [9]File {
+    const S = struct {
+        var big: [1000]u8 = undefined;
+    };
+    for (&S.big, 0..) |*b, i| b.* = @truncate(i * 13);
+    return .{
+        .{ .entry = entry("d/", .directory, 0, "") },
+        .{ .entry = entry("d/a.txt", .file, 6, ""), .bytes = "hello\n" },
+        .{ .entry = entry("d/empty", .file, 0, "") },
+        .{ .entry = entry("d/big", .file, 1000, ""), .bytes = &S.big },
+        .{ .entry = entry(EXACT, .file, 2, ""), .bytes = "ex" },
+        .{ .entry = entry(SPLIT, .file, 5, ""), .bytes = "split" },
+        .{ .entry = entry(LONG, .file, 4, ""), .bytes = "long" },
+        .{ .entry = entry("d/sym", .symlink, 0, LONG_TARGET) },
+        .{ .entry = entry("d/hard", .hardlink, 0, "d/a.txt") },
+    };
+}
+
+// What the reader reports for `sampleFiles` written with mtime 0.
+fn expectedSample(out: *std.Io.Writer, files: []const File) !void {
+    for (files) |file| {
+        const e = file.entry;
+        try out.print("{t} {d} {o} 0 {s}", .{ e.kind, e.size, e.mode, e.name });
+        if (e.link_name.len != 0) try out.print(" -> {s}", .{e.link_name});
+        try out.print("|{s};", .{file.bytes});
+    }
+}
+
+// Reads the whole archive from a writer whose reader has `buffer`, `chunk` bytes at a time.
+fn writeArchive(files: []const File, buffer: []u8, chunk: usize, options: tar.WriterOptions, out: []u8) ![]u8 {
+    var source: Files = .{ .files = files };
+    var writer: tar.Writer(Files) = .init(&source, buffer, options);
+    var at: usize = 0;
+    while (true) {
+        const n = writer.reader.readSliceShort(out[at..@min(out.len, at + chunk)]) catch |err| {
+            _ = try writer.finish();
+            return err;
+        };
+        at += n;
+        if (n < @min(chunk, out.len - at + n)) break;
+    }
+    try std.testing.expectEqual(@as(u64, files.len), try writer.finish());
+    return out[0..at];
+}
+
+test "[property] - [tar writer]: archives read back entry for entry through any reader buffer and read size" {
+    const files = sampleFiles();
+    var expected_storage: [4096]u8 = undefined;
+    var expected: std.Io.Writer = .fixed(&expected_storage);
+    try expectedSample(&expected, &files);
+    var first: [16384]u8 = undefined;
+    const reference = try writeArchive(&files, &.{}, first.len, .{}, &first);
+    // Header blocks plus data blocks: the 121-byte name fits ustar's prefix, the 300-byte name and the
+    // 200-byte target each take a GNU header and one block of name, and two zero blocks end the archive.
+    try std.testing.expectEqual(@as(usize, (1 + 2 + 1 + 3 + 2 + 2 + 4 + 3 + 1 + 2) * 512), reference.len);
+    var storage: [4096]u8 = undefined;
+    const result = try transcribe(reference, 512, &storage);
+    try std.testing.expectEqualStrings(expected.buffered(), result.transcript);
+    try std.testing.expectEqual(tar.Summary{ .entries = 9, .end_marker = true }, result.summary);
+    var buffer: [4096]u8 = undefined;
+    for ([_]usize{ 0, 1, 7, 512, 4096 }) |buffer_len| {
+        for ([_]usize{ 1, 13, 512, 16384 }) |chunk| {
+            var again: [16384]u8 = undefined;
+            try std.testing.expectEqualSlices(u8, reference, try writeArchive(&files, buffer[0..buffer_len], chunk, .{}, &again));
+        }
+    }
+}
+
+test "[integration] - [tar writer]: the gzip compressor reads an archive the gzip decoder and the reader restore" {
+    const files = sampleFiles();
+    const compressor = try std.testing.allocator.create(zipir.Compressor(.gzip));
+    defer std.testing.allocator.destroy(compressor);
+    const decompressor = try std.testing.allocator.create(zipir.Decompressor(.gzip));
+    defer std.testing.allocator.destroy(decompressor);
+    var source: Files = .{ .files = &files };
+    var buffer: [4096]u8 = undefined;
+    var writer: tar.Writer(Files) = .init(&source, &buffer, .{});
+    var compressed: [16384]u8 = undefined;
+    var sink: std.Io.Writer = .fixed(&compressed);
+    _ = try compressor.compress(&writer.reader, &sink, .{});
+    var plain: [16384]u8 = undefined;
+    var direct: std.Io.Writer = .fixed(&plain);
+    var gz = std.Io.Reader.fixed(sink.buffered());
+    _ = try decompressor.decompress(&gz, &direct, .{});
+    var reference: [16384]u8 = undefined;
+    try std.testing.expectEqualSlices(u8, try writeArchive(&files, &.{}, reference.len, .{}, &reference), direct.buffered());
+}
+
+test "[edge] - [tar writer]: the output depends only on the entries and the mtime option" {
+    const files = sampleFiles();
+    var a: [16384]u8 = undefined;
+    var b: [16384]u8 = undefined;
+    const zero = try writeArchive(&files, &.{}, a.len, .{}, &a);
+    try std.testing.expectEqualSlices(u8, zero, try writeArchive(&files, &.{}, b.len, .{}, &b));
+    const dated = try writeArchive(files[1..2], &.{}, b.len, .{ .mtime = -86400 }, &b);
+    var storage: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("file 6 644 -86400 d/a.txt|hello\n;", (try transcribe(dated, 512, &storage)).transcript);
+    // 12345 in each entry does not reach the archive.
+    try std.testing.expect(std.mem.indexOf(u8, zero, "30071") == null);
+}
+
+test "[edge] - [tar writer]: a size of 8 GiB or more is written base-256 and read back" {
+    const huge = [_]File{.{ .entry = entry("huge", .file, 8 << 30, "") }};
+    var source: Files = .{ .files = &huge };
+    var writer: tar.Writer(Files) = .init(&source, &.{}, .{});
+    var block: [512]u8 = undefined;
+    try writer.reader.readSliceAll(&block);
+    try std.testing.expectEqualSlices(u8, &.{ 0x80, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0 }, block[124..136]);
+    var storage: [256]u8 = undefined;
+    try std.testing.expectError(error.Truncated, transcribe(&block, 512, &storage));
+    try std.testing.expectEqualStrings("file 8589934592 644 0 huge|", storage[0..27]);
+    // The largest size a u64 holds still fits the 12-byte field.
+    const largest = [_]File{.{ .entry = entry("largest", .file, std.math.maxInt(u64), "") }};
+    var largest_source: Files = .{ .files = &largest };
+    var largest_writer: tar.Writer(Files) = .init(&largest_source, &.{}, .{});
+    try largest_writer.reader.readSliceAll(&block);
+    try std.testing.expectEqualSlices(u8, &.{ 0x80, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, block[124..136]);
+}
+
+test "[failure] - [tar writer]: a short source, a long name, an unsupported kind, and a source error are reported" {
+    const files = sampleFiles();
+    var out: [16384]u8 = undefined;
+    var source: Files = .{ .files = files[1..2], .short = true };
+    var writer: tar.Writer(Files) = .init(&source, &.{}, .{});
+    try std.testing.expectError(error.ReadFailed, writer.reader.readSliceShort(&out));
+    try std.testing.expectError(error.SourceTooShort, writer.finish());
+    try std.testing.expectError(error.ReadFailed, writer.reader.readSliceShort(&out));
+    const bad = [_]File{
+        .{ .entry = entry("n" ** (tar.MAX_NAME + 1), .file, 0, "") },
+        .{ .entry = entry("l", .symlink, 0, "t" ** (tar.MAX_NAME + 1)) },
+        .{ .entry = entry("fifo", .fifo, 0, "") },
+    };
+    for (bad, [_]anyerror{ error.NameTooLong, error.NameTooLong, error.UnsupportedEntry }) |file, expected| {
+        try std.testing.expectError(expected, writeArchive(&.{file}, &.{}, out.len, .{}, &out));
+    }
+    const longest = [_]File{.{ .entry = entry("n" ** tar.MAX_NAME, .symlink, 0, "t" ** tar.MAX_NAME) }};
+    var storage: [16384]u8 = undefined;
+    var name: [tar.MAX_NAME]u8 = undefined;
+    var link: [tar.MAX_NAME]u8 = undefined;
+    var visitor: Transcript = .{ .out = .fixed(&storage) };
+    _ = try read(try writeArchive(&longest, &.{}, out.len, .{}, &out), 512, &visitor, .{ .name = &name, .link = &link });
+    try std.testing.expectEqualStrings("symlink 0 777 0 " ++ "n" ** tar.MAX_NAME ++ " -> " ++ "t" ** tar.MAX_NAME ++ "|;", visitor.out.buffered());
+    const compressor = try std.testing.allocator.create(zipir.Compressor(.gzip));
+    defer std.testing.allocator.destroy(compressor);
+    var broken: Files = .{ .files = &files, .fail_at = 3 };
+    var broken_writer: tar.Writer(Files) = .init(&broken, &.{}, .{});
+    var sink: std.Io.Writer = .fixed(&out);
+    try std.testing.expectError(error.ReadFailed, compressor.compress(&broken_writer.reader, &sink, .{}));
+    try std.testing.expectError(error.SourceBroke, broken_writer.finish());
+}
+
+test "[unit] - [tar]: the public error sets name exactly the documented errors" {
     try support.expectErrorNames(tar.Error, &.{ "BadHeaderChecksum", "BadNumber", "BadPax", "NameTooLong", "Truncated", "UnsupportedEntry" });
+    try support.expectErrorNames(tar.WriteError, &.{ "NameTooLong", "SourceTooShort", "UnsupportedEntry" });
 }

@@ -1,4 +1,5 @@
-//! Streaming tar (ustar, pax, GNU) reading as a `std.Io.Writer` that calls a caller's visitor per entry.
+//! Streaming tar (ustar, pax, GNU): reading as a `std.Io.Writer` that calls a caller's visitor per entry,
+//! and writing as a `std.Io.Reader` over a caller's source of entries.
 
 const std = @import("std");
 
@@ -279,7 +280,157 @@ pub fn Reader(comptime Visitor: type) type {
     };
 }
 
+/// Every header gets `mtime`, so an archive of the same entries is the same bytes.
+pub const WriterOptions = struct { mtime: i64 = 0 };
+
+pub const WriteError = error{ NameTooLong, UnsupportedEntry, SourceTooShort };
+
+/// The longest name or link target written, in bytes (Linux `PATH_MAX` less its NUL).
+pub const MAX_NAME = 4095;
+
+/// The tar stream is read from `reader`: `Compressor(format).compress(&writer.reader, ...)` makes a
+/// compressed archive in one call. `Source` declares `pub fn next(*Source) !?Entry` and
+/// `pub fn data(*Source) *std.Io.Reader`, the current file's bytes, of which exactly `Entry.size` are
+/// read; a source that ends sooner is `SourceTooShort`. Files, directories, symlinks, and hardlinks are
+/// written; `name` and `link_name` over `MAX_NAME` are `NameTooLong`. A name that does not fit ustar's
+/// fields gets a GNU long-name header, a size of 8 GiB or more a base-256 field. A failed read is
+/// `ReadFailed`; `finish` then returns the cause. No allocation occurs.
+pub fn Writer(comptime Source: type) type {
+    return struct {
+        const Self = @This();
+
+        pub const CreateError = WriteError || ErrorOf(Source.next) || error{ReadFailed};
+
+        reader: std.Io.Reader,
+        source: *Source,
+        options: WriterOptions,
+        failure: ?CreateError = null,
+        state: enum { next, header, data, padding, end, done } = .next,
+        remaining: u64 = 0,
+        padding: usize = 0,
+        entries: u64 = 0,
+        header: [HEADER_ROOM]u8 = undefined,
+        header_len: usize = 0,
+        header_at: usize = 0,
+
+        /// `buffer` is the reader's buffer, of any size.
+        pub fn init(source: *Source, buffer: []u8, options: WriterOptions) Self {
+            return .{
+                .reader = .{ .vtable = &.{ .stream = stream }, .buffer = buffer, .seek = 0, .end = 0 },
+                .source = source,
+                .options = options,
+            };
+        }
+
+        pub fn finish(self: *Self) CreateError!u64 {
+            if (self.failure) |err| return err;
+            return self.entries;
+        }
+
+        fn stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
+            const self: *Self = @alignCast(@fieldParentPtr("reader", r));
+            if (self.failure != null) return error.ReadFailed;
+            return self.produce(w, limit) catch |err| switch (err) {
+                error.EndOfStream => error.EndOfStream,
+                error.WriteFailed => error.WriteFailed,
+                else => |e| {
+                    self.failure = e;
+                    return error.ReadFailed;
+                },
+            };
+        }
+
+        // Writes the next part of the stream to `w`; the reader's buffer is never written directly.
+        fn produce(self: *Self, w: *std.Io.Writer, limit: std.Io.Limit) (CreateError || std.Io.Reader.StreamError)!usize {
+            switch (self.state) {
+                .next => {
+                    const entry = try self.source.next() orelse {
+                        self.padding = 2 * BLOCK;
+                        self.state = .end;
+                        return 0;
+                    };
+                    try self.formatEntry(entry);
+                    self.entries += 1;
+                    self.state = .header;
+                    return 0;
+                },
+                .header => {
+                    const n = limit.minInt(self.header_len - self.header_at);
+                    try w.writeAll(self.header[self.header_at..][0..n]);
+                    self.header_at += n;
+                    if (self.header_at == self.header_len) self.state = if (self.remaining != 0) .data else .next;
+                    return n;
+                },
+                .data => {
+                    const n = self.source.data().stream(w, limit.min(.limited64(self.remaining))) catch |err| switch (err) {
+                        error.EndOfStream => return error.SourceTooShort,
+                        else => |e| return e,
+                    };
+                    self.remaining -= n;
+                    if (self.remaining == 0) self.state = if (self.padding != 0) .padding else .next;
+                    return n;
+                },
+                .padding, .end => {
+                    const n = limit.minInt(@min(self.padding, ZEROS.len));
+                    try w.writeAll(ZEROS[0..n]);
+                    self.padding -= n;
+                    if (self.padding == 0) self.state = if (self.state == .end) .done else .next;
+                    return n;
+                },
+                .done => return error.EndOfStream,
+            }
+        }
+
+        fn formatEntry(self: *Self, entry: Entry) WriteError!void {
+            const typeflag: u8 = switch (entry.kind) {
+                .file => '0',
+                .hardlink => '1',
+                .symlink => '2',
+                .directory => '5',
+                else => return error.UnsupportedEntry,
+            };
+            if (entry.name.len > MAX_NAME or entry.link_name.len > MAX_NAME) return error.NameTooLong;
+            const size = if (entry.kind == .file) entry.size else 0;
+            var at: usize = 0;
+            var name = entry.name;
+            var prefix: []const u8 = "";
+            if (name.len > 100) {
+                if (splitUstar(name)) |parts| {
+                    prefix = parts[0];
+                    name = parts[1];
+                } else {
+                    at = longName(&self.header, at, 'L', name);
+                    name = name[0..100];
+                }
+            }
+            var link = entry.link_name;
+            if (link.len > 100) {
+                at = longName(&self.header, at, 'K', link);
+                link = link[0..100];
+            }
+            formatHeader(self.header[at..][0..BLOCK], .{
+                .name = name,
+                .prefix = prefix,
+                .link = link,
+                .typeflag = typeflag,
+                .size = size,
+                .mode = entry.mode & 0o7777,
+                .mtime = self.options.mtime,
+            });
+            self.header_len = at + BLOCK;
+            self.header_at = 0;
+            self.remaining = size;
+            self.padding = @intCast(pad(size));
+        }
+    };
+}
+
 const BLOCK = 512;
+
+// A header block plus a GNU long name and a long link of `MAX_NAME` bytes, each with its NUL.
+const HEADER_ROOM = 3 * BLOCK + 2 * (MAX_NAME + 1);
+
+const ZEROS = [_]u8{0} ** (2 * BLOCK);
 
 const State = enum { header, data, skip, long_name, long_link, pax, end, after_end };
 
@@ -321,6 +472,81 @@ fn paxTarget(key: []const u8) PaxTarget {
         if (std.mem.eql(u8, key, @tagName(target))) return target;
     }
     return .other;
+}
+
+// --- Header formatting ---
+
+const HeaderFields = struct {
+    name: []const u8,
+    prefix: []const u8 = "",
+    link: []const u8 = "",
+    typeflag: u8,
+    size: u64,
+    mode: u32,
+    mtime: i64,
+};
+
+// ustar with zero owner, group, and device numbers; the checksum is the unsigned byte sum.
+fn formatHeader(h: *[BLOCK]u8, f: HeaderFields) void {
+    @memset(h, 0);
+    @memcpy(h[0..f.name.len], f.name);
+    putNumber(h[100..108], f.mode);
+    putNumber(h[108..116], 0);
+    putNumber(h[116..124], 0);
+    putNumber(h[124..136], f.size);
+    putNumber(h[136..148], f.mtime);
+    h[156] = f.typeflag;
+    @memcpy(h[157..][0..f.link.len], f.link);
+    @memcpy(h[257..265], "ustar\x0000");
+    putNumber(h[329..337], 0);
+    putNumber(h[337..345], 0);
+    @memcpy(h[345..][0..f.prefix.len], f.prefix);
+    @memset(h[148..156], ' ');
+    _ = std.fmt.bufPrint(h[148..155], "{o:0>6}\x00", .{byteSum(h)}) catch unreachable;
+}
+
+// Octal with a NUL terminator when the value fits, else GNU base-256 two's complement.
+fn putNumber(field: []u8, value: i128) void {
+    const digits = field.len - 1;
+    if (value >= 0 and value >> @intCast(3 * digits) == 0) {
+        var v = value;
+        var i = digits;
+        while (i > 0) {
+            i -= 1;
+            field[i] = '0' + @as(u8, @intCast(v & 7));
+            v >>= 3;
+        }
+        field[digits] = 0;
+        return;
+    }
+    var v = value;
+    var i = field.len;
+    while (i > 0) {
+        i -= 1;
+        field[i] = @truncate(@as(u128, @bitCast(v)));
+        v >>= 8;
+    }
+    field[0] |= 0x80;
+}
+
+// Splits a path at a slash so the prefix fits ustar's 155 bytes and the name its 100.
+fn splitUstar(path: []const u8) ?[2][]const u8 {
+    if (path.len > 256) return null;
+    var i = @min(path.len - 1, 155);
+    while (i > 0) : (i -= 1) {
+        const rest = path.len - i - 1;
+        if (path[i] == '/' and rest > 0 and rest <= 100) return .{ path[0..i], path[i + 1 ..] };
+    }
+    return null;
+}
+
+// A GNU long-name header and its data (the name, a NUL, zero padding) at `at`; returns the end.
+fn longName(out: []u8, at: usize, typeflag: u8, name: []const u8) usize {
+    formatHeader(out[at..][0..BLOCK], .{ .name = "././@LongLink", .typeflag = typeflag, .size = name.len + 1, .mode = 0, .mtime = 0 });
+    const data = out[at + BLOCK ..][0..@intCast(name.len + 1 + pad(name.len + 1))];
+    @memset(data, 0);
+    @memcpy(data[0..name.len], name);
+    return at + BLOCK + data.len;
 }
 
 fn VisitorError(comptime Visitor: type) type {
