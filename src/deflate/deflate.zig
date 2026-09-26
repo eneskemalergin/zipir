@@ -1017,8 +1017,10 @@ pub const Encoder = struct {
     token_bytes: usize = undefined,
 
     pub fn encodeStream(self: *Encoder, comptime Check: type, reader: *std.Io.Reader, writer: *std.Io.Writer, check: *Check, level: Level) EncodeError!u64 {
+        // `previous` is never cleared: with `head` clear, every position a chain reaches was inserted in this
+        // stream, which wrote its `previous` slot; a slot reused by a later position is behind `lower` and
+        // rejected before it is read. BGZF pays this once per 64 KiB block.
         @memset(&self.head, 0);
-        if (level != .fast) @memset(&self.previous, 0);
         var bits: BitWriter = .{ .writer = writer };
         var history: usize = 0;
         var size: u64 = 0;
@@ -1678,6 +1680,43 @@ test "[edge] - [deflate encoder]: position rebasing preserves sentinels and ever
             const original = values[i % values.len];
             const expected = if (i >= n) original else if (original <= 32768) 0 else original - 32768;
             try std.testing.expectEqual(expected, p);
+        }
+    }
+}
+
+test "[property] - [deflate encoder]: output does not depend on stale chain entries" {
+    // Repeats make long chains; more than two windows exercise rebasing.
+    var input: [3 * RING + 1234]u8 = undefined;
+    var state: u32 = 0x9e3779b9;
+    for (&input, 0..) |*byte, i| {
+        state = state *% 1664525 +% 1013904223;
+        byte.* = if (i % 97 < 60) "ACGTNACGGT"[(state >> 24) % 10] else @truncate(state >> 16);
+    }
+    const clean = try std.testing.allocator.create(Encoder);
+    defer std.testing.allocator.destroy(clean);
+    const stale = try std.testing.allocator.create(Encoder);
+    defer std.testing.allocator.destroy(stale);
+    var expected: [4 * RING]u8 = undefined;
+    var actual: [4 * RING]u8 = undefined;
+    const NoCheck = struct {
+        fn update(_: *@This(), _: []const u8) void {}
+    };
+    for ([_]Level{ .fast, .balanced, .dense }) |level| {
+        @memset(&clean.head, 0);
+        @memset(&clean.previous, 0);
+        for (&stale.head, 0..) |*slot, i| slot.* = @truncate(i *% 2654435761 +% 99);
+        for (&stale.previous, 0..) |*slot, i| slot.* = @truncate(i *% 40503 +% 17);
+        // Two streams in a row on each workspace: the second starts with the first one's chains.
+        for ([_]usize{ input.len, RING / 3 }) |len| {
+            var want_reader = std.Io.Reader.fixed(input[0..len]);
+            var want_writer = std.Io.Writer.fixed(&expected);
+            var want_check: NoCheck = .{};
+            _ = try clean.encodeStream(NoCheck, &want_reader, &want_writer, &want_check, level);
+            var got_reader = std.Io.Reader.fixed(input[0..len]);
+            var got_writer = std.Io.Writer.fixed(&actual);
+            var got_check: NoCheck = .{};
+            _ = try stale.encodeStream(NoCheck, &got_reader, &got_writer, &got_check, level);
+            try std.testing.expectEqualSlices(u8, want_writer.buffered(), got_writer.buffered());
         }
     }
 }

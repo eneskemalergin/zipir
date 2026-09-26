@@ -415,7 +415,7 @@ pub const Writer = struct {
         if (self.index) |index| try index.add(self.compressed, @intCast(len));
         self.compressed += size;
         self.uncompressed += len;
-        std.mem.copyForwards(u8, self.staging[0 .. self.staged - len], self.staging[len..self.staged]);
+        @memmove(self.staging[0 .. self.staged - len], self.staging[len..self.staged]);
         self.staged -= len;
     }
 };
