@@ -15,6 +15,7 @@ pub const gzip = struct {
 pub const zlib = @import("container/zlib.zig");
 pub const deflate = @import("container/deflate.zig");
 pub const bgzf = @import("container/bgzf.zig");
+pub const tar = @import("archive/tar.zig");
 pub const Format = enum { gzip, zlib, deflate };
 
 pub fn Decompressor(comptime format: Format) type {
@@ -44,4 +45,5 @@ test {
     _ = zlib;
     _ = deflate;
     _ = bgzf;
+    _ = tar;
 }
