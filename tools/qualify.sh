@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Check comparison peers against independent references (GNU gzip, Python zlib) on the local
-# corpus before they are timed. Writes tools/.local/qualify/TOOL/{checks,receipt}.tsv.
+# Check comparison peers against independent references (GNU gzip, Python zlib, and the BGZF
+# structure walker in common.sh) on the local corpus before they are timed. Writes tools/.local/qualify/TOOL/{checks,receipt}.tsv.
 # Not a project L2 gate.
 
 set -euo pipefail
@@ -14,11 +14,12 @@ usage() {
         'Without TOOL, qualifies every tool in the selected peer set; a named tool runs whatever its tier.' \
         '--peers prime|extended|all   peer tiers from tools/peers.tsv (default prime)' \
         '--levels lanes|all           fast/balanced/dense lanes or every level (default lanes)' \
-        '--category sequencing|ms|generalized, --class sanity|small|medium|large|all' \
+        '--category sequencing|ms|generalized, --class CLASS[,CLASS...] or all (sanity small medium large)' \
         '--full                       every class (default classes are sanity and small)' \
         '--list                       print the planned matrix and corpus size; run nothing' \
         '' \
         'Stdin, concatenation, truncation, and corruption checks run on sanity files only.' \
+        'Compressors of every format must write output the reference decodes to the input.' \
         'Blocking failures fail the tool. KEEP_TOOL_WORK=1 keeps the /tmp work directory.'
 }
 
@@ -104,37 +105,58 @@ expect_trailer() {
 }
 
 qualify_empty() {
-    local empty="$WORK/empty" gz="$WORK/empty.gz" out="$WORK/empty.out" level
-    CAT=- CLS=- FILE=empty.gz
+    local empty="$WORK/empty" encoded="$WORK/empty.enc" out="$WORK/empty.out" level format="${P_FORMAT[$TOOL]}"
+    CAT=- CLS=- FILE="empty.$format"
     : >"$empty"
     if [[ -z "$LEVELS" ]]; then
-        if [[ "${P_FORMAT[$TOOL]}" == gzip ]]; then
-            gzip -n -6 -c -- "$empty" >"$gz"
-        else
-            printf '\x78\x9c\x03\x00\x00\x00\x00\x01' >"$gz"
-        fi
-        expect_decode decompress empty "$gz" "$empty"
+        case "$format" in
+            gzip) gzip -n -6 -c -- "$empty" >"$encoded" ;;
+            zlib) printf '\x78\x9c\x03\x00\x00\x00\x00\x01' >"$encoded" ;;
+            deflate) printf '\x03\x00' >"$encoded" ;;
+            bgzf) python3 -c 'import sys; sys.stdout.buffer.write(bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000"))' >"$encoded" ;;
+        esac
+        expect_decode decompress empty "$encoded" "$empty"
         return
     fi
     for level in $LEVELS; do
-        attempt tool_run "$TOOL" compress "$level" "$empty" "$gz"
+        attempt tool_run "$TOOL" compress "$level" "$empty" "$encoded"
         if [[ "$ST" != 0 ]]; then
             rec compress "empty_$level" blocking fail "$ERR"
             continue
         fi
-        attempt gzip -t -- "$gz"
+        attempt reference_matches "$format" "$encoded" "$empty"
         if [[ "$ST" != 0 ]]; then
             rec compress "empty_$level" blocking fail "reference decode status $ST $ERR"
             continue
         fi
-        attempt dec "$gz" "$out"
+        attempt dec "$encoded" "$out"
         if [[ "$ST" != 0 ]]; then
             rec decompress "empty_$level" blocking fail "$ERR"
         elif ! cmp -s "$empty" "$out"; then
             rec compress "empty_$level" blocking fail 'round trip bytes differ'
         else
-            rec compress "empty_$level" blocking pass "$(stat -c '%s' "$gz") bytes"
+            rec compress "empty_$level" blocking pass "$(stat -c '%s' "$encoded") bytes"
         fi
+    done
+}
+
+# Compressor checks for zlib, deflate, and bgzf: the output passes the reference and round-trips.
+qualify_compressor() {
+    local format="$1" plain="$2" new="$WORK/tool.enc" level
+    for level in $LEVELS; do
+        attempt tool_run "$TOOL" compress "$level" "$plain" "$new"
+        if [[ "$ST" != 0 ]]; then
+            rec compress "write_$level" blocking fail "status $ST $ERR"
+            continue
+        fi
+        rec compress "write_$level" blocking pass "$(stat -c '%s' "$new") bytes"
+        attempt reference_matches "$format" "$new" "$plain"
+        if [[ "$ST" != 0 ]]; then
+            rec compress "peer_decode_$level" blocking fail "reference decode of $TOOL output differs or fails: $ERR"
+            continue
+        fi
+        rec compress "peer_decode_$level" blocking pass ''
+        expect_decode compress "roundtrip_$level" "$new" "$plain"
     done
 }
 
@@ -149,6 +171,7 @@ qualify_zlib_file() {
     bytes="$(stat -c '%s' "$plain")"
     # The corpus zlib file is Python zlib level 6 of the plaintext, the reference every peer decodes.
     expect_decode decompress plaintext "$input" "$plain" "$bytes"
+    qualify_compressor zlib "$plain"
     [[ "$CLS" == sanity ]] || return 0
     expect_decode decompress stdin - "$plain" "$bytes" <"$input"
     head -c "$(($(stat -c '%s' "$input") - 1))" -- "$input" >"$bad"
@@ -162,6 +185,76 @@ qualify_zlib_file() {
     printf '\x78\x20\x00\x00\x00\x01' >"$bad"
     expect_reject dictionary "$bad"
     rec decompress bounds skip skip 'adapter CLI has no output cap flag'
+}
+
+qualify_deflate_file() {
+    local input="$1" plain="$WORK/plain" bad="$WORK/bad.deflate" out="$WORK/out" bytes
+    attempt deflate_decode "$input" "$plain"
+    if [[ "$ST" != 0 ]]; then
+        rec decompress corpus_test blocking fail "status $ST $ERR"
+        return
+    fi
+    rec decompress corpus_test blocking pass ''
+    bytes="$(stat -c '%s' "$plain")"
+    # The corpus file is Python zlib level 6 raw DEFLATE of the plaintext.
+    expect_decode decompress plaintext "$input" "$plain" "$bytes"
+    if [[ "$CLS" == sanity ]]; then
+        expect_decode decompress stdin - "$plain" "$bytes" <"$input"
+        head -c "$(($(stat -c '%s' "$input") - 1))" -- "$input" >"$bad"
+        expect_reject truncated "$bad"
+        { cat -- "$input" && printf 'tail'; } >"$bad"
+        expect_reject trailing "$bad"
+        # Raw DEFLATE has no check value, so a flipped body byte is recorded, not required.
+        flip_byte "$input" 2 "$bad"
+        attempt dec "$bad" "$out"
+        if [[ "$ST" != 0 ]]; then
+            rec decompress corrupt_body observed pass "status $ST $ERR"
+        else
+            rec decompress corrupt_body observed gap 'exit 0; raw DEFLATE has no check value'
+        fi
+        rec decompress bounds skip skip 'adapter CLI has no output cap flag'
+    fi
+    qualify_compressor deflate "$plain"
+}
+
+qualify_bgzf_file() {
+    local input="$1" plain="$WORK/plain" bad="$WORK/bad.bgzf" out="$WORK/out" size
+    attempt verify_bgzf_file "$input" ""
+    if [[ "$ST" != 0 ]]; then
+        rec decompress corpus_test blocking fail "status $ST $ERR"
+        return
+    fi
+    rec decompress corpus_test blocking pass ''
+    gzip -dc -- "$input" >"$plain"
+    expect_decode decompress plaintext "$input" "$plain"
+    if [[ "$CLS" == sanity ]]; then
+        size="$(stat -c '%s' "$input")"
+        expect_decode decompress stdin - "$plain" <"$input"
+        # Two BGZF files joined are one valid BGZF stream (an EOF block in the middle is empty).
+        cat -- "$input" "$input" >"$bad"
+        cat -- "$plain" "$plain" >"$WORK/plain2"
+        expect_decode decompress concat "$bad" "$WORK/plain2"
+        # Cut inside the last data block: every decoder must fail.
+        head -c "$((size - 28 - 4))" -- "$input" >"$bad"
+        expect_reject truncated "$bad"
+        # Only the EOF marker missing: htslib warns and succeeds; recorded, not required.
+        head -c "$((size - 28))" -- "$input" >"$bad"
+        attempt dec "$bad" "$out"
+        if [[ "$ST" == 0 ]] && cmp -s "$out" "$plain"; then
+            rec decompress no_eof_marker observed pass "exit 0, plaintext complete $ERR"
+        else
+            rec decompress no_eof_marker observed gap "status $ST $ERR"
+        fi
+        flip_byte "$input" $((-28 - 8)) "$bad"
+        attempt dec "$bad" "$out"
+        if [[ "$ST" != 0 ]]; then
+            rec decompress corrupt_crc observed pass "status $ST $ERR"
+        else
+            rec decompress corrupt_crc observed gap 'exit 0 with a flipped block CRC'
+        fi
+        rec decompress bounds skip skip 'adapter CLI has no output cap flag'
+    fi
+    qualify_compressor bgzf "$plain"
 }
 
 qualify_gzip_file() {
@@ -255,12 +348,8 @@ qualify_tool() {
     for row in "${rows[@]}"; do
         IFS=$'\t' read -r category class filename <<<"$row"
         CAT="$category" CLS="$class" FILE="$filename"
-        if [[ "${P_FORMAT[$TOOL]}" == gzip ]]; then
-            qualify_gzip_file "$(data_path "$category" gzip "$class" "$filename")"
-        else
-            qualify_zlib_file "$(data_path "$category" zlib "$class" "$filename")"
-        fi
-        rm -f -- "$WORK"/plain* "$WORK"/bad.* "$WORK"/out "$WORK"/tool.gz
+        "qualify_${P_FORMAT[$TOOL]}_file" "$(data_path "$category" "${P_FORMAT[$TOOL]}" "$class" "$filename")"
+        rm -f -- "$WORK"/plain* "$WORK"/bad.* "$WORK"/out "$WORK"/tool.gz "$WORK"/tool.enc "$WORK"/ref
     done
 
     {
@@ -269,11 +358,11 @@ qualify_tool() {
             "$TOOL" "$(tool_version_text "$TOOL")" "${P_FORMAT[$TOOL]}" "${P_DECODE[$TOOL]}"
         printf 'levels\t%s\nclasses\t%s\ncategory\t%s\n' "${LEVELS:--}" "$CLASSES" "$CATEGORY"
         printf 'binary\t%s\n' "$(tool_identity "$TOOL")"
-        if [[ "${P_FORMAT[$TOOL]}" == gzip ]]; then
-            printf 'oracle\t%s\n' "$(gzip --version | head -1)"
-        else
-            printf 'oracle\tpython-zlib %s\n' "$(python3 -c 'import zlib; print(zlib.ZLIB_RUNTIME_VERSION)')"
-        fi
+        case "${P_FORMAT[$TOOL]}" in
+            gzip) printf 'oracle\t%s\n' "$(gzip --version | head -1)" ;;
+            bgzf) printf 'oracle\t%s; common.sh BGZF walker\n' "$(gzip --version | head -1)" ;;
+            *) printf 'oracle\tpython-zlib %s\n' "$(python3 -c 'import zlib; print(zlib.ZLIB_RUNTIME_VERSION)')" ;;
+        esac
         host_state
         git_state
         printf 'blocking_fails\t%s\n' "$BLOCKING_FAILS"

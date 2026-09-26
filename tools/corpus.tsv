@@ -2,6 +2,7 @@
 # data/{category}/{format}/{class}/. source is a pinned URL or derive:RECIPE. A derived row
 # is made from the plaintext of the gzip row with the same category and class:
 #   derive:zlib-6   Python zlib level 6
+#   derive:deflate-6  Python zlib level 6, raw DEFLATE (wbits -15); sanity, small, and medium only
 #   derive:bgzip-6  pinned tools/bin/bgzip -l 6 -@ 1 (tools/install.sh bgzip)
 # Derived rows use - for bytes and sha256; tools/corpus.sh records a sidecar per file.
 category	class	format	filename	bytes	sha256	source
@@ -41,3 +42,12 @@ generalized	sanity	bgzf	hello-1.3.tar.gz	-	-	derive:bgzip-6
 generalized	small	bgzf	cantrbry.tar.gz	-	-	derive:bgzip-6
 generalized	medium	bgzf	silesia.tar.gz	-	-	derive:bgzip-6
 generalized	large	bgzf	linux-6.6.51.tar.gz	-	-	derive:bgzip-6
+sequencing	sanity	deflate	test_1.fastq.deflate	-	-	derive:deflate-6
+sequencing	small	deflate	SRR389222_sub1.fastq.deflate	-	-	derive:deflate-6
+sequencing	medium	deflate	DRR003897.fastq.deflate	-	-	derive:deflate-6
+ms	sanity	deflate	55merge_omssa.mzid.deflate	-	-	derive:deflate-6
+ms	small	deflate	55merge_tandem.mzid.deflate	-	-	derive:deflate-6
+ms	medium	deflate	PRIDE_Exp_Complete_Ac_22134.xml.deflate	-	-	derive:deflate-6
+generalized	sanity	deflate	hello-1.3.tar.deflate	-	-	derive:deflate-6
+generalized	small	deflate	cantrbry.tar.deflate	-	-	derive:deflate-6
+generalized	medium	deflate	silesia.tar.deflate	-	-	derive:deflate-6

@@ -20,10 +20,12 @@ pub fn build(b: *std.Build) void {
         installZig(b, target, optimize, strip, "std-zlib", b.path("zig/std_zlib.zig"), &.{
             .{ .name = "adapter", .module = adapterModule(b, target, optimize) },
         }, null);
-    } else if (std.mem.eql(u8, adapter, "zipir-gzip") or
-        std.mem.eql(u8, adapter, "zipir-zlib"))
-    {
-        const format = if (std.mem.eql(u8, adapter, "zipir-gzip")) "gzip" else "zlib";
+    } else if (std.mem.startsWith(u8, adapter, "zipir-")) {
+        const format = adapter["zipir-".len..];
+        const known = [_][]const u8{ "gzip", "zlib", "deflate", "bgzf" };
+        for (known) |name| {
+            if (std.mem.eql(u8, format, name)) break;
+        } else std.debug.panic("unknown adapter: {s}", .{adapter});
         const zipir = b.dependency("zipir", .{ .target = target, .optimize = optimize }).module("zipir");
         const options = b.addOptions();
         options.addOption([]const u8, "format", format);

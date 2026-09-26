@@ -8,6 +8,21 @@
 
 #include <libdeflate.h>
 
+/* zlib container by default; -DZIPIR_RAW selects raw DEFLATE. */
+#if defined(ZIPIR_RAW)
+#define NAME "libdeflate-deflate"
+#define FORMAT_NAME "deflate"
+#define DECOMPRESS_EX libdeflate_deflate_decompress_ex
+#define COMPRESS libdeflate_deflate_compress
+#define COMPRESS_BOUND libdeflate_deflate_compress_bound
+#else
+#define NAME "libdeflate-zlib"
+#define FORMAT_NAME "zlib"
+#define DECOMPRESS_EX libdeflate_zlib_decompress_ex
+#define COMPRESS libdeflate_zlib_compress
+#define COMPRESS_BOUND libdeflate_zlib_compress_bound
+#endif
+
 /*
  * This is deliberately a full-buffer peer. libdeflate's public zlib API is
  * one-shot: it accepts the complete compressed input and writes to one
@@ -31,7 +46,7 @@ static int open_input(const char *path, FILE **file) {
     }
     *file = fopen(path, "rb");
     if (*file == NULL) {
-        fprintf(stderr, "libdeflate-zlib: cannot open input %s: %s\n", path, strerror(errno));
+        fprintf(stderr, NAME ": cannot open input %s: %s\n", path, strerror(errno));
         return 1;
     }
     return 0;
@@ -44,7 +59,7 @@ static int open_output(const char *path, FILE **file) {
     }
     *file = fopen(path, "wb");
     if (*file == NULL) {
-        fprintf(stderr, "libdeflate-zlib: cannot open output %s: %s\n", path, strerror(errno));
+        fprintf(stderr, NAME ": cannot open output %s: %s\n", path, strerror(errno));
         return 1;
     }
     return 0;
@@ -80,22 +95,22 @@ static int read_regular_file(FILE *input, unsigned char **data, size_t *length) 
         return 1;
     }
     if ((unsigned long)end > SIZE_MAX) {
-        fprintf(stderr, "libdeflate-zlib: input is too large\n");
+        fprintf(stderr, NAME ": input is too large\n");
         return -1;
     }
     size = (size_t)end;
     buffer = malloc(size == 0 ? 1 : size);
     if (buffer == NULL) {
-        fprintf(stderr, "libdeflate-zlib: input allocation failed\n");
+        fprintf(stderr, NAME ": input allocation failed\n");
         return -1;
     }
     if (size != 0 && fread(buffer, 1, size, input) != size) {
-        fprintf(stderr, "libdeflate-zlib: input read failed\n");
+        fprintf(stderr, NAME ": input read failed\n");
         free(buffer);
         return -1;
     }
     if (ferror(input)) {
-        fprintf(stderr, "libdeflate-zlib: input read failed\n");
+        fprintf(stderr, NAME ": input read failed\n");
         free(buffer);
         return -1;
     }
@@ -114,14 +129,14 @@ static int read_growing(FILE *input, unsigned char **data, size_t *length) {
         if (used == capacity) {
             size_t next_capacity = capacity == 0 ? INPUT_GROWTH : capacity;
             if (next_capacity > SIZE_MAX / 2) {
-                fprintf(stderr, "libdeflate-zlib: input is too large\n");
+                fprintf(stderr, NAME ": input is too large\n");
                 free(buffer);
                 return 1;
             }
             if (capacity != 0) next_capacity *= 2;
             unsigned char *next = realloc(buffer, next_capacity);
             if (next == NULL) {
-                fprintf(stderr, "libdeflate-zlib: input allocation failed\n");
+                fprintf(stderr, NAME ": input allocation failed\n");
                 free(buffer);
                 return 1;
             }
@@ -131,7 +146,7 @@ static int read_growing(FILE *input, unsigned char **data, size_t *length) {
         read_count = fread(buffer + used, 1, capacity - used, input);
         used += read_count;
         if (ferror(input)) {
-            fprintf(stderr, "libdeflate-zlib: input read failed\n");
+            fprintf(stderr, NAME ": input read failed\n");
             free(buffer);
             return 1;
         }
@@ -171,25 +186,25 @@ static int decompress_buffer(
     if (expected_output) {
         output_capacity = expected_output_length;
     } else if (initial_output_capacity(input_length, &output_capacity) != 0) {
-        fprintf(stderr, "libdeflate-zlib: output is too large\n");
+        fprintf(stderr, NAME ": output is too large\n");
         return 1;
     }
 
     decoded = malloc(output_capacity == 0 ? 1 : output_capacity);
     if (decoded == NULL) {
-        fprintf(stderr, "libdeflate-zlib: output allocation failed\n");
+        fprintf(stderr, NAME ": output allocation failed\n");
         return 1;
     }
     decompressor = libdeflate_alloc_decompressor();
     if (decompressor == NULL) {
-        fprintf(stderr, "libdeflate-zlib: decompressor allocation failed\n");
+        fprintf(stderr, NAME ": decompressor allocation failed\n");
         goto done;
     }
 
     for (;;) {
         size_t actual_input = 0;
         size_t actual_output = 0;
-        enum libdeflate_result result = libdeflate_zlib_decompress_ex(
+        enum libdeflate_result result = DECOMPRESS_EX(
             decompressor,
             input,
             input_length,
@@ -201,32 +216,32 @@ static int decompress_buffer(
 
         if (result == LIBDEFLATE_SUCCESS) {
             if (actual_input != input_length) {
-                fprintf(stderr, "libdeflate-zlib: trailing zlib data\n");
+                fprintf(stderr, NAME ": trailing " FORMAT_NAME " data\n");
                 goto done;
             }
             if (expected_output && actual_output != expected_output_length) {
-                fprintf(stderr, "libdeflate-zlib: output size mismatch\n");
+                fprintf(stderr, NAME ": output size mismatch\n");
                 goto done;
             }
             if (actual_output != 0 && fwrite(decoded, 1, actual_output, output) != actual_output) {
-                fprintf(stderr, "libdeflate-zlib: output write failed\n");
+                fprintf(stderr, NAME ": output write failed\n");
                 goto done;
             }
             status = 0;
             goto done;
         }
         if (result != LIBDEFLATE_INSUFFICIENT_SPACE || expected_output) {
-            fprintf(stderr, "libdeflate-zlib: decompression failed: %d\n", result);
+            fprintf(stderr, NAME ": decompression failed: %d\n", result);
             goto done;
         }
         if (output_capacity > SIZE_MAX / 2) {
-            fprintf(stderr, "libdeflate-zlib: output is too large\n");
+            fprintf(stderr, NAME ": output is too large\n");
             goto done;
         }
         output_capacity *= 2;
         unsigned char *next = realloc(decoded, output_capacity == 0 ? 1 : output_capacity);
         if (next == NULL) {
-            fprintf(stderr, "libdeflate-zlib: output allocation failed\n");
+            fprintf(stderr, NAME ": output allocation failed\n");
             goto done;
         }
         decoded = next;
@@ -238,8 +253,43 @@ done:
     return status;
 }
 
+/* Full-buffer compression: the whole input in, one call, the whole output out. */
+static int compress_buffer(FILE *output, const unsigned char *input, size_t input_length, int level) {
+    struct libdeflate_compressor *compressor = libdeflate_alloc_compressor(level);
+    unsigned char *encoded = NULL;
+    size_t bound;
+    size_t written;
+    int status = 1;
+
+    if (compressor == NULL) {
+        fprintf(stderr, NAME ": compressor allocation failed for level %d\n", level);
+        return 1;
+    }
+    bound = COMPRESS_BOUND(compressor, input_length);
+    encoded = malloc(bound == 0 ? 1 : bound);
+    if (encoded == NULL) {
+        fprintf(stderr, NAME ": output allocation failed\n");
+        goto done;
+    }
+    written = COMPRESS(compressor, input, input_length, encoded, bound);
+    if (written == 0) {
+        fprintf(stderr, NAME ": compression failed\n");
+        goto done;
+    }
+    if (fwrite(encoded, 1, written, output) != written) {
+        fprintf(stderr, NAME ": output write failed\n");
+        goto done;
+    }
+    status = 0;
+
+done:
+    libdeflate_free_compressor(compressor);
+    free(encoded);
+    return status;
+}
+
 static int print_version(void) {
-    printf("libdeflate-zlib %s\n", LIBDEFLATE_VERSION_STRING);
+    printf(NAME " %s\n", LIBDEFLATE_VERSION_STRING);
     return 0;
 }
 
@@ -253,20 +303,39 @@ int main(int argc, char **argv) {
     int status;
 
     if (argc == 2 && strcmp(argv[1], "--version") == 0) return print_version();
+    if (argc == 6 && strcmp(argv[1], "compress") == 0 && strcmp(argv[2], "--level") == 0) {
+        char *end = NULL;
+        long level = strtol(argv[3], &end, 10);
+        if (end == argv[3] || *end != '\0' || level < 0 || level > 12) {
+            fprintf(stderr, NAME ": invalid level: %s\n", argv[3]);
+            return 2;
+        }
+        if (open_input(argv[4], &input) != 0 || open_output(argv[5], &output) != 0) {
+            if (input != NULL && !is_dash(argv[4])) fclose(input);
+            return 2;
+        }
+        status = read_all(input, &input_data, &input_length);
+        if (status == 0) status = compress_buffer(output, input_data, input_length, (int)level);
+        free(input_data);
+        close_file(input, argv[4]);
+        close_file(output, argv[5]);
+        return status;
+    }
     if (argc == 4 && strcmp(argv[1], "decompress") == 0) {
         argv += 1;
     } else if (argc == 6 && strcmp(argv[1], "decompress") == 0 &&
                strcmp(argv[2], "--expected-output-bytes") == 0) {
         if (parse_size(argv[3], &expected_output_length) != 0) {
-            fprintf(stderr, "libdeflate-zlib: invalid expected output size: %s\n", argv[3]);
+            fprintf(stderr, NAME ": invalid expected output size: %s\n", argv[3]);
             return 2;
         }
         expected_output = true;
         argv += 3;
     } else {
         fprintf(stderr,
-            "usage: libdeflate-zlib --version\n"
-            "       libdeflate-zlib decompress [--expected-output-bytes N] IN OUT\n");
+            "usage: " NAME " --version\n"
+            "       " NAME " compress --level N IN OUT\n"
+            "       " NAME " decompress [--expected-output-bytes N] IN OUT\n");
         return 2;
     }
 

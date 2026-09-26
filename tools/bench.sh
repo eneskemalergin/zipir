@@ -9,17 +9,19 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 ALLOW_FORCE=1
 BENCH_CPU="${BENCH_CPU:-4}"
 RUN=""
+OPS="compress decompress"
 
 usage() {
     printf '%s\n' \
-        'usage: tools/bench.sh [--peers SET] [--levels SET] [--category C] [--class C | --full] [--force] [--list] [TOOL...]' \
+        'usage: tools/bench.sh [--peers SET] [--levels SET] [--category C] [--class C | --full] [--op OP] [--force] [--list] [TOOL...]' \
         '' \
         'Without TOOL, times the selected peer set; named tools run whatever their tier. The zipir' \
         'tool of each format is always in the batch: it is the anchor every row is compared with.' \
         '--peers prime|extended|all   peer tiers from tools/peers.tsv (default prime)' \
         '--levels lanes|all           fast/balanced/dense lanes or every level (default lanes)' \
-        '--category sequencing|ms|generalized, --class sanity|small|medium|large|all' \
+        '--category sequencing|ms|generalized, --class CLASS[,CLASS...] or all (sanity small medium large)' \
         '--full                       every class (default classes are sanity and small)' \
+        '--op compress|decompress     time only that operation (default both)' \
         '--force                      re-time batches that are already complete' \
         '--list                       print the planned matrix and corpus size; run nothing' \
         '' \
@@ -65,7 +67,7 @@ run_batch() {
         if [[ "$op" == compress ]]; then
             # Bytes come from the binary being timed, and must decode to the input.
             tool_run "$tool" compress "$level" "$plain" "$WORK/out"
-            gzip -dc -- "$WORK/out" | cmp -s - "$plain" || die "$tool -$level output does not decode to $input"
+            reference_matches "$format" "$WORK/out" "$plain" || die "$tool -$level output does not decode to $input"
             bytes="$(stat -c '%s' "$WORK/out")"
             cmds+=("$(zebrac_cmd "$tool" compress "$level" "$plain")")
         else
@@ -74,7 +76,7 @@ run_batch() {
         fi
         rows+=("$(printf '%s\t%s\t%s\t%s\t%s' "$tool" "$level" "$(lane_of "$tool" "$level")" "${P_DECODE[$tool]}" "$bytes")")
     done
-    rm -f -- "$WORK/out"
+    rm -f -- "$WORK/out" "$WORK/ref"
     mkdir -p "$(dirname "$base")"
     printf 'time: %s %s %s.%s, %s subjects\n' "$format" "$op" "$category" "$class" $#
     load_before="$(cut -d' ' -f1-3 /proc/loadavg)"
@@ -99,11 +101,22 @@ run_batch() {
 }
 
 main() {
-    local tools=() rows=() row tool format category class filename input level comp decomp
-    parse_run_args "$@"
+    local tools=() rows=() row tool format category class filename input level comp decomp args=()
+    # --op is bench-only; the shared parser sees the rest.
+    while [[ $# -gt 0 ]]; do
+        if [[ "$1" == --op ]]; then
+            [[ $# -ge 2 && "$2" =~ ^(compress|decompress)$ ]] || usage_error "--op must be compress or decompress"
+            OPS="$2"
+            shift 2
+        else
+            args+=("$1")
+            shift
+        fi
+    done
+    parse_run_args "${args[@]}"
     mapfile -t tools < <(run_tools)
     # Every format in the run gets its zipir tool as the anchor.
-    for format in gzip zlib; do
+    for format in "${FORMATS[@]}"; do
         for tool in "${tools[@]}"; do
             if [[ "${P_FORMAT[$tool]}" == "$format" && " ${tools[*]} " != *" zipir-$format "* ]]; then
                 tools=("zipir-$format" "${tools[@]}")
@@ -132,7 +145,7 @@ main() {
     done
     make_work bench
 
-    for format in gzip zlib; do
+    for format in "${FORMATS[@]}"; do
         comp=() decomp=()
         for tool in "${tools[@]}"; do
             [[ "${P_FORMAT[$tool]}" == "$format" ]] || continue
@@ -145,10 +158,12 @@ main() {
         for row in "${rows[@]}"; do
             IFS=$'\t' read -r category class filename <<<"$row"
             input="$(data_path "$category" "$format" "$class" "$filename")"
-            if [[ ${#comp[@]} -gt 0 ]]; then
+            if [[ ${#comp[@]} -gt 0 && " $OPS " == *" compress "* ]]; then
                 run_batch "$format" compress "$category" "$class" "$input" "${comp[@]}"
             fi
-            run_batch "$format" decompress "$category" "$class" "$input" "${decomp[@]}"
+            if [[ " $OPS " == *" decompress "* ]]; then
+                run_batch "$format" decompress "$category" "$class" "$input" "${decomp[@]}"
+            fi
             rm -f -- "$WORK/plain"
         done
     done

@@ -63,8 +63,10 @@ require_linux_x64() {
     [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "${0##*/} supports Linux x86_64 only"
 }
 
-# Scratch space under /tmp, removed on exit unless KEEP_TOOL_WORK=1. A script may define
-# cleanup_extra for its own state.
+# Scratch space under /tmp. On exit its top-level files are removed one by one and the directory
+# is removed only if that leaves it empty; nothing is deleted recursively, so build trees stay in
+# /tmp (cleared at restart) and their path is printed. KEEP_TOOL_WORK=1 keeps everything. A script
+# may define cleanup_extra for its own state.
 make_work() {
     [[ -n "$WORK" ]] || WORK="$(mktemp -d "/tmp/zipir-$1.XXXXXX")"
 }
@@ -72,7 +74,15 @@ make_work() {
 on_exit() {
     if declare -F cleanup_extra >/dev/null; then cleanup_extra; fi
     if [[ -n "$WORK" && -d "$WORK" && "$WORK" == /tmp/zipir-* ]]; then
-        if [[ "$KEEP_TOOL_WORK" == 1 ]]; then printf 'keep: %s\n' "$WORK"; else rm -rf -- "$WORK"; fi
+        if [[ "$KEEP_TOOL_WORK" == 1 ]]; then
+            printf 'keep: %s\n' "$WORK"
+        else
+            local file
+            for file in "$WORK"/* "$WORK"/.[!.]*; do
+                if [[ -f "$file" && ! -L "$file" ]]; then rm -f -- "$file"; fi
+            done
+            rmdir -- "$WORK" 2>/dev/null || printf 'left: %s\n' "$WORK" >&2
+        fi
     fi
 }
 trap on_exit EXIT
@@ -84,16 +94,16 @@ version_for() {
     case "$1" in
         std-gzip) printf '%s\n' "$STD_GZIP_VERSION" ;;
         std-zlib) printf '%s\n' "$STD_ZLIB_VERSION" ;;
-        zipir-gzip | zipir-zlib) printf '%s\n' "$ZIPIR_VERSION" ;;
-        system-zlib) printf '%s\n' "$SYSTEM_ZLIB_VERSION" ;;
-        libdeflate-gzip | libdeflate-zlib) printf '%s\n' "$LIBDEFLATE_VERSION" ;;
+        zipir-*) printf '%s\n' "$ZIPIR_VERSION" ;;
+        system-zlib | system-deflate) printf '%s\n' "$SYSTEM_ZLIB_VERSION" ;;
+        libdeflate-gzip | libdeflate-zlib | libdeflate-deflate) printf '%s\n' "$LIBDEFLATE_VERSION" ;;
         gnu-gzip) printf '%s\n' "$GNU_GZIP_VERSION" ;;
         pigz) printf '%s\n' "$PIGZ_VERSION" ;;
         igzip) printf '%s\n' "$ISAL_VERSION" ;;
         flate2-miniz) printf '%s\n' "$FLATE2_MINIZ_VERSION" ;;
         flate2-zlib-rs) printf '%s\n' "$FLATE2_ZLIB_RS_VERSION" ;;
-        zlib-ng | zlib-ng-zlib) printf '%s\n' "$ZLIB_NG_VERSION" ;;
-        bgzip) printf '%s\n' "$HTSLIB_VERSION" ;;
+        zlib-ng | zlib-ng-zlib | zlib-ng-deflate) printf '%s\n' "$ZLIB_NG_VERSION" ;;
+        bgzip | bgzip-libdeflate | bgzip-zlib-ng) printf '%s\n' "$HTSLIB_VERSION" ;;
         *) usage_error "unknown tool: $1" ;;
     esac
 }
@@ -135,13 +145,12 @@ load_peers() {
         [[ -z "${tool:-}" || "$tool" == \#* || "$tool" == tool ]] && continue
         [[ -n "${concat:-}" && -z "${extra:-}" ]] || die "peers.tsv: $tool needs 11 columns"
         [[ -z "${P_FORMAT[$tool]:-}" ]] || die "peers.tsv: duplicate row for $tool"
-        [[ "$format" == gzip || "$format" == zlib ]] || die "peers.tsv: $tool format must be gzip or zlib"
+        [[ "$format" =~ ^(gzip|zlib|deflate|bgzf)$ ]] || die "peers.tsv: $tool format must be gzip, zlib, deflate, or bgzf"
         [[ "$tier" =~ ^(prime|extended|all)$ ]] || die "peers.tsv: $tool tier must be prime, extended, or all"
         [[ "$decode" =~ ^(streaming|full-buffer)$ ]] || die "peers.tsv: $tool decode must be streaming or full-buffer"
         if [[ "$levels" == - ]]; then
             [[ "$fast$balanced$dense" == --- ]] || die "peers.tsv: decode-only $tool needs - lanes"
         else
-            [[ "$format" == gzip ]] || die "peers.tsv: only gzip tools compress ($tool)"
             levels="$(expand_levels "$levels")" || die "peers.tsv: bad levels for $tool"
             for lane in "$fast" "$balanced" "$dense"; do
                 [[ " $levels " == *" $lane "* ]] || die "peers.tsv: $tool lane level $lane is not in its levels"
@@ -154,7 +163,7 @@ load_peers() {
             [[ "$crc $isize $concat" =~ ^(yes|no|hint)\ (yes|no|hint)\ (yes|no|hint)$ ]] ||
                 die "peers.tsv: $tool crc, isize, and concat must be yes, no, or hint"
         else
-            [[ "$crc$isize$concat" == --- ]] || die "peers.tsv: zlib tool $tool needs - for crc, isize, and concat"
+            [[ "$crc$isize$concat" == --- ]] || die "peers.tsv: $format tool $tool needs - for crc, isize, and concat"
         fi
         P_CRC[$tool]="$crc" P_ISIZE[$tool]="$isize" P_CONCAT[$tool]="$concat"
     done <"$PEERS_TSV"
@@ -219,12 +228,16 @@ expand_category() {
     printf '%s\n' "$1"
 }
 
+# One class, a comma list (sanity,small,medium), or all.
 expand_classes() {
-    case "$1" in
-        all) printf '%s\n' 'sanity small medium large' ;;
-        sanity | small | medium | large) printf '%s\n' "$1" ;;
-        *) usage_error "unknown class: $1" ;;
-    esac
+    local class list=()
+    [[ "$1" != all ]] || set -- sanity,small,medium,large
+    for class in ${1//,/ }; do
+        [[ "$class" =~ ^(sanity|small|medium|large)$ ]] || usage_error "unknown class: $class"
+        [[ " ${list[*]} " == *" $class "* ]] || list+=("$class")
+    done
+    [[ ${#list[@]} -gt 0 ]] || usage_error "--class needs a value"
+    printf '%s\n' "${list[*]}"
 }
 
 # Options shared by qualify.sh and bench.sh. Sets PEER_SET, LEVEL_SET, CATEGORY, CLASSES, LIST,
@@ -298,13 +311,106 @@ if not d.eof or d.unused_data:
 PY
 }
 
-# Reference plaintext of a corpus file.
+# Independent raw DEFLATE decoder (Python zlib, windowBits -15); rejects an unfinished final
+# block and trailing data.
+deflate_decode() {
+    python3 - "$1" "$2" <<'PY'
+import sys, zlib
+d = zlib.decompressobj(-15)
+with open(sys.argv[1], "rb") as src, open(sys.argv[2], "wb") as out:
+    while chunk := src.read(1 << 20):
+        out.write(d.decompress(chunk))
+    out.write(d.flush())
+if not d.eof or d.unused_data:
+    sys.exit(f"{sys.argv[1]}: incomplete raw DEFLATE stream or trailing data")
+PY
+}
+
+# Independent BGZF structure check (no zipir code). With a gzip source path, also
+# compares every decoded byte with that source's plaintext.
+verify_bgzf_file() {
+    python3 - "$1" "${2:-}" <<'PY'
+import gzip
+import struct
+import sys
+import zlib
+
+EOF_MARKER = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+
+
+def fail(message):
+    raise SystemExit(f"{sys.argv[1]}: {message}")
+
+
+path, source = sys.argv[1], sys.argv[2]
+expected = gzip.open(source, "rb") if source else None
+blocks = 0
+last = b""
+with open(path, "rb") as stream:
+    while True:
+        offset = stream.tell()
+        header = stream.read(12)
+        if not header:
+            break
+        if len(header) < 12 or header[:4] != b"\x1f\x8b\x08\x04":
+            fail(f"not a BGZF block at offset {offset}")
+        xlen = struct.unpack_from("<H", header, 10)[0]
+        extra = stream.read(xlen)
+        if len(extra) != xlen:
+            fail(f"truncated extra field at offset {offset}")
+        bsize = None
+        at = 0
+        while at + 4 <= xlen:
+            si, length = extra[at:at + 2], struct.unpack_from("<H", extra, at + 2)[0]
+            if at + 4 + length > xlen:
+                fail(f"subfield overruns XLEN at offset {offset}")
+            if si == b"BC" and length == 2:
+                bsize = struct.unpack_from("<H", extra, at + 4)[0]
+            at += 4 + length
+        if at != xlen:
+            fail(f"partial subfield in extra field at offset {offset}")
+        if bsize is None:
+            fail(f"no BC subfield at offset {offset}")
+        rest = stream.read(bsize + 1 - 12 - xlen)
+        if len(rest) != bsize + 1 - 12 - xlen or len(rest) < 8:
+            fail(f"truncated block at offset {offset}")
+        inflater = zlib.decompressobj(-15)
+        data = inflater.decompress(rest[:-8])
+        if not inflater.eof or inflater.unused_data:
+            fail(f"DEFLATE stream does not end at BSIZE at offset {offset}")
+        crc, isize = struct.unpack_from("<II", rest, len(rest) - 8)
+        if zlib.crc32(data) != crc or len(data) != isize or isize > 65536:
+            fail(f"CRC32 or ISIZE mismatch at offset {offset}")
+        if expected is not None and expected.read(len(data)) != data:
+            fail(f"decoded bytes differ from {source} in block at offset {offset}")
+        last = header + extra + rest
+        blocks += 1
+if blocks == 0 or last != EOF_MARKER:
+    fail("missing BGZF EOF marker")
+if expected is not None and expected.read(1):
+    fail(f"shorter than {source}")
+PY
+}
+
+# Formats timed and qualified, in report order.
+FORMATS=(gzip zlib deflate bgzf)
+
+# Reference plaintext of a file in FORMAT. BGZF is gzip members, so GNU gzip reads it.
 plain_of() {
     case "$1" in
         gzip | bgzf) gzip -dc -- "$2" >"$3" ;;
         zlib) zlib_decode "$2" "$3" ;;
+        deflate) deflate_decode "$2" "$3" ;;
         *) die "no reference decoder for $1" ;;
     esac
+}
+
+# Reference check of a compressor's output in FORMAT: BGZF structure first, then the reference
+# decoder, then a byte comparison with PLAIN. Uses $WORK/ref.
+reference_matches() {
+    local format="$1" encoded="$2" plain="$3"
+    if [[ "$format" == bgzf ]]; then verify_bgzf_file "$encoded" "" >&2 || return 1; fi
+    plain_of "$format" "$encoded" "$WORK/ref" && cmp -s "$WORK/ref" "$plain"
 }
 
 # Prints the planned matrix for the tools on stdin and its size.
@@ -319,7 +425,7 @@ list_selection() {
             rows=$((rows + 1))
         done
     done
-    files="$(for f in gzip zlib; do printf '%s %s files; ' "$f" "$(corpus_rows "$f" | wc -l)"; done)"
+    files="$(for f in "${FORMATS[@]}"; do printf '%s %s files; ' "$f" "$(corpus_rows "$f" | wc -l)"; done)"
     printf 'selection: --peers %s --levels %s, %s rows; classes: %s; category: %s; corpus: %s\n' \
         "$PEER_SET" "$LEVEL_SET" "$rows" "$CLASSES" "$CATEGORY" "$files"
 }
@@ -349,13 +455,14 @@ tool_version_text() {
         pigz) "$path" --version | awk '{print $2; exit}' ;;
         libdeflate-gzip) "$path" -V | awk 'NR==1{v=$NF; sub(/^v/, "", v); print v}' ;;
         igzip | zlib-ng) version_for "$1" ;;
+        bgzip-*) "$path" --version | awk 'NR==1{print $3}' ;;
         *) "$path" --version | awk '{print $2}' ;;
     esac
 }
 
 # Sets CMD to the argv of TOOL doing OP (compress or decompress) at LEVEL on IN (- is stdin).
 # CMD_STDOUT=1 when the tool writes to stdout; otherwise the output path follows CMD.
-# EXPECTED is the plaintext size, passed only to libdeflate-zlib (full-buffer decode).
+# EXPECTED is the plaintext size, passed only to the libdeflate adapters (full-buffer decode).
 tool_cmd() {
     local tool="$1" op="$2" level="$3" in="$4" expected="${5:-}" bin file=()
     bin="$(tool_path "$tool")"
@@ -372,7 +479,10 @@ tool_cmd() {
         igzip:compress) CMD=("$bin" -n "-$level" -c "${file[@]}") ;;
         zlib-ng:compress) CMD=("$bin" "-$level" -c "${file[@]}") ;;
         igzip:decompress | zlib-ng:decompress) CMD=("$bin" -d -c "${file[@]}") ;;
-        libdeflate-zlib:decompress)
+        # One thread; bgzip reads stdin when no file is named. Text is split at lines by default.
+        bgzip-*:compress) CMD=("$bin" -@1 -l "$level" -c "${file[@]}") ;;
+        bgzip-*:decompress) CMD=("$bin" -@1 -d -c "${file[@]}") ;;
+        libdeflate-zlib:decompress | libdeflate-deflate:decompress)
             CMD_STDOUT=0
             CMD=("$bin" decompress)
             [[ -z "$expected" ]] || CMD+=(--expected-output-bytes "$expected")

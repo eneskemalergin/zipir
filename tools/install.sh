@@ -27,7 +27,8 @@ usage() {
 }
 
 cleanup_extra() {
-    if [[ -n "$STAGE" && -d "$STAGE" && "$STAGE" == "$LOCAL_DIR"/stage/* ]]; then rm -rf -- "$STAGE"; fi
+    # Never deleted recursively: a failed install leaves its stage for the user to inspect.
+    if [[ -n "$STAGE" && -d "$STAGE" ]]; then printf 'left: %s\n' "$STAGE" >&2; fi
 }
 
 require_zig() {
@@ -124,7 +125,11 @@ publish() {
         if [[ "$name" =~ ^(std|zipir)- ]]; then printf 'source_mtime\t%s\n' "$(zig_source_mtime "$name")"; fi
     } >"$STAGE/receipt.tsv"
     [[ "$dest" == "$INSTALLS_DIR"/*/* ]] || die "invalid install path: $dest"
-    rm -rf -- "$dest"
+    # A reinstall renames the previous install aside instead of deleting it.
+    if [[ -e "$dest" ]]; then
+        mkdir -p "$INSTALLS_DIR/$name/replaced"
+        mv -- "$dest" "$INSTALLS_DIR/$name/replaced/$version.$(date +%Y%m%dT%H%M%S)"
+    fi
     mv "$STAGE" "$dest"
     STAGE=""
     link_bin "$name" "$(bin_target "$name")"
@@ -184,16 +189,18 @@ check_target() {
         libdeflate-gzip) "$path" -V | grep -Fq "$version" ;;
         igzip) "$path" --version | grep -Fq 'unknown version' ;;
         zlib-ng) "$path" --help | grep -Fq 'Usage: minigzip' ;;
-        bgzip) [[ "$("$path" --version | awk 'NR==1{print $3}')" == "$version" ]] ;;
+        bgzip | bgzip-*) [[ "$("$path" --version | awk 'NR==1{print $3}')" == "$version" ]] ;;
         *) "$path" --version | grep -Fq "$version" ;;
     esac || { printf 'error: %s does not report version %s\n' "$path" "$version" >&2 && return 1; }
     case "$name" in
         libdeflate-gzip | igzip) forbidden='libdeflate|libisal|libigzip' ;;
-        libdeflate-zlib) forbidden='libz\.so|libdeflate|libisal|libigzip' ;;
+        libdeflate-zlib | libdeflate-deflate) forbidden='libz\.so|libdeflate|libisal|libigzip' ;;
         flate2-miniz | flate2-zlib-rs) forbidden='libz\.so|libminiz|libdeflate' ;;
-        zlib-ng | zlib-ng-zlib) forbidden='libz\.so|libdeflate|libisal' ;;
+        zlib-ng | zlib-ng-zlib | zlib-ng-deflate) forbidden='libz\.so|libdeflate|libisal' ;;
         bgzip) forbidden='libdeflate|libisal|libhts\.so' ;;
-        system-zlib)
+        bgzip-libdeflate) forbidden='libdeflate\.so|libisal|libhts\.so' ;;
+        bgzip-zlib-ng) forbidden='libz\.so|libdeflate|libisal|libhts\.so' ;;
+        system-zlib | system-deflate)
             ldd "$path" 2>/dev/null | grep -Eq 'libz\.so' ||
                 { printf 'error: %s is not using the host libz\n' "$path" >&2 && return 1; }
             ;;
@@ -242,27 +249,35 @@ build_libdeflate() {
         -DLIBDEFLATE_BUILD_TESTS=OFF
 }
 
-# zlib-ng configured for its minigzip CLI (native) or its native zlib API (api).
+# zlib-ng configured for its minigzip CLI (cli), its native zlib API (api), or zlib compatibility (compat).
 build_zlib_ng_prefix() {
     local kind="$1" work="$WORK/zlib-ng"
     fetch_source "$ZLIB_NG_URL" "$work/source"
     printf 'build: zlib-ng %s (%s)\n' "$ZLIB_NG_VERSION" "$kind"
-    if [[ "$kind" == cli ]]; then
+    if [[ "$kind" == compat ]]; then
+        # zlib-compatible static libz.a for htslib, with the same native instructions as the other zlib-ng peers.
+        cmake_install "$work/source" "$work/build-compat" "$work/prefix-compat" -DBUILD_SHARED_LIBS=OFF \
+            -DZLIB_COMPAT=ON -DWITH_GTEST=OFF -DWITH_FUZZERS=OFF -DWITH_BENCHMARKS=OFF \
+            -DBUILD_TESTING=OFF -DINSTALL_UTILS=OFF -DWITH_NATIVE_INSTRUCTIONS=ON
+    elif [[ "$kind" == cli ]]; then
         cmake_install "$work/source" "$work/build-cli" "$work/prefix-cli" -DBUILD_SHARED_LIBS=OFF \
             -DZLIB_COMPAT=OFF -DWITH_GTEST=OFF -DWITH_FUZZERS=OFF -DWITH_BENCHMARKS=OFF \
             -DBUILD_TESTING=ON -DINSTALL_UTILS=ON -DWITH_NATIVE_INSTRUCTIONS=ON
     else
+        # Library defaults (new strategies, runtime CPU detection) as zlib-ng users get them, the same
+        # level behavior as the minigzip peer; native instructions like every other native peer.
         cmake_install "$work/source" "$work/build-api" "$work/prefix-api" -DBUILD_SHARED_LIBS=OFF \
             -DZLIB_COMPAT=OFF -DWITH_GTEST=OFF -DWITH_FUZZERS=OFF -DWITH_BENCHMARKS=OFF \
-            -DBUILD_TESTING=OFF -DINSTALL_UTILS=OFF -DWITH_NATIVE_INSTRUCTIONS=ON \
-            -DWITH_RUNTIME_CPU_DETECTION=OFF -DWITH_NEW_STRATEGIES=OFF
+            -DBUILD_TESTING=OFF -DINSTALL_UTILS=OFF -DWITH_NATIVE_INSTRUCTIONS=ON
     fi
 }
 
 build_target() {
-    local name="$1" lib work
+    local name="$1" lib work raw=()
+    # One C adapter source per API serves both formats; -DZIPIR_RAW selects raw DEFLATE.
+    [[ "$name" != *-deflate ]] || raw=(-DZIPIR_RAW)
     case "$name" in
-        std-gzip | std-zlib | zipir-gzip | zipir-zlib) build_zig_adapter "$name" ;;
+        std-gzip | std-zlib | zipir-*) build_zig_adapter "$name" ;;
         flate2-miniz | flate2-zlib-rs) build_flate2 "$name" ;;
         gnu-gzip | pigz)
             [[ "$(tool_version_text "$name")" == "$(version_for "$name")" ]] ||
@@ -270,27 +285,29 @@ build_target() {
             publish "$name" "" "host $(tool_path "$name")" "host $name $(tool_version_text "$name")" \
                 "host-native;ST;$([[ "$name" == pigz ]] && printf -- '-p1;')-n"
             ;;
-        system-zlib)
+        system-zlib | system-deflate)
             require_command cc
-            mkdir -p "$WORK/system-zlib"
-            cc -O3 -DNDEBUG -march=native -std=c11 "$TOOLS_DIR/c/zlib_adapter.c" -lz -o "$WORK/system-zlib/$name"
-            publish "$name" "$WORK/system-zlib/$name" 'host system libz' "$(cc_version)" 'Release;dynamic;zlib-api;ST;march=native'
+            mkdir -p "$WORK/$name"
+            cc -O3 -DNDEBUG -march=native -std=c11 "${raw[@]}" \
+                "$TOOLS_DIR/c/zlib_adapter.c" -lz -o "$WORK/$name/$name"
+            publish "$name" "$WORK/$name/$name" 'host system libz' "$(cc_version)" \
+                "Release;dynamic;zlib-api;${name#system-};ST;march=native"
             ;;
         libdeflate-gzip)
             build_libdeflate
             publish "$name" "$WORK/libdeflate/prefix/bin/libdeflate-gzip" "$LIBDEFLATE_URL" \
                 "cmake $(cmake --version | awk 'NR==1{print $3}')" 'Release;static;gzip-cli;ST;march=native;native-cli'
             ;;
-        libdeflate-zlib)
+        libdeflate-zlib | libdeflate-deflate)
             require_command cc
             build_libdeflate
             work="$WORK/libdeflate"
             lib="$(find "$work/prefix" -type f -name 'libdeflate.a' -print -quit)"
             [[ -n "$lib" ]] || die "libdeflate static library missing after install"
-            cc -O3 -DNDEBUG -march=native -std=c11 -I"$work/prefix/include" \
+            cc -O3 -DNDEBUG -march=native -std=c11 -I"$work/prefix/include" "${raw[@]}" \
                 "$TOOLS_DIR/c/libdeflate_zlib_adapter.c" "$lib" -o "$work/$name"
             publish "$name" "$work/$name" "$LIBDEFLATE_URL" "cc $(cc_version)" \
-                'Release;static;libdeflate-zlib;full-buffer;known-output-size;ST;march=native'
+                "Release;static;$name;full-buffer;known-output-size;ST;march=native"
             ;;
         igzip)
             require_command nasm
@@ -310,16 +327,16 @@ build_target() {
             publish "$name" "$WORK/zlib-ng/prefix-cli/bin/minigzip" "$ZLIB_NG_URL" \
                 "cmake $(cmake --version | awk 'NR==1{print $3}')" 'Release;static;minigzip;ST;WITH_NATIVE_INSTRUCTIONS;native-cli'
             ;;
-        zlib-ng-zlib)
+        zlib-ng-zlib | zlib-ng-deflate)
             require_command cc
             build_zlib_ng_prefix api
             work="$WORK/zlib-ng"
             lib="$(find "$work/prefix-api" -type f \( -name 'libz-ng.a' -o -name 'libz.a' \) -print -quit)"
             [[ -n "$lib" ]] || die "zlib-ng native static library missing after install"
-            cc -O3 -DNDEBUG -march=native -std=c11 -DZIPIR_ZLIB_NG_NATIVE -I"$work/prefix-api/include" \
-                "$TOOLS_DIR/c/zlib_adapter.c" "$lib" -o "$work/$name"
+            cc -O3 -DNDEBUG -march=native -std=c11 -DZIPIR_ZLIB_NG_NATIVE "${raw[@]}" \
+                -I"$work/prefix-api/include" "$TOOLS_DIR/c/zlib_adapter.c" "$lib" -o "$work/$name"
             publish "$name" "$work/$name" "$ZLIB_NG_URL" "$(cc_version)" \
-                'Release;static;zlib-ng-native-api;WITH_NATIVE_INSTRUCTIONS;NO_NEW_STRATEGIES;ST;march=native'
+                'Release;static;zlib-ng-native-api;WITH_NATIVE_INSTRUCTIONS;default-strategies;ST;march=native'
             ;;
         bgzip)
             require_command make cc
@@ -335,6 +352,30 @@ build_target() {
             )
             publish "$name" "$work/source/bgzip" "$HTSLIB_URL" "$(cc_version)" \
                 'configure;static-libhts;host-libz;no-libdeflate;no-bz2;no-lzma;no-libcurl;ST'
+            ;;
+        bgzip-libdeflate | bgzip-zlib-ng)
+            require_command make cc
+            local backend cppflags ldflags configure_lib
+            if [[ "$name" == bgzip-libdeflate ]]; then
+                build_libdeflate
+                backend="$WORK/libdeflate/prefix" configure_lib=--with-libdeflate
+            else
+                build_zlib_ng_prefix compat
+                backend="$WORK/zlib-ng/prefix-compat" configure_lib=--without-libdeflate
+            fi
+            # Only static archives are installed in the backend prefix, so the linker takes them.
+            cppflags="-I$backend/include" ldflags="-L$backend/lib -L$backend/lib64"
+            work="$WORK/$name"
+            fetch_source "$HTSLIB_URL" "$work/source"
+            printf 'build: htslib %s bgzip timed peer (%s)\n' "$HTSLIB_VERSION" "${name#bgzip-}"
+            (
+                cd "$work/source"
+                ./configure --disable-bz2 --disable-lzma --disable-libcurl "$configure_lib" \
+                    CPPFLAGS="$cppflags" LDFLAGS="$ldflags" >/dev/null
+                make -j"$TOOL_JOBS" bgzip >/dev/null
+            )
+            publish "$name" "$work/source/bgzip" "$HTSLIB_URL" "$(cc_version)" \
+                "configure;static-libhts;static-${name#bgzip-};htslib-default-cflags;no-bz2;no-lzma;no-libcurl;ST;-@1"
             ;;
         *) usage_error "unknown target: $name" ;;
     esac

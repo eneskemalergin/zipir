@@ -1,27 +1,38 @@
 # zipir comparison peers: one row per tool. Read by tools/common.sh and tools/report.py.
-# format    corpus format the tool reads and writes (gzip or zlib).
+# format    corpus format the tool reads and writes (gzip, zlib, deflate, or bgzf).
 # tier      prime (daily work), extended (wider check), all (publication runs). Selections nest.
 # levels    compression levels on the tool's own scale: a range A-B or a space list; - is decode-only.
 # fast balanced dense
 #           the three lane levels (--levels lanes, the default); - for decode-only tools. zipir,
 #           zlib-ng, and the zlib-scale tools use 1/5/9. igzip 0/1/2 is its measured frontier
-#           (tmp/gzip/compress/PEER-MAPPING.md). libdeflate 1/6/12 is provisional.
+#           (tmp/gzip/compress/PEER-MAPPING.md). libdeflate 1/6/12 is provisional. The zlib,
+#           deflate, and bgzf compressor lanes (added 2026-09-26) are provisional too: zlib-scale
+#           1/5/9, libdeflate 1/6/12, and bgzip 1/5/9 on its own -l scale (with libdeflate, htslib
+#           maps -l 1/5/9 to libdeflate 1/6/12).
 # decode    streaming or full-buffer. Reports never rank the two modes together.
 # crc isize concat
 #           gzip checks qualify.sh blocks on (yes); any other value records the result only.
+#           - for the other formats.
 # Every row is single-threaded. Versions live in tools/versions.sh.
 tool	format	tier	levels	fast	balanced	dense	decode	crc	isize	concat
 zipir-gzip	gzip	prime	1 5 9	1	5	9	streaming	yes	yes	yes
-zipir-zlib	zlib	prime	-	-	-	-	streaming	-	-	-
+zipir-zlib	zlib	prime	1 5 9	1	5	9	streaming	-	-	-
 zlib-ng	gzip	prime	0-9	1	5	9	streaming	yes	yes	yes
-zlib-ng-zlib	zlib	prime	-	-	-	-	streaming	-	-	-
+zlib-ng-zlib	zlib	prime	0-9	1	5	9	streaming	-	-	-
 igzip	gzip	prime	0-3	0	1	2	streaming	yes	yes	yes
 std-gzip	gzip	prime	1-9	1	5	9	streaming	no	no	no
 std-zlib	zlib	prime	-	-	-	-	streaming	-	-	-
 libdeflate-gzip	gzip	extended	1-12	1	6	12	full-buffer	yes	hint	yes
-libdeflate-zlib	zlib	extended	-	-	-	-	full-buffer	-	-	-
+libdeflate-zlib	zlib	extended	1-12	1	6	12	full-buffer	-	-	-
 gnu-gzip	gzip	extended	1-9	1	5	9	streaming	yes	yes	yes
-system-zlib	zlib	extended	-	-	-	-	streaming	-	-	-
+system-zlib	zlib	extended	0-9	1	5	9	streaming	-	-	-
 pigz	gzip	all	0-9	1	5	9	streaming	yes	yes	yes
 flate2-miniz	gzip	all	0-9	1	5	9	streaming	yes	yes	yes
 flate2-zlib-rs	gzip	all	0-9	1	5	9	streaming	yes	yes	yes
+zipir-deflate	deflate	prime	1 5 9	1	5	9	streaming	-	-	-
+zlib-ng-deflate	deflate	prime	0-9	1	5	9	streaming	-	-	-
+libdeflate-deflate	deflate	extended	1-12	1	6	12	full-buffer	-	-	-
+system-deflate	deflate	extended	0-9	1	5	9	streaming	-	-	-
+zipir-bgzf	bgzf	prime	1 5 9	1	5	9	streaming	-	-	-
+bgzip-libdeflate	bgzf	prime	0-9	1	5	9	streaming	-	-	-
+bgzip-zlib-ng	bgzf	prime	0-9	1	5	9	streaming	-	-	-

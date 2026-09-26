@@ -1,4 +1,4 @@
-//! Streaming peer adapter for zipir's gzip and zlib codecs.
+//! Streaming peer adapter for zipir's gzip, zlib, raw DEFLATE, and BGZF codecs.
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -6,12 +6,15 @@ const Io = std.Io;
 const adapter = @import("adapter");
 const zipir = @import("zipir");
 
+// BGZF is not a zipir.Format: it has its own Writer and Reader.
+const BGZF = std.mem.eql(u8, build_options.format, "bgzf");
 const FORMAT: zipir.Format = blk: {
-    if (std.mem.eql(u8, build_options.format, "gzip")) break :blk .gzip;
+    if (std.mem.eql(u8, build_options.format, "gzip") or BGZF) break :blk .gzip;
     if (std.mem.eql(u8, build_options.format, "zlib")) break :blk .zlib;
+    if (std.mem.eql(u8, build_options.format, "deflate")) break :blk .deflate;
     @compileError("unsupported zipir adapter format");
 };
-const NAME = if (FORMAT == .gzip) "zipir-gzip" else "zipir-zlib";
+const NAME = "zipir-" ++ build_options.format;
 
 pub fn main(init: std.process.Init.Minimal) !void {
     var threaded: std.Io.Threaded = .init_single_threaded;
@@ -23,8 +26,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     switch (request) {
         .version => try printVersion(io),
-        .compress => |paths| try compressPath(FORMAT, io, paths),
-        .decompress => |paths| try decompressPath(FORMAT, io, paths),
+        .compress => |paths| if (BGZF) try compressBgzf(io, paths) else try compressPath(FORMAT, io, paths),
+        .decompress => |paths| if (BGZF) try decompressBgzf(io, paths) else try decompressPath(FORMAT, io, paths),
     }
 }
 
@@ -41,21 +44,12 @@ fn printVersion(io: Io) !void {
 }
 
 fn usage() error{InvalidArguments} {
-    if (FORMAT == .gzip) {
-        std.debug.print(
-            \\usage: zipir-gzip --version
-            \\       zipir-gzip compress --level N IN OUT
-            \\       zipir-gzip decompress IN OUT
-            \\
-        , .{});
-    } else {
-        std.debug.print(
-            \\usage: zipir-zlib --version
-            \\       zipir-zlib compress --level N IN OUT
-            \\       zipir-zlib decompress IN OUT
-            \\
-        , .{});
-    }
+    std.debug.print(
+        \\usage: {0s} --version
+        \\       {0s} compress --level N IN OUT
+        \\       {0s} decompress IN OUT
+        \\
+    , .{NAME});
     return error.InvalidArguments;
 }
 
@@ -95,5 +89,51 @@ fn decompressPath(comptime codec_format: zipir.Format, io: Io, paths: adapter.Pa
     var out_writer = out_file.writerStreaming(io, &out_buf);
 
     _ = try decoder.decompress(&in_reader.interface, &out_writer.interface, .{});
+    try out_writer.interface.flush();
+}
+
+// The CLI's split rule: whole blocks for binary input, blocks ending at line breaks for text (bgzip's default).
+fn compressBgzf(io: Io, paths: adapter.Paths) !void {
+    const level = std.enums.fromInt(@FieldType(zipir.bgzf.WriterOptions, "level"), paths.level) orelse
+        return error.InvalidArguments;
+    const writer = try std.heap.page_allocator.create(zipir.bgzf.Writer);
+    defer std.heap.page_allocator.destroy(writer);
+
+    const in_file = try adapter.openIn(io, paths.in_path);
+    defer adapter.closeIfOwned(io, in_file, paths.in_path);
+    var in_buf: [zipir.bgzf.MAX_BLOCK]u8 = undefined;
+    var in_reader = in_file.readerStreaming(io, &in_buf);
+    const head = in_reader.interface.peekGreedy(in_buf.len) catch |err| switch (err) {
+        error.EndOfStream => in_reader.interface.buffered(),
+        error.ReadFailed => return err,
+    };
+    const split: zipir.bgzf.Split = if (std.mem.indexOfScalar(u8, head, 0) != null) .fill else .lines;
+
+    const out_file = try adapter.openOut(io, paths.out_path);
+    defer adapter.closeIfOwned(io, out_file, paths.out_path);
+    var out_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
+    var out_writer = out_file.writerStreaming(io, &out_buf);
+
+    writer.start(&out_writer.interface, .{ .level = level, .split = split });
+    try writer.write(&in_reader.interface);
+    _ = try writer.finish();
+    try out_writer.interface.flush();
+}
+
+fn decompressBgzf(io: Io, paths: adapter.Paths) !void {
+    const reader = try std.heap.page_allocator.create(zipir.bgzf.Reader);
+    defer std.heap.page_allocator.destroy(reader);
+
+    const in_file = try adapter.openIn(io, paths.in_path);
+    defer adapter.closeIfOwned(io, in_file, paths.in_path);
+    var in_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
+    var in_reader = in_file.readerStreaming(io, &in_buf);
+
+    const out_file = try adapter.openOut(io, paths.out_path);
+    defer adapter.closeIfOwned(io, out_file, paths.out_path);
+    var out_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
+    var out_writer = out_file.writerStreaming(io, &out_buf);
+
+    _ = try reader.decompress(&in_reader.interface, &out_writer.interface, .{});
     try out_writer.interface.flush();
 }
