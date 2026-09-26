@@ -447,58 +447,112 @@ fn fillFirst(table: []Entry, width: u4, lens: []const u4, kind_of: *const fn (us
     }
 }
 
-fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []const u4, kind_of: *const fn (usize) Kind, payload_of: *const fn (usize) u16, comptime predecoded: bool) !void {
-    if (@inComptime()) {
-        @memset(table, .{ .nbits = 0, .kind = .invalid, .payload = 0 });
-    } else {
-        const bytes = std.mem.sliceAsBytes(table);
-        var offset: usize = 0;
-        while (bytes.len - offset >= 32) : (offset += 32) {
-            // Volatile keeps LLVM from restoring the byte-loop runtime memset.
-            const block: *align(1) volatile @Vector(32, u8) = @ptrCast(bytes[offset..][0..32].ptr);
-            block.* = @splat(0);
-        }
-        @memset(bytes[offset..], 0);
+/// Builds a root table of `1 << width` entries plus spill subtables for longer codes, in the order and with
+/// the method of libdeflate: symbols sorted by code length, each code written once at its bit-reversed
+/// position, and the root doubled by copying whenever the length grows. A complete code fills every entry,
+/// so nothing is cleared first. On error the root is all invalid.
+fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []const u4, comptime kind_of: fn (usize) Kind, comptime payload_of: fn (usize) u16, comptime predecoded: bool) !void {
+    const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
+    std.debug.assert(table.len == @as(usize, 1) << width);
+    errdefer @memset(table, invalid);
+    // Index 16 stays 0 so the length scans below can read one past 15.
+    var count: [17]u16 = @splat(0);
+    for (lens) |len| count[len] += 1;
+    var left: i32 = 1;
+    for (1..16) |len| {
+        left = left * 2 - count[len];
+        if (left < 0) return error.BadHuffman;
     }
-    var codes: [288]u16 = undefined;
-    try buildCodes(lens, codes[0..lens.len], .symbols);
-    const mask: u16 = @intCast(table.len - 1);
-    var has_long = false;
+    const symbols = lens.len - count[0];
+    if (left != 0) {
+        // Incomplete: only no codes or one 1-bit code, which decodes on even prefixes.
+        if (symbols != 0 and !(symbols == 1 and count[1] == 1)) return error.BadHuffman;
+        @memset(table, invalid);
+        if (symbols == 1) {
+            const symbol = std.mem.indexOfScalar(u4, lens, 1).?;
+            const entry = makeEntry(symbol, 1, kind_of, payload_of, predecoded);
+            var i: usize = 0;
+            while (i < table.len) : (i += 2) table[i] = entry;
+        }
+        return;
+    }
+    var offsets: [16]u16 = undefined;
+    offsets[0] = 0;
+    for (1..16) |len| offsets[len] = offsets[len - 1] + count[len - 1];
+    var sorted: [288]u16 = undefined;
     for (lens, 0..) |len, symbol| {
-        if (len == 0) continue;
-        const rev = bitReverse(codes[symbol], len);
-        if (len <= width) {
-            var entry = Entry{ .nbits = len, .kind = kind_of(symbol), .payload = payload_of(symbol) };
-            if (predecoded) entry = predecode(entry);
-            var i: usize = rev;
-            while (i < table.len) : (i += @as(usize, 1) << len) table[i] = entry;
-        } else {
-            has_long = true;
-            const entry = &table[rev & mask];
-            if (entry.kind != .invalid and entry.kind != .long) return error.BadHuffman;
-            entry.* = .{ .nbits = width, .kind = .long, .extra = @max(entry.extra, len - width), .payload = 0 };
+        sorted[offsets[len]] = @intCast(symbol);
+        offsets[len] += 1;
+    }
+    var next: usize = count[0];
+    var len: usize = 1;
+    while (count[len] == 0) len += 1;
+    var remaining: usize = count[len];
+    var codeword: usize = 0;
+    var end: usize = @as(usize, 1) << @intCast(@min(len, width));
+    // Root: codes of at most `width` bits.
+    while (len <= width) {
+        while (true) {
+            table[codeword] = makeEntry(sorted[next], @intCast(len), kind_of, payload_of, predecoded);
+            next += 1;
+            if (codeword == end - 1) {
+                // The all-ones codeword is the last code: double the root up to its full width.
+                while (end < table.len) : (end <<= 1) @memcpy(table[end..][0..end], table[0..end]);
+                return;
+            }
+            const bit = @as(usize, 1) << @intCast(std.math.log2_int(usize, codeword ^ (end - 1)));
+            codeword = (codeword & (bit - 1)) | bit;
+            remaining -= 1;
+            if (remaining == 0) break;
+        }
+        while (true) {
+            len += 1;
+            if (len <= width) {
+                @memcpy(table[end..][0..end], table[0..end]);
+                end <<= 1;
+            }
+            remaining = count[len];
+            if (remaining != 0) break;
         }
     }
-    if (!has_long) return;
+    // Spill: one subtable per root prefix of the longer codes, in code order, sized by the codes under it.
+    const root_mask = table.len - 1;
+    var prefix: usize = std.math.maxInt(usize);
+    var start: usize = 0;
     var used: usize = 0;
-    for (table) |*entry| {
-        if (entry.kind != .long) continue;
-        const size = @as(usize, 1) << @intCast(entry.extra);
-        if (size > spill.len - used) return error.BadHuffman;
-        entry.payload = @intCast(used);
-        @memset(spill[used..][0..size], .{ .nbits = 0, .kind = .invalid, .payload = 0 });
-        used += size;
+    while (true) {
+        if (codeword & root_mask != prefix) {
+            prefix = codeword & root_mask;
+            start = used;
+            var height: usize = len - width;
+            var space: usize = remaining;
+            while (space < @as(usize, 1) << @intCast(height)) {
+                height += 1;
+                space = (space << 1) + count[width + height];
+            }
+            used = start + (@as(usize, 1) << @intCast(height));
+            if (used > spill.len) return error.BadHuffman;
+            table[prefix] = .{ .nbits = width, .kind = .long, .extra = @intCast(height), .payload = @intCast(start) };
+        }
+        const entry = makeEntry(sorted[next], @intCast(len), kind_of, payload_of, predecoded);
+        next += 1;
+        const stride = @as(usize, 1) << @intCast(len - width);
+        var i = start + (codeword >> width);
+        while (i < used) : (i += stride) spill[i] = entry;
+        if (codeword == (@as(usize, 1) << @intCast(len)) - 1) return;
+        const bit = @as(usize, 1) << @intCast(std.math.log2_int(usize, codeword ^ ((@as(usize, 1) << @intCast(len)) - 1)));
+        codeword = (codeword & (bit - 1)) | bit;
+        remaining -= 1;
+        while (remaining == 0) {
+            len += 1;
+            remaining = count[len];
+        }
     }
-    for (lens, 0..) |len, symbol| {
-        if (len <= width) continue;
-        const rev = bitReverse(codes[symbol], len);
-        const root = table[rev & mask];
-        const size = @as(usize, 1) << @intCast(root.extra);
-        var entry = Entry{ .nbits = len, .kind = kind_of(symbol), .payload = payload_of(symbol) };
-        if (predecoded) entry = predecode(entry);
-        var i: usize = rev >> width;
-        while (i < size) : (i += @as(usize, 1) << (len - width)) spill[root.payload + i] = entry;
-    }
+}
+
+inline fn makeEntry(symbol: usize, len: u4, comptime kind_of: fn (usize) Kind, comptime payload_of: fn (usize) u16, comptime predecoded: bool) Entry {
+    const entry: Entry = .{ .nbits = len, .kind = kind_of(symbol), .payload = payload_of(symbol) };
+    return if (predecoded) predecode(entry) else entry;
 }
 
 inline fn lookupLong(root: Entry, spill: []const Entry, bits: u64, comptime width: u4) Entry {
