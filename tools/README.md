@@ -120,7 +120,7 @@ The zipir tool of each format is always in the batch as the anchor. Before timin
 
 Results go to `tools/.local/bench/RUN/FORMAT/OP/CATEGORY.CLASS.{json,tsv}`. RUN is `PEER_SET-LEVEL_SET` (for example `prime-lanes`), or `named-TOOL+TOOL-LEVEL_SET` when tools are named. A batch is skipped when its subjects, lanes, binaries, and input are unchanged; `--force` re-times it.
 
-The default run (prime, lanes, sanity and small) took 2 minutes 16 seconds on 2026-09-24 (15 batches). Medium and large files multiply that many times over, so check `--list` first.
+The default run (prime, lanes, sanity and small, all four formats) took 7 minutes 20 seconds on 2026-09-26 (48 batches). Medium files multiply that: decompression of the three medium files took 3.5 minutes, but compression of sequencing and MS medium took 59 minutes, most of it the slow level 9 peers (stdlib gzip 9 and `bgzip -l 9`, which is libdeflate 12). Check `--list` first, and use `--op` and `--category` to limit a run.
 
 ## Report
 
