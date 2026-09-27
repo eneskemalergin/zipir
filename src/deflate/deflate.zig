@@ -1462,6 +1462,29 @@ pub const Encoder = struct {
             var value = bits.value;
             var count: u32 = bits.count;
             std.debug.assert(count <= 7);
+            // Two tokens per step: one add and one store when they fit in 56 bits together (the common case),
+            // which halves the chain of dependent bit-buffer updates.
+            while (i + 2 <= self.icf_count and buf.len - pos >= 16) : (i += 2) {
+                const c0 = icfCode(self.icf[i], &first, &second);
+                const c1 = icfCode(self.icf[i + 1], &first, &second);
+                if (c0.len + c1.len <= 56) {
+                    value |= (c0.bits | (c1.bits << @intCast(c0.len))) << @intCast(count);
+                    count += c0.len + c1.len;
+                } else {
+                    value |= c0.bits << @intCast(count);
+                    count += c0.len;
+                    std.mem.writeInt(u64, buf[pos..][0..8], value, .little);
+                    pos += count >> 3;
+                    value >>= @intCast(count & 56);
+                    count &= 7;
+                    value |= c1.bits << @intCast(count);
+                    count += c1.len;
+                }
+                std.mem.writeInt(u64, buf[pos..][0..8], value, .little);
+                pos += count >> 3;
+                value >>= @intCast(count & 56);
+                count &= 7;
+            }
             while (i < self.icf_count and buf.len - pos >= 8) : (i += 1) {
                 const code = icfCode(self.icf[i], &first, &second);
                 value |= code.bits << @intCast(count);
