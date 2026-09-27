@@ -1,0 +1,17 @@
+op	format	level	files	fastest_tool	fastest_level	fastest_time_ratio	fastest_time_min	fastest_time_max	fastest_size_ratio	equal_tool	equal_level	equal_time_ratio	equal_size_ratio	zipir_mbs_min	zipir_mbs_max
+decompress	gzip	-	6	igzip	-	1.0095	0.8083	1.2493	1.0000	igzip	-	1.0095	1.0000	543.8	1082.3
+decompress	zlib	-	6	zlib-ng-zlib	-	1.2394	1.1746	1.2737	1.0000	zlib-ng-zlib	-	1.2394	1.0000	568.7	1170.7
+decompress	deflate	-	6	zlib-ng-deflate	-	1.2355	1.1757	1.2799	1.0000	zlib-ng-deflate	-	1.2355	1.0000	566.8	1210.4
+decompress	bgzf	-	6	bgzip-libdeflate	-	0.9363	0.8460	1.1104	1.0000	bgzip-libdeflate	-	0.9363	1.0000	586.3	1030.5
+compress	gzip	1	5	igzip	0	0.4898	0.3784	0.5876	1.1760	std-gzip	1	2.6630	1.0008	150.6	281.9
+compress	gzip	5	5	igzip	1	0.2288	0.1827	0.3073	1.1279	zlib-ng	5	0.9025	0.9941	54.9	123.5
+compress	gzip	9	5	igzip	2	0.1751	0.0931	0.3109	1.1363	zlib-ng	9	2.6919	1.0058	26.7	100.7
+compress	zlib	1	5	zlib-ng-zlib	1	0.7896	0.7443	0.8800	1.2955					154.4	287.4
+compress	zlib	5	5	zlib-ng-zlib	5	0.9053	0.7979	1.0520	0.9941	zlib-ng-zlib	5	0.9053	0.9941	56.5	125.2
+compress	zlib	9	5	zlib-ng-zlib	9	2.7104	1.6089	5.9521	1.0058	zlib-ng-zlib	9	2.7104	1.0058	27.1	103.9
+compress	deflate	1	5	zlib-ng-deflate	1	0.7969	0.7489	0.8831	1.2955					153.0	295.5
+compress	deflate	5	5	zlib-ng-deflate	5	0.9071	0.7933	1.0493	0.9941	zlib-ng-deflate	5	0.9071	0.9941	55.2	126.8
+compress	deflate	9	5	zlib-ng-deflate	9	2.7127	1.5942	5.9669	1.0058	zlib-ng-deflate	9	2.7127	1.0058	26.8	103.0
+compress	bgzf	1	5	bgzip-zlib-ng	1	0.8053	0.7381	0.8799	1.2893	bgzip-libdeflate	1	0.9729	0.9146	190.8	287.4
+compress	bgzf	5	5	bgzip-zlib-ng	5	0.9304	0.8482	0.9942	0.9956	bgzip-zlib-ng	5	0.9304	0.9956	81.2	120.0
+compress	bgzf	9	5	bgzip-zlib-ng	9	2.3337	1.6248	5.2569	1.0071	bgzip-zlib-ng	9	2.3337	1.0071	64.6	108.2

@@ -92,15 +92,23 @@ Use `zipir.gzip.Options.max_output_bytes` or `zipir.zlib.Options.max_output_byte
 
 ## Benchmarks
 
-> [!WARNING]
-> Public-facing benchmark reports will live in `bench/` once that directory is ready. It is not ready yet, so the comparisons described here are local development measurements rather than published benchmark results.
+<p align="center">
+  <a href="bench/linux-x86-avx2/README.md">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="bench/linux-x86-avx2/figures/summary-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="bench/linux-x86-avx2/figures/summary-light.svg">
+      <img src="bench/linux-x86-avx2/figures/summary-light.svg" alt="zipir against the fastest single-threaded peer for every format, operation, and level on Linux x86-64 with AVX2" width="100%">
+    </picture>
+  </a>
+</p>
+<p align="center"><sub>Whole-command time against the fastest single-threaded peer on one Linux x86-64 host (AMD Ryzen 9 3950X, AVX2). Left of 1 the peer is faster. For compression, a faster peer often writes larger files, so the hollow marker shows the fastest peer whose output is no larger than zipir's. Open the report for speed-ratio curves, memory, every measured value, and the method.</sub></p>
 
-The comparison adapters, corpus definitions, qualification checks, and report generation live in [`tools/`](tools/). The README will keep only the small conclusions that remain useful after the benchmark work changes.
+The [full report](bench/linux-x86-avx2/README.md) covers gzip, zlib, raw DEFLATE, and BGZF on sequencing, mass spectrometry, and general corpus files against zlib-ng, ISA-L igzip, the Zig standard library, and htslib `bgzip` built with libdeflate and with zlib-ng. Every tool's output was checked against an independent decoder before it was timed. The comparison adapters, corpus, and checks live in [`tools/`](tools/).
 
 ## Roadmap
 
 - Keep tuning gzip and zlib against real corpus shapes without losing bounded streaming behavior.
-- Publish compact speed and peak-RSS summaries once the comparison layout settles.
+- Extend the benchmark report: large files, more peers, and a single command that reruns it.
 - Move the complete API, format notes, and benchmark methods into the wiki.
 
 ## Development

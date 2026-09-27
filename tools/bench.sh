@@ -10,10 +10,11 @@ ALLOW_FORCE=1
 BENCH_CPU="${BENCH_CPU:-4}"
 RUN=""
 OPS="compress decompress"
+ONLY_FORMAT=""
 
 usage() {
     printf '%s\n' \
-        'usage: tools/bench.sh [--peers SET] [--levels SET] [--category C] [--class C | --full] [--op OP] [--force] [--list] [TOOL...]' \
+        'usage: tools/bench.sh [--peers SET] [--levels SET] [--category C] [--class C | --full] [--op OP] [--format F] [--force] [--list] [TOOL...]' \
         '' \
         'Without TOOL, times the selected peer set; named tools run whatever their tier. The zipir' \
         'tool of each format is always in the batch: it is the anchor every row is compared with.' \
@@ -22,6 +23,7 @@ usage() {
         '--category sequencing|ms|generalized, --class CLASS[,CLASS...] or all (sanity small medium large)' \
         '--full                       every class (default classes are sanity and small)' \
         '--op compress|decompress     time only that operation (default both)' \
+        '--format gzip|zlib|deflate|bgzf  time only that format (default all)' \
         '--force                      re-time batches that are already complete' \
         '--list                       print the planned matrix and corpus size; run nothing' \
         '' \
@@ -102,11 +104,15 @@ run_batch() {
 
 main() {
     local tools=() rows=() row tool format category class filename input level comp decomp args=()
-    # --op is bench-only; the shared parser sees the rest.
+    # --op and --format are bench-only; the shared parser sees the rest.
     while [[ $# -gt 0 ]]; do
         if [[ "$1" == --op ]]; then
             [[ $# -ge 2 && "$2" =~ ^(compress|decompress)$ ]] || usage_error "--op must be compress or decompress"
             OPS="$2"
+            shift 2
+        elif [[ "$1" == --format ]]; then
+            [[ $# -ge 2 && " ${FORMATS[*]} " == *" $2 "* ]] || usage_error "--format must be one of: ${FORMATS[*]}"
+            ONLY_FORMAT="$2"
             shift 2
         else
             args+=("$1")
@@ -146,6 +152,7 @@ main() {
     make_work bench
 
     for format in "${FORMATS[@]}"; do
+        [[ -z "$ONLY_FORMAT" || "$format" == "$ONLY_FORMAT" ]] || continue
         comp=() decomp=()
         for tool in "${tools[@]}"; do
             [[ "${P_FORMAT[$tool]}" == "$format" ]] || continue

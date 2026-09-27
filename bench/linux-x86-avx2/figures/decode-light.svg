@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1074 662" width="1074" height="662" role="img" font-family="system-ui, -apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">
+<title>Decompression throughput</title><desc>MB/s of decoded output on the medium corpus files, per format.</desc>
+<rect width="1074" height="662" rx="12" fill="#fcfcfb"/>
+<text x="28.0" y="38.0" font-size="20" fill="#0b0b0b" text-anchor="start" font-weight="650" >Decompression throughput on the medium files</text>
+<text x="28.0" y="62.0" font-size="13" fill="#52514e" text-anchor="start" font-weight="400" >MB/s of decoded output, higher is better. Every decoder here streams, and all read the same file.</text>
+<circle cx="34.0" cy="84.0" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"></circle>
+<text x="46.0" y="88.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="400" >zipir</text>
+<rect x="92.6" y="79.0" width="9.9" height="9.9" rx="1.5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"></rect>
+<text x="109.6" y="88.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="400" >zlib-ng</text>
+<path d="M174.6,76.4 L181.5,89.5 L167.8,89.5 Z" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"></path>
+<text x="186.6" y="88.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="400" >ISA-L igzip</text>
+<path d="M278.6,76.8 L285.7,84.0 L278.6,91.2 L271.4,84.0 Z" fill="#898781" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"></path>
+<text x="290.6" y="88.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="400" >Zig std</text>
+<rect x="350.7" y="79.0" width="9.9" height="9.9" rx="1.5" fill="#4a3aa7" stroke="#fcfcfb" stroke-width="2"></rect>
+<text x="367.6" y="88.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="400" >bgzip + libdeflate</text>
+<path d="M506.6,76.4 L513.4,89.5 L499.7,89.5 Z" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"></path>
+<text x="518.6" y="88.0" font-size="12" fill="#52514e" text-anchor="start" font-weight="400" >bgzip + zlib-ng</text>
+<text x="30.0" y="122.0" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="650" >gzip</text>
+<line x1="150.0" y1="128.0" x2="150.0" y2="336.0" stroke="#e1e0d9" stroke-width="1" />
+<line x1="288.8" y1="128.0" x2="288.8" y2="336.0" stroke="#e1e0d9" stroke-width="1" />
+<line x1="427.7" y1="128.0" x2="427.7" y2="336.0" stroke="#e1e0d9" stroke-width="1" />
+<text x="140.0" y="164.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >FASTQ</text>
+<path d="M150.0,132.0 h147.0 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-147.0 Z" fill="#e08e0b"><title>zipir: 544 MB/s</title></path>
+<text x="306.0" y="141.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >544</text>
+<path d="M150.0,146.0 h128.3 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-128.3 Z" fill="#2a78d6"><title>zlib-ng: 476 MB/s</title></path>
+<path d="M150.0,160.0 h182.8 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-182.8 Z" fill="#1baf7a"><title>ISA-L igzip: 673 MB/s</title></path>
+<text x="341.8" y="169.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >673</text>
+<path d="M150.0,174.0 h55.2 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-55.2 Z" fill="#898781"><title>Zig std: 213 MB/s</title></path>
+<text x="140.0" y="236.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >PRIDE XML</text>
+<path d="M150.0,204.0 h256.3 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-256.3 Z" fill="#e08e0b"><title>zipir: 937 MB/s</title></path>
+<text x="415.3" y="213.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >937</text>
+<path d="M150.0,218.0 h226.3 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-226.3 Z" fill="#2a78d6"><title>zlib-ng: 829 MB/s</title></path>
+<path d="M150.0,232.0 h259.0 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-259.0 Z" fill="#1baf7a"><title>ISA-L igzip: 947 MB/s</title></path>
+<text x="418.0" y="241.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >947</text>
+<path d="M150.0,246.0 h101.7 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-101.7 Z" fill="#898781"><title>Zig std: 381 MB/s</title></path>
+<text x="140.0" y="308.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >Silesia tar</text>
+<path d="M150.0,276.0 h189.6 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-189.6 Z" fill="#e08e0b"><title>zipir: 697 MB/s</title></path>
+<text x="348.6" y="285.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >697</text>
+<path d="M150.0,290.0 h171.7 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-171.7 Z" fill="#2a78d6"><title>zlib-ng: 633 MB/s</title></path>
+<path d="M150.0,304.0 h202.8 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-202.8 Z" fill="#1baf7a"><title>ISA-L igzip: 745 MB/s</title></path>
+<text x="361.8" y="313.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >745</text>
+<path d="M150.0,318.0 h70.2 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-70.2 Z" fill="#898781"><title>Zig std: 267 MB/s</title></path>
+<line x1="150.0" y1="128.0" x2="150.0" y2="334.0" stroke="#c3c2b7" stroke-width="1" />
+<text x="494.0" y="122.0" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="650" >zlib</text>
+<line x1="614.0" y1="128.0" x2="614.0" y2="336.0" stroke="#e1e0d9" stroke-width="1" />
+<line x1="752.8" y1="128.0" x2="752.8" y2="336.0" stroke="#e1e0d9" stroke-width="1" />
+<line x1="891.7" y1="128.0" x2="891.7" y2="336.0" stroke="#e1e0d9" stroke-width="1" />
+<text x="604.0" y="157.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >FASTQ</text>
+<path d="M614.0,132.0 h153.9 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-153.9 Z" fill="#e08e0b"><title>zipir: 569 MB/s</title></path>
+<text x="776.9" y="141.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >569</text>
+<path d="M614.0,146.0 h121.7 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-121.7 Z" fill="#2a78d6"><title>zlib-ng: 453 MB/s</title></path>
+<path d="M614.0,160.0 h52.5 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-52.5 Z" fill="#898781"><title>Zig std: 203 MB/s</title></path>
+<text x="604.0" y="215.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >PRIDE XML</text>
+<path d="M614.0,190.0 h281.4 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-281.4 Z" fill="#e08e0b"><title>zipir: 1028 MB/s</title></path>
+<text x="904.4" y="199.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >1028</text>
+<path d="M614.0,204.0 h229.1 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-229.1 Z" fill="#2a78d6"><title>zlib-ng: 839 MB/s</title></path>
+<path d="M614.0,218.0 h93.6 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-93.6 Z" fill="#898781"><title>Zig std: 351 MB/s</title></path>
+<text x="604.0" y="273.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >Silesia tar</text>
+<path d="M614.0,248.0 h197.7 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-197.7 Z" fill="#e08e0b"><title>zipir: 726 MB/s</title></path>
+<text x="820.7" y="257.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >726</text>
+<path d="M614.0,262.0 h167.7 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-167.7 Z" fill="#2a78d6"><title>zlib-ng: 618 MB/s</title></path>
+<path d="M614.0,276.0 h65.4 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-65.4 Z" fill="#898781"><title>Zig std: 250 MB/s</title></path>
+<line x1="614.0" y1="128.0" x2="614.0" y2="292.0" stroke="#c3c2b7" stroke-width="1" />
+<text x="30.0" y="368.0" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="650" >raw DEFLATE</text>
+<line x1="150.0" y1="374.0" x2="150.0" y2="582.0" stroke="#e1e0d9" stroke-width="1" />
+<text x="150.0" y="598.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >0</text>
+<line x1="288.8" y1="374.0" x2="288.8" y2="582.0" stroke="#e1e0d9" stroke-width="1" />
+<text x="288.8" y="598.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >500</text>
+<line x1="427.7" y1="374.0" x2="427.7" y2="582.0" stroke="#e1e0d9" stroke-width="1" />
+<text x="427.7" y="598.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >1000</text>
+<text x="140.0" y="396.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >FASTQ</text>
+<path d="M150.0,378.0 h153.4 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-153.4 Z" fill="#e08e0b"><title>zipir: 567 MB/s</title></path>
+<text x="312.4" y="387.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >567</text>
+<path d="M150.0,392.0 h121.6 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-121.6 Z" fill="#2a78d6"><title>zlib-ng: 452 MB/s</title></path>
+<text x="140.0" y="440.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >PRIDE XML</text>
+<path d="M150.0,422.0 h284.8 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-284.8 Z" fill="#e08e0b"><title>zipir: 1040 MB/s</title></path>
+<text x="443.8" y="431.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >1040</text>
+<path d="M150.0,436.0 h233.9 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-233.9 Z" fill="#2a78d6"><title>zlib-ng: 857 MB/s</title></path>
+<text x="140.0" y="484.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >Silesia tar</text>
+<path d="M150.0,466.0 h203.2 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-203.2 Z" fill="#e08e0b"><title>zipir: 746 MB/s</title></path>
+<text x="362.2" y="475.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >746</text>
+<path d="M150.0,480.0 h172.3 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-172.3 Z" fill="#2a78d6"><title>zlib-ng: 635 MB/s</title></path>
+<line x1="150.0" y1="374.0" x2="150.0" y2="496.0" stroke="#c3c2b7" stroke-width="1" />
+<text x="494.0" y="368.0" font-size="14" fill="#0b0b0b" text-anchor="start" font-weight="650" >BGZF</text>
+<line x1="614.0" y1="374.0" x2="614.0" y2="582.0" stroke="#e1e0d9" stroke-width="1" />
+<text x="614.0" y="598.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >0</text>
+<line x1="752.8" y1="374.0" x2="752.8" y2="582.0" stroke="#e1e0d9" stroke-width="1" />
+<text x="752.8" y="598.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >500</text>
+<line x1="891.7" y1="374.0" x2="891.7" y2="582.0" stroke="#e1e0d9" stroke-width="1" />
+<text x="891.7" y="598.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >1000</text>
+<text x="604.0" y="403.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >BAM</text>
+<path d="M614.0,378.0 h282.1 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-282.1 Z" fill="#e08e0b"><title>zipir: 1030 MB/s</title></path>
+<text x="905.1" y="387.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >1030</text>
+<path d="M614.0,392.0 h329.3 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-329.3 Z" fill="#4a3aa7"><title>bgzip + libdeflate: 1201 MB/s</title></path>
+<text x="952.3" y="401.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >1201</text>
+<path d="M614.0,406.0 h258.4 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-258.4 Z" fill="#e87ba4"><title>bgzip + zlib-ng: 945 MB/s</title></path>
+<text x="604.0" y="461.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >PRIDE XML</text>
+<path d="M614.0,436.0 h243.9 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-243.9 Z" fill="#e08e0b"><title>zipir: 893 MB/s</title></path>
+<text x="866.9" y="445.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >893</text>
+<path d="M614.0,450.0 h266.6 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-266.6 Z" fill="#4a3aa7"><title>bgzip + libdeflate: 975 MB/s</title></path>
+<text x="889.6" y="459.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >975</text>
+<path d="M614.0,464.0 h223.5 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-223.5 Z" fill="#e87ba4"><title>bgzip + zlib-ng: 819 MB/s</title></path>
+<text x="604.0" y="519.0" font-size="12" fill="#52514e" text-anchor="end" font-weight="400" >Silesia tar</text>
+<path d="M614.0,494.0 h175.7 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-175.7 Z" fill="#e08e0b"><title>zipir: 647 MB/s</title></path>
+<text x="798.7" y="503.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >647</text>
+<path d="M614.0,508.0 h208.4 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-208.4 Z" fill="#4a3aa7"><title>bgzip + libdeflate: 765 MB/s</title></path>
+<text x="831.4" y="517.0" font-size="10.5" fill="#52514e" text-anchor="start" font-weight="400" >765</text>
+<path d="M614.0,522.0 h165.9 a4,4 0 0 1 4,4 v3.0 a4,4 0 0 1 -4,4 h-165.9 Z" fill="#e87ba4"><title>bgzip + zlib-ng: 612 MB/s</title></path>
+<line x1="614.0" y1="374.0" x2="614.0" y2="538.0" stroke="#c3c2b7" stroke-width="1" />
+<text x="592.0" y="640.0" font-size="12" fill="#898781" text-anchor="middle" font-weight="400" >MB/s. Values are shown for zipir and for the fastest tool on each file; the report tables list every value.</text>
+</svg>
