@@ -1461,6 +1461,7 @@ pub const Encoder = struct {
             var pos = w.end;
             var value = bits.value;
             var count: u32 = bits.count;
+            std.debug.assert(count <= 7);
             while (i < self.icf_count and buf.len - pos >= 8) : (i += 1) {
                 const code = icfCode(self.icf[i], &first, &second);
                 value |= code.bits << @intCast(count);
@@ -1481,6 +1482,8 @@ pub const Encoder = struct {
             try bits.put(@as(u16, @truncate(code.bits)), @intCast(@min(code.len, 16)));
             if (code.len > 16) try bits.put(@as(u16, @truncate(code.bits >> 16)), @intCast(@min(code.len - 16, 16)));
             if (code.len > 32) try bits.put(@as(u16, @truncate(code.bits >> 32)), @intCast(code.len - 32));
+            // The register loop needs at most 7 pending bits.
+            try bits.drain();
         }
         try bits.symbol(lit, 256);
     }
@@ -1521,6 +1524,7 @@ pub const Encoder = struct {
             var pos = w.end;
             var value = bits.value;
             var count: u32 = bits.count;
+            std.debug.assert(count <= 7);
             while (buf.len - pos >= 8) {
                 if (p + 3 <= lit_end) {
                     const e0 = lit_tab[raw[p]];

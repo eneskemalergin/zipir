@@ -82,10 +82,27 @@ pub fn encodeRoundtrip(
     capacity: usize,
     encoded: []u8,
 ) ![]const u8 {
+    return encodeRoundtripOut(Codec, encoder, container, plain, options, chunk, capacity, 13, 7, encoded);
+}
+
+/// As `encodeRoundtrip`, with a writer buffer of `out_capacity` bytes (at most 64) that drains at most
+/// `max_drain` bytes per call.
+pub fn encodeRoundtripOut(
+    comptime Codec: type,
+    encoder: *Codec.Compressor,
+    container: std.compress.flate.Container,
+    plain: []const u8,
+    options: Codec.CompressOptions,
+    chunk: usize,
+    capacity: usize,
+    out_capacity: usize,
+    max_drain: usize,
+    encoded: []u8,
+) ![]const u8 {
     var in_buffer: [17]u8 = undefined;
     var source = Source.init(plain, in_buffer[0..capacity], chunk);
-    var out_buffer: [13]u8 = undefined;
-    var output = Sink{ .output = &out_buffer, .sink = encoded, .max_drain = 7 };
+    var out_buffer: [64]u8 = undefined;
+    var output = Sink{ .output = out_buffer[0..out_capacity], .sink = encoded, .max_drain = max_drain };
     try std.testing.expectEqual(@as(u64, plain.len), try encoder.compress(&source.reader, &output.writer, options));
     const stream = encoded[0..output.count];
     var compressed = std.Io.Reader.fixed(stream);

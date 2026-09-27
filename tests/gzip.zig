@@ -372,6 +372,34 @@ test "[property] - [gzip compressor]: periodic overlap and maximum history prese
     }
 }
 
+test "[property] - [gzip compressor]: long-distance matches survive small writer buffers" {
+    // Random bytes with segments copied from far back: tokens of 40 bits and more, emitted while the writer
+    // has only a few bytes of room.
+    const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
+    defer std.testing.allocator.destroy(encoder);
+    var plain: [3 * 32768 + 777]u8 = undefined;
+    var rng = std.Random.DefaultPrng.init(271);
+    const random = rng.random();
+    random.bytes(&plain);
+    var i: usize = 32768;
+    while (i + 64 < plain.len) : (i += 61) {
+        const len = 4 + random.uintLessThan(usize, 50);
+        const dist = 16384 + random.uintLessThan(usize, 16384);
+        for (plain[i..][0..len], 0..) |*byte, k| byte.* = plain[i - dist + k];
+    }
+    const encoded = try std.testing.allocator.alloc(u8, plain.len + 64);
+    defer std.testing.allocator.free(encoded);
+    // Writer buffers around the emitters' 8- and 16-byte room checks, drained 7 bytes at a time or whole (a
+    // whole drain leaves room while bits from a writer-limited step are still pending).
+    for ([_]usize{ 13, 16, 17, 23, 24, 31, 40, 64 }) |out_capacity| {
+        for ([_]usize{ 7, std.math.maxInt(usize) }) |max_drain| {
+            for ([_]zipir.gzip.CompressOptions{ .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| {
+                _ = try support.encodeRoundtripOut(zipir.gzip, encoder, .gzip, &plain, options, 8191, 17, out_capacity, max_drain, encoded);
+            }
+        }
+    }
+}
+
 test "[failure] - [gzip compressor]: I/O errors propagate and workspace resets" {
     const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(encoder);
