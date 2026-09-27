@@ -1055,6 +1055,18 @@ const FIXED_DIST: EncodeTree = blk: {
 
 pub const Level = enum(u4) { fast = 1, balanced = 5, dense = 9 };
 
+// Self-contained tokens (after igzip's ICF): bits 0-9 hold the first symbol (a literal 0-255, or 254 + the
+// length of a match), bits 10-18 the second (a distance code 0-29, ICF_NONE, or ICF_LITERAL + a literal),
+// bits 19-31 the distance's extra bits. A token is a match, one literal, or two literals. At most one token
+// per two input bytes (a lone literal is always followed by a match of at least four), plus one per window.
+const ICF_NONE: u32 = 30;
+const ICF_LITERAL: u32 = 31;
+const ICF_CAP = RING + 4;
+
+fn fastHash(v: u32) usize {
+    return (v *% 0x1e35a7bd) >> 17;
+}
+
 pub const EncodeError = error{ ReadFailed, WriteFailed };
 
 pub const CompressOptions = struct {
@@ -1069,6 +1081,9 @@ pub const Encoder = struct {
     lit_freq: [286]u32 = undefined,
     dist_freq: [30]u32 = undefined,
     token_bytes: usize = undefined,
+    // fast: self-contained tokens (see `parseFast`), one block per two windows.
+    icf: [ICF_CAP]u32 = undefined,
+    icf_count: usize = undefined,
 
     pub fn encodeStream(self: *Encoder, comptime Check: type, reader: *std.Io.Reader, writer: *std.Io.Writer, check: *Check, level: Level) EncodeError!u64 {
         // `previous` is never cleared: with `head` clear, every position a chain reaches was inserted in this
@@ -1082,6 +1097,9 @@ pub const Encoder = struct {
         var lookahead: [1]u8 = undefined;
         var carried: usize = 0;
         var skip_search = false;
+        // fast: the first window of a pair is parsed and kept; after the slide it is the history half, so the
+        // block's bytes are window[0..end].
+        var pending = false;
         while (true) {
             if (carried != 0) self.window[history] = lookahead[0];
             const n = carried + try reader.readSliceShort(self.window[history + carried ..][0 .. RING - carried]);
@@ -1090,18 +1108,31 @@ pub const Encoder = struct {
             const end = history + n;
             check.update(self.window[history..end]);
             size +%= n;
-            // The previous block's final two positions lacked three-byte lookahead.
+            // Positions at the end of the previous window were not inserted: the last two lacked three-byte
+            // lookahead, and `parseFast` stops eight bytes before the end.
             if (history != 0) {
-                var p = history - 2;
-                while (p < history and p + 3 <= end) : (p += 1) {
-                    if (level == .fast) self.insert(p, self.hash(p, end), false) else self.insert(p, self.hash(p, end), true);
+                if (level == .fast) {
+                    var p = history - 8;
+                    while (p < history and p + 4 <= end) : (p += 1) self.head[fastHash(std.mem.readInt(u32, self.window[p..][0..4], .little))] = @intCast(p);
+                } else {
+                    var p = history - 2;
+                    while (p < history and p + 3 <= end) : (p += 1) self.insert(p, self.hash(p, end));
                 }
             }
-            // Fast searches one head candidate, so its parse keeps no chain.
-            if (level == .fast) self.parse(history, end, level, skip_search, false) else self.parse(history, end, level, skip_search, true);
-            const stored = try self.emit(&bits, self.window[history..end], last);
-            // Stored blocks are a bounded miss signal. Recheck after one skipped block.
-            skip_search = stored and !skip_search and level != .fast;
+            if (level == .fast) {
+                self.parseFast(history, end, !pending);
+                if (!last and !pending) {
+                    pending = true;
+                } else {
+                    _ = try self.emit(&bits, self.window[if (pending) 0 else history..end], last, true);
+                    pending = false;
+                }
+            } else {
+                self.parse(history, end, level, skip_search);
+                const stored = try self.emit(&bits, self.window[history..end], last, false);
+                // Stored blocks are a bounded miss signal. Recheck after one skipped block.
+                skip_search = stored and !skip_search;
+            }
             if (last) break;
             if (history != 0) {
                 @memcpy(self.window[0..RING], self.window[RING..][0..RING]);
@@ -1123,14 +1154,14 @@ pub const Encoder = struct {
         return (v *% 0x1e35a7bd) >> 17;
     }
 
-    fn insert(self: *Encoder, p: usize, h: usize, comptime chain: bool) void {
-        if (chain) self.previous[p & (RING - 1)] = self.head[h];
+    fn insert(self: *Encoder, p: usize, h: usize) void {
+        self.previous[p & (RING - 1)] = self.head[h];
         self.head[h] = @intCast(p + 1);
     }
 
     const Match = struct { len: usize = 2, dist: usize = 0 };
 
-    fn find(self: *const Encoder, p: usize, end: usize, budget: usize, nice: usize, h: usize, comptime chain: bool) Match {
+    fn find(self: *const Encoder, p: usize, end: usize, budget: usize, nice: usize, h: usize) Match {
         var best: Match = .{};
         if (p + 3 > end) return best;
         const limit = @min(258, end - p);
@@ -1154,7 +1185,6 @@ pub const Encoder = struct {
                     if (len >= nice or len == limit) break;
                 }
             }
-            if (!chain) break;
             const next = self.previous[q & (RING - 1)];
             if (next >= entry) break;
             entry = next;
@@ -1178,21 +1208,103 @@ pub const Encoder = struct {
         return false;
     }
 
-    fn parse(self: *Encoder, start: usize, end: usize, level: Level, skip_search: bool, comptime chain: bool) void {
+    /// fast, after igzip's level 1 (tmp/simd/IGZIP.md): two positions per step, one table candidate each,
+    /// read without validity checks (every entry gives a distance in 1..32768; the bytes decide), length
+    /// from one 8-byte XOR, minimum match 4, table inserts only at the two positions after a match start.
+    /// From 32 missed pairs in a row, each further miss also passes `misses / 16` literals (rounded down to
+    /// even) unsearched.
+    /// Tokens are self-contained (`ICF_CAP`); a new block starts when `fresh`.
+    fn parseFast(self: *Encoder, start: usize, end: usize, fresh: bool) void {
+        if (fresh) {
+            @memset(&self.lit_freq, 0);
+            @memset(&self.dist_freq, 0);
+            self.lit_freq[256] = 1;
+            self.icf_count = 0;
+        }
+        var n = self.icf_count;
+        var p = start;
+        var misses: usize = 0;
+        while (p + 9 <= end) {
+            const v0 = std.mem.readInt(u64, self.window[p..][0..8], .little);
+            const v1 = std.mem.readInt(u64, self.window[p + 1 ..][0..8], .little);
+            const h0 = fastHash(@truncate(v0));
+            const h1 = fastHash(@truncate(v1));
+            const e0: usize = self.head[h0];
+            self.head[h0] = @intCast(p);
+            const e1: usize = self.head[h1];
+            self.head[h1] = @intCast(p + 1);
+            const d0 = ((p -% e0 -% 1) & (RING - 1)) + 1;
+            const d1 = ((p -% e1) & (RING - 1)) + 1;
+            const x0 = v0 ^ std.mem.readInt(u64, self.window[p - @min(d0, p) ..][0..8], .little);
+            const x1 = v1 ^ std.mem.readInt(u64, self.window[p + 1 - @min(d1, p + 1) ..][0..8], .little);
+            const lit0: u8 = @truncate(v0);
+            var m = p;
+            var x = x0;
+            var d = d0;
+            if (@as(u32, @truncate(x0)) != 0 or d0 > p) {
+                if (@as(u32, @truncate(x1)) != 0 or d1 > p + 1) {
+                    n = self.literalPairs(n, p, 2);
+                    misses += 1;
+                    p += 2;
+                    const extra = @min(misses >> 4, end - p) & ~@as(usize, 1);
+                    n = self.literalPairs(n, p, extra);
+                    p += extra;
+                    continue;
+                }
+                self.icf[n] = @as(u32, lit0) | ICF_NONE << 10;
+                n += 1;
+                self.lit_freq[lit0] += 1;
+                m = p + 1;
+                x = x1;
+                d = d1;
+            }
+            const limit = @min(258, end - m);
+            const len: usize = if (x != 0) @ctz(x) / 8 else 8 + matchLength(self.window[m + 8 ..][0 .. limit - 8], self.window[m - d + 8 ..][0 .. limit - 8]);
+            const dc = distCode(d);
+            self.icf[n] = @as(u32, @intCast(254 + len)) | @as(u32, @intCast(dc)) << 10 | @as(u32, @intCast(d - DIST_BASE[dc])) << 19;
+            n += 1;
+            self.lit_freq[257 + @as(usize, LEN_CODE[len - 3])] += 1;
+            self.dist_freq[dc] += 1;
+            misses = 0;
+            // p + 1 is in the table already.
+            var q = p + 2;
+            while (q <= m + 2) : (q += 1) self.head[fastHash(std.mem.readInt(u32, self.window[q..][0..4], .little))] = @intCast(q);
+            p = m + len;
+        }
+        const tail = (end -| p) & ~@as(usize, 1);
+        n = self.literalPairs(n, p, tail);
+        p += tail;
+        if (p < end) {
+            self.icf[n] = @as(u32, self.window[p]) | ICF_NONE << 10;
+            n += 1;
+            self.lit_freq[self.window[p]] += 1;
+        }
+        std.debug.assert(n <= ICF_CAP);
+        self.icf_count = n;
+    }
+
+    /// `count` (even) literals from `p` as pair tokens.
+    inline fn literalPairs(self: *Encoder, n: usize, p: usize, count: usize) usize {
+        var k: usize = 0;
+        while (k < count) : (k += 2) {
+            const a = self.window[p + k];
+            const b = self.window[p + k + 1];
+            self.icf[n + k / 2] = @as(u32, a) | (ICF_LITERAL + @as(u32, b)) << 10;
+            self.lit_freq[a] += 1;
+            self.lit_freq[b] += 1;
+        }
+        return n + count / 2;
+    }
+
+    /// balanced and dense: chain search with lazy evaluation at `p + 1` (`parseFast` handles fast).
+    fn parse(self: *Encoder, start: usize, end: usize, level: Level, skip_search: bool) void {
         @memset(&self.lit_freq, 0);
         @memset(&self.dist_freq, 0);
         self.lit_freq[256] = 1;
         self.token_bytes = 0;
-        const budget: usize = switch (level) {
-            .fast => 1,
-            .balanced => 12,
-            .dense => 128,
-        };
-        const nice: usize = switch (level) {
-            .fast => 8,
-            .balanced => 96,
-            .dense => 128,
-        };
+        std.debug.assert(level != .fast);
+        const budget: usize = if (level == .dense) 128 else 12;
+        const nice: usize = if (level == .dense) 128 else 96;
         var p = start;
         var literal_start = start;
         var pending: Match = .{};
@@ -1209,16 +1321,16 @@ pub const Encoder = struct {
                 m = .{};
             } else if (p + 3 <= end) {
                 m_hash = self.hash(p, end);
-                m = self.find(p, end, budget, nice, m_hash, chain);
+                m = self.find(p, end, budget, nice, m_hash);
             } else {
                 m = .{};
                 m_hash = 0;
             }
             pending = .{};
-            if (p + 3 <= end) self.insert(p, m_hash, chain);
-            if (chain and m.len >= 3 and m.len < 16 and p + 3 < end) {
+            if (p + 3 <= end) self.insert(p, m_hash);
+            if (m.len >= 3 and m.len < 16 and p + 3 < end) {
                 pending_hash = self.hash(p + 1, end);
-                const next = self.find(p + 1, end, @min(budget, 8), nice, pending_hash, chain);
+                const next = self.find(p + 1, end, @min(budget, 8), nice, pending_hash);
                 if (next.len > m.len) {
                     pending = next;
                     m.len = 2;
@@ -1234,7 +1346,7 @@ pub const Encoder = struct {
                 const stop = p + m.len;
                 p += 1;
                 while (p < stop) : (p += 1) {
-                    if (chain and p + 3 <= end) self.insert(p, self.hash(p, end), chain);
+                    if (p + 3 <= end) self.insert(p, self.hash(p, end));
                 }
                 literal_start = p;
             } else {
@@ -1258,7 +1370,7 @@ pub const Encoder = struct {
         return n;
     }
 
-    fn emit(self: *const Encoder, bits: *BitWriter, raw: []const u8, last: bool) EncodeError!bool {
+    fn emit(self: *const Encoder, bits: *BitWriter, raw: []const u8, last: bool, icf: bool) EncodeError!bool {
         var lit: EncodeTree = .{};
         var dist: EncodeTree = .{};
         var code: EncodeTree = .{};
@@ -1287,14 +1399,21 @@ pub const Encoder = struct {
         const fixed = 3 + self.cost(&FIXED_LIT, &FIXED_DIST);
         const stored = 3 + ((8 - ((@as(usize, bits.count) + 3) & 7)) & 7) + 32 + raw.len * 8;
         if (stored < fixed and stored <= dynamic) {
-            try bits.put(@intFromBool(last), 3);
-            try bits.alignByte();
-            var header: [4]u8 = undefined;
-            const len: u16 = @intCast(raw.len);
-            std.mem.writeInt(u16, header[0..2], len, .little);
-            std.mem.writeInt(u16, header[2..4], ~len, .little);
-            try bits.writer.writeAll(&header);
-            try bits.writer.writeAll(raw);
+            // A fast block covers two windows, one byte more than a stored block holds.
+            var rest = raw;
+            while (true) {
+                const chunk = rest[0..@min(rest.len, 65535)];
+                try bits.put(@intFromBool(last and chunk.len == rest.len), 3);
+                try bits.alignByte();
+                var header: [4]u8 = undefined;
+                const len: u16 = @intCast(chunk.len);
+                std.mem.writeInt(u16, header[0..2], len, .little);
+                std.mem.writeInt(u16, header[2..4], ~len, .little);
+                try bits.writer.writeAll(&header);
+                try bits.writer.writeAll(chunk);
+                rest = rest[chunk.len..];
+                if (rest.len == 0) break;
+            }
             return true;
         }
         if (dynamic < fixed) {
@@ -1307,13 +1426,75 @@ pub const Encoder = struct {
                 try bits.symbol(&code, s);
                 try bits.put(e, w);
             }
-            try self.emitTokens(bits, raw, &lit, &dist);
+            if (icf) try self.emitIcf(bits, &lit, &dist) else try self.emitTokens(bits, raw, &lit, &dist);
         } else {
             try bits.put(2 | @as(u32, @intFromBool(last)), 3);
-            try self.emitTokens(bits, raw, &FIXED_LIT, &FIXED_DIST);
+            if (icf) try self.emitIcf(bits, &FIXED_LIT, &FIXED_DIST) else try self.emitTokens(bits, raw, &FIXED_LIT, &FIXED_DIST);
         }
         try bits.drain();
         return false;
+    }
+
+    fn emitIcf(self: *const Encoder, bits: *BitWriter, lit: *const EncodeTree, dist: *const EncodeTree) EncodeError!void {
+        // First symbol: code | length << 32, a match's length extra bits merged into the code.
+        var first: [513]u64 = undefined;
+        for (first[0..256], 0..) |*e, s| e.* = lit.codes[s] | (@as(u64, lit.lens[s]) << 32);
+        first[256] = 0;
+        for (first[257..], 3..) |*e, len| {
+            const l = LEN_CODE[len - 3];
+            const code_len: u6 = lit.lens[257 + @as(usize, l)];
+            const extra = @as(u64, len) - LEN_BASE[l];
+            e.* = (lit.codes[257 + @as(usize, l)] | (extra << code_len)) | (@as(u64, code_len + LEN_EXTRA[l]) << 32);
+        }
+        // Second symbol: code | length << 32 | extra-bit count << 40.
+        var second: [ICF_LITERAL + 256]u64 = undefined;
+        for (second[0..30], 0..) |*e, c| e.* = dist.codes[c] | (@as(u64, dist.lens[c]) << 32) | (@as(u64, DIST_EXTRA[c]) << 40);
+        second[ICF_NONE] = 0;
+        for (second[ICF_LITERAL..], 0..) |*e, s| e.* = lit.codes[s] | (@as(u64, lit.lens[s]) << 32);
+        try bits.drain();
+        const w = bits.writer;
+        var i: usize = 0;
+        while (true) {
+            // Bit buffer and output position in registers; one unconditional 8-byte store per token (at most 55
+            // bits pending) while 8 bytes of room remain.
+            const buf = w.buffer;
+            var pos = w.end;
+            var value = bits.value;
+            var count: u32 = bits.count;
+            while (i < self.icf_count and buf.len - pos >= 8) : (i += 1) {
+                const code = icfCode(self.icf[i], &first, &second);
+                value |= code.bits << @intCast(count);
+                count += code.len;
+                std.mem.writeInt(u64, buf[pos..][0..8], value, .little);
+                pos += count >> 3;
+                value >>= @intCast(count & 56);
+                count &= 7;
+            }
+            w.end = pos;
+            bits.value = value;
+            bits.count = count;
+            if (i == self.icf_count) break;
+            // Under 8 bytes of room: one token through the writer, which drains its buffer.
+            const code = icfCode(self.icf[i], &first, &second);
+            i += 1;
+            // `put` takes at most 16 bits; the bits above `len` are zero.
+            try bits.put(@as(u16, @truncate(code.bits)), @intCast(@min(code.len, 16)));
+            if (code.len > 16) try bits.put(@as(u16, @truncate(code.bits >> 16)), @intCast(@min(code.len - 16, 16)));
+            if (code.len > 32) try bits.put(@as(u16, @truncate(code.bits >> 32)), @intCast(code.len - 32));
+        }
+        try bits.symbol(lit, 256);
+    }
+
+    const IcfCode = struct { bits: u64, len: u32 };
+
+    /// One token's bits: at most 48 (a 20-bit length code and extra, a 28-bit distance code and extra).
+    inline fn icfCode(t: u32, first: *const [513]u64, second: *const [ICF_LITERAL + 256]u64) IcfCode {
+        const a = first[t & 0x3ff];
+        const b = second[(t >> 10) & 0x1ff];
+        const a_len: u6 = @intCast(a >> 32);
+        const b_len: u6 = @intCast((b >> 32) & 0xff);
+        const b_bits = (b & 0xffffffff) | (@as(u64, t >> 19) << b_len);
+        return .{ .bits = (a & 0xffffffff) | (b_bits << a_len), .len = @as(u32, a_len) + b_len + @as(u32, @intCast(b >> 40)) };
     }
 
     fn emitTokens(self: *const Encoder, bits: *BitWriter, raw: []const u8, lit: *const EncodeTree, dist: *const EncodeTree) EncodeError!void {
@@ -1362,7 +1543,7 @@ pub const Encoder = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Encoder) == 238848);
+    std.debug.assert(@sizeOf(Encoder) == 369944);
 }
 
 const TestCheck = struct {

@@ -393,7 +393,8 @@ test "[failure] - [gzip compressor]: I/O errors propagate and workspace resets" 
         var sink = support.Sink{ .output = &scratch, .fail_at = fail };
         try std.testing.expectError(error.WriteFailed, encoder.compress(&source, &sink.writer, .{ .level = .fast }));
         if (fail == 0) try std.testing.expectEqual(@as(usize, 0), source.seek);
-        if (fail <= 500) try std.testing.expect(source.seek <= 32769);
+        // fast writes one block per two 32 KiB windows, so at most two windows and the lookahead byte are read.
+        if (fail <= 500) try std.testing.expect(source.seek <= 65537);
         _ = try encodeRoundtrip(encoder, "reused after write failure", .{ .level = .fast }, 1, 17);
     }
 }

@@ -345,7 +345,7 @@ pub const BlockEncoder = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BlockEncoder) == 238848);
+    std.debug.assert(@sizeOf(BlockEncoder) == 369944);
 }
 
 pub const WriterOptions = struct {

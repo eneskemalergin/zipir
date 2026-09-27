@@ -55,7 +55,7 @@ pub const Compressor = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Compressor) == 238848);
+    std.debug.assert(@sizeOf(Compressor) == 369944);
 }
 
 // CMF 0x78 is DEFLATE with a 32 KiB window; FLEVEL follows zlib's level convention (fastest, fast, default, maximum).
