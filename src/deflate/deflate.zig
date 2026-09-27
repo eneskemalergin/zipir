@@ -1080,7 +1080,7 @@ pub const Encoder = struct {
     window: [2 * RING]u8 = undefined,
     head: [ENCODE_HASH]u16 = undefined,
     previous: [RING]u16 = undefined,
-    tokens: [RING + RING / 4 + 2]u8 = undefined,
+    tokens: [2 * (RING + RING / 4 + 2)]u8 = undefined,
     lit_freq: [286]u32 = undefined,
     dist_freq: [30]u32 = undefined,
     token_bytes: usize = undefined,
@@ -1101,9 +1101,13 @@ pub const Encoder = struct {
         var lookahead: [1]u8 = undefined;
         var carried: usize = 0;
         var skip_search = false;
-        // fast: the first window of a pair is parsed and kept; after the slide it is the history half, so the
-        // block's bytes are window[0..end].
+        // Windows go in pairs: the first is parsed and kept; after the slide it is the history half, so the pair's
+        // bytes are window[0..end]. fast makes one block per pair; balanced and dense make one block or two,
+        // whichever codes smaller (`emitPair`).
         var pending = false;
+        var first_lit: [286]u32 = undefined;
+        var first_dist: [30]u32 = undefined;
+        var first_tokens: usize = 0;
         while (true) {
             if (carried != 0) self.window[history] = lookahead[0];
             const n = carried + try reader.readSliceShort(self.window[history + carried ..][0 .. RING - carried]);
@@ -1132,10 +1136,20 @@ pub const Encoder = struct {
                     pending = false;
                 }
             } else {
-                if (level == .balanced) self.parse(history, end, level, skip_search, 5) else self.parse(history, end, level, skip_search, 4);
-                const stored = try self.emit(&bits, self.window[history..end], last, false);
+                if (level == .balanced) self.parse(history, end, level, skip_search, !pending, 5) else self.parse(history, end, level, skip_search, !pending, 4);
                 // A stored block turns the search off until `hasEarlyMatch` sees a match near a block start.
-                skip_search = stored;
+                if (!last and !pending) {
+                    // The first window of a pair: its counts price it as a block of its own later.
+                    first_lit = self.lit_freq;
+                    first_dist = self.dist_freq;
+                    first_tokens = self.token_bytes;
+                    pending = true;
+                } else if (pending) {
+                    skip_search = try self.emitPair(&bits, end, last, &first_lit, &first_dist, first_tokens);
+                    pending = false;
+                } else {
+                    skip_search = try self.emit(&bits, self.window[history..end], last, false);
+                }
             }
             if (last) break;
             if (history != 0) {
@@ -1313,11 +1327,13 @@ pub const Encoder = struct {
     }
 
     /// balanced and dense: chain search with lazy evaluation at `p + 1` (`parseFast` handles fast).
-    fn parse(self: *Encoder, start: usize, end: usize, level: Level, skip_search: bool, comptime key: u4) void {
-        @memset(&self.lit_freq, 0);
-        @memset(&self.dist_freq, 0);
-        self.lit_freq[256] = 1;
-        self.token_bytes = 0;
+    fn parse(self: *Encoder, start: usize, end: usize, level: Level, skip_search: bool, fresh: bool, comptime key: u4) void {
+        if (fresh) {
+            @memset(&self.lit_freq, 0);
+            @memset(&self.dist_freq, 0);
+            self.lit_freq[256] = 1;
+            self.token_bytes = 0;
+        }
         std.debug.assert(level != .fast);
         const budget: usize = if (level == .dense) 128 else 12;
         const nice: usize = if (level == .dense) 128 else 96;
@@ -1404,43 +1420,91 @@ pub const Encoder = struct {
         self.token_bytes += 2;
     }
 
-    fn cost(self: *const Encoder, lit: *const EncodeTree, dist: *const EncodeTree) u64 {
+    fn cost(lit_freq: *const [286]u32, dist_freq: *const [30]u32, lit: *const EncodeTree, dist: *const EncodeTree) u64 {
         var n: u64 = 0;
-        for (self.lit_freq, 0..) |f, i| n += @as(u64, f) * (lit.lens[i] + @as(u8, if (i >= 257) LEN_EXTRA[i - 257] else 0));
-        for (self.dist_freq, 0..) |f, i| n += @as(u64, f) * (dist.lens[i] + @as(u8, DIST_EXTRA[i]));
+        for (lit_freq, 0..) |f, i| n += @as(u64, f) * (lit.lens[i] + @as(u8, if (i >= 257) LEN_EXTRA[i - 257] else 0));
+        for (dist_freq, 0..) |f, i| n += @as(u64, f) * (dist.lens[i] + @as(u8, DIST_EXTRA[i]));
         return n;
     }
 
-    fn emit(self: *const Encoder, bits: *BitWriter, raw: []const u8, last: bool, icf: bool) EncodeError!bool {
-        var lit: EncodeTree = .{};
-        var dist: EncodeTree = .{};
-        var code: EncodeTree = .{};
-        var run: CodeRuns = .{};
-        var dynamic: u64 = std.math.maxInt(u64);
-        var nl: usize = 286;
-        var nd: usize = 30;
-        var nc: usize = 19;
-        var dist_freq = self.dist_freq;
-        var sum: u32 = 0;
-        for (dist_freq) |f| sum += f;
-        if (sum == 0) dist_freq[0] = 1;
-        if (lit.build(&self.lit_freq, 15) and dist.build(&dist_freq, 15)) {
-            while (nl > 257 and lit.lens[nl - 1] == 0) nl -= 1;
-            while (nd > 1 and dist.lens[nd - 1] == 0) nd -= 1;
-            var lengths: [316]u4 = undefined;
-            @memcpy(lengths[0..nl], lit.lens[0..nl]);
-            @memcpy(lengths[nl..][0..nd], dist.lens[0..nd]);
-            run.encode(lengths[0 .. nl + nd]);
-            if (code.build(&run.freq, 7)) {
-                while (nc > 4 and code.lens[CLEN_ORDER[nc - 1]] == 0) nc -= 1;
-                dynamic = 3 + 5 + 5 + 4 + 3 * nc + self.cost(&lit, &dist);
-                for (run.symbols[0..run.count], run.widths[0..run.count]) |s, w| dynamic += code.lens[s] + @as(u8, w);
+    /// A block's trees and its coded size, dynamic and fixed, in bits (header included, stored excluded).
+    const Plan = struct {
+        lit: EncodeTree = .{},
+        dist: EncodeTree = .{},
+        code: EncodeTree = .{},
+        run: CodeRuns = .{},
+        nl: usize = 286,
+        nd: usize = 30,
+        nc: usize = 19,
+        dynamic: u64 = std.math.maxInt(u64),
+        fixed: u64 = 0,
+
+        fn init(plan: *Plan, lit_freq: *const [286]u32, dist_freq_in: *const [30]u32) void {
+            plan.* = .{};
+            var dist_freq = dist_freq_in.*;
+            var sum: u32 = 0;
+            for (dist_freq) |f| sum += f;
+            if (sum == 0) dist_freq[0] = 1;
+            if (plan.lit.build(lit_freq, 15) and plan.dist.build(&dist_freq, 15)) {
+                while (plan.nl > 257 and plan.lit.lens[plan.nl - 1] == 0) plan.nl -= 1;
+                while (plan.nd > 1 and plan.dist.lens[plan.nd - 1] == 0) plan.nd -= 1;
+                var lengths: [316]u4 = undefined;
+                @memcpy(lengths[0..plan.nl], plan.lit.lens[0..plan.nl]);
+                @memcpy(lengths[plan.nl..][0..plan.nd], plan.dist.lens[0..plan.nd]);
+                plan.run.encode(lengths[0 .. plan.nl + plan.nd]);
+                if (plan.code.build(&plan.run.freq, 7)) {
+                    while (plan.nc > 4 and plan.code.lens[CLEN_ORDER[plan.nc - 1]] == 0) plan.nc -= 1;
+                    plan.dynamic = 3 + 5 + 5 + 4 + 3 * plan.nc + cost(lit_freq, dist_freq_in, &plan.lit, &plan.dist);
+                    for (plan.run.symbols[0..plan.run.count], plan.run.widths[0..plan.run.count]) |sym, w| plan.dynamic += plan.code.lens[sym] + @as(u8, w);
+                }
             }
+            plan.fixed = 3 + cost(lit_freq, dist_freq_in, &FIXED_LIT, &FIXED_DIST);
         }
-        const fixed = 3 + self.cost(&FIXED_LIT, &FIXED_DIST);
+
+        fn bits(plan: *const Plan) u64 {
+            return @min(plan.dynamic, plan.fixed);
+        }
+    };
+
+    fn emit(self: *const Encoder, bits: *BitWriter, raw: []const u8, last: bool, icf: bool) EncodeError!bool {
+        var plan: Plan = undefined;
+        plan.init(&self.lit_freq, &self.dist_freq);
+        return self.emitPlanned(bits, &plan, raw, if (icf) null else self.tokens[0..self.token_bytes], last);
+    }
+
+    /// A pair of windows (window[0..RING] and window[RING..end], tokens split at `first_tokens`) as one block or
+    /// two, whichever is smaller counting stored blocks: mixed data gains from separate trees, uniform data from
+    /// one header. Returns whether the last block written was stored.
+    fn emitPair(self: *const Encoder, bits: *BitWriter, end: usize, last: bool, first_lit: *const [286]u32, first_dist: *const [30]u32, first_tokens: usize) EncodeError!bool {
+        var second_lit: [286]u32 = undefined;
+        for (&second_lit, self.lit_freq, first_lit) |*d, all, first| d.* = all - first;
+        second_lit[256] = 1;
+        var second_dist: [30]u32 = undefined;
+        for (&second_dist, self.dist_freq, first_dist) |*d, all, first| d.* = all - first;
+        var merged: Plan = undefined;
+        merged.init(&self.lit_freq, &self.dist_freq);
+        var first: Plan = undefined;
+        first.init(first_lit, first_dist);
+        var second: Plan = undefined;
+        second.init(&second_lit, &second_dist);
+        const stored_bits = struct {
+            fn of(len: usize) u64 {
+                return 3 + 7 + 32 * ((len + 65534) / 65535) + 8 * @as(u64, len);
+            }
+        }.of;
+        const one = @min(merged.bits(), stored_bits(end));
+        const two = @min(first.bits(), stored_bits(RING)) + @min(second.bits(), stored_bits(end - RING));
+        if (one <= two) return self.emitPlanned(bits, &merged, self.window[0..end], self.tokens[0..self.token_bytes], last);
+        _ = try self.emitPlanned(bits, &first, self.window[0..RING], self.tokens[0..first_tokens], false);
+        return self.emitPlanned(bits, &second, self.window[RING..end], self.tokens[first_tokens..self.token_bytes], last);
+    }
+
+    /// Writes one block of `raw` as planned (or stored when smaller): the byte tokens `tokens`, or fast's tokens when
+    /// `tokens` is null. Returns whether the block was stored.
+    fn emitPlanned(self: *const Encoder, bits: *BitWriter, plan: *const Plan, raw: []const u8, tokens: ?[]const u8, last: bool) EncodeError!bool {
         const stored = 3 + ((8 - ((@as(usize, bits.count) + 3) & 7)) & 7) + 32 + raw.len * 8;
-        if (stored < fixed and stored <= dynamic) {
-            // A fast block covers two windows, one byte more than a stored block holds.
+        if (stored < plan.fixed and stored <= plan.dynamic) {
+            // A block of two windows is one byte more than a stored block holds.
             var rest = raw;
             while (true) {
                 const chunk = rest[0..@min(rest.len, 65535)];
@@ -1457,20 +1521,20 @@ pub const Encoder = struct {
             }
             return true;
         }
-        if (dynamic < fixed) {
+        if (plan.dynamic < plan.fixed) {
             try bits.put(4 | @as(u32, @intFromBool(last)), 3);
-            try bits.put(@intCast(nl - 257), 5);
-            try bits.put(@intCast(nd - 1), 5);
-            try bits.put(@intCast(nc - 4), 4);
-            for (CLEN_ORDER[0..nc]) |s| try bits.put(code.lens[s], 3);
-            for (run.symbols[0..run.count], run.widths[0..run.count], run.extras[0..run.count]) |s, w, e| {
-                try bits.symbol(&code, s);
+            try bits.put(@intCast(plan.nl - 257), 5);
+            try bits.put(@intCast(plan.nd - 1), 5);
+            try bits.put(@intCast(plan.nc - 4), 4);
+            for (CLEN_ORDER[0..plan.nc]) |sym| try bits.put(plan.code.lens[sym], 3);
+            for (plan.run.symbols[0..plan.run.count], plan.run.widths[0..plan.run.count], plan.run.extras[0..plan.run.count]) |sym, w, e| {
+                try bits.symbol(&plan.code, sym);
                 try bits.put(e, w);
             }
-            if (icf) try self.emitIcf(bits, &lit, &dist) else try self.emitTokens(bits, raw, &lit, &dist);
+            if (tokens) |t| try emitTokens(t, bits, raw, &plan.lit, &plan.dist) else try self.emitIcf(bits, &plan.lit, &plan.dist);
         } else {
             try bits.put(2 | @as(u32, @intFromBool(last)), 3);
-            if (icf) try self.emitIcf(bits, &FIXED_LIT, &FIXED_DIST) else try self.emitTokens(bits, raw, &FIXED_LIT, &FIXED_DIST);
+            if (tokens) |t| try emitTokens(t, bits, raw, &FIXED_LIT, &FIXED_DIST) else try self.emitIcf(bits, &FIXED_LIT, &FIXED_DIST);
         }
         try bits.drain();
         return false;
@@ -1564,7 +1628,7 @@ pub const Encoder = struct {
         return .{ .bits = (a & 0xffffffff) | (b_bits << a_len), .len = @as(u32, a_len) + b_len + @as(u32, @intCast(b >> 40)) };
     }
 
-    fn emitTokens(self: *const Encoder, bits: *BitWriter, raw: []const u8, lit: *const EncodeTree, dist: *const EncodeTree) EncodeError!void {
+    fn emitTokens(tokens: []const u8, bits: *BitWriter, raw: []const u8, lit: *const EncodeTree, dist: *const EncodeTree) EncodeError!void {
         var lit_tab: [256]u64 = undefined;
         for (&lit_tab, 0..) |*e, s| e.* = lit.codes[s] | (@as(u64, lit.lens[s]) << 32);
         var len_tab: [256]u64 = undefined;
@@ -1606,14 +1670,14 @@ pub const Encoder = struct {
                     value |= (e & 0xffffffff) << @intCast(count);
                     count += @intCast(e >> 32);
                     p += 1;
-                } else if (t < self.token_bytes) {
-                    const word = std.mem.readInt(u16, self.tokens[t..][0..2], .little);
+                } else if (t < tokens.len) {
+                    const word = std.mem.readInt(u16, tokens[t..][0..2], .little);
                     t += 2;
                     if (word & 0x8000 == 0) {
                         lit_end = p + @as(usize, word) + 1;
                         continue;
                     }
-                    const v = self.tokens[t];
+                    const v = tokens[t];
                     t += 1;
                     const d = @as(usize, word & 0x7fff) + 1;
                     const dc = distCode(d);
@@ -1635,19 +1699,19 @@ pub const Encoder = struct {
             w.end = pos;
             bits.value = value;
             bits.count = count;
-            if (p >= lit_end and t >= self.token_bytes) break;
+            if (p >= lit_end and t >= tokens.len) break;
             // Under 8 bytes of room: one step through the writer, which drains its buffer.
             if (p < lit_end) {
                 bits.add(lit_tab[raw[p]]);
                 p += 1;
             } else {
-                const word = std.mem.readInt(u16, self.tokens[t..][0..2], .little);
+                const word = std.mem.readInt(u16, tokens[t..][0..2], .little);
                 t += 2;
                 if (word & 0x8000 == 0) {
                     lit_end = p + @as(usize, word) + 1;
                     continue;
                 }
-                const v = self.tokens[t];
+                const v = tokens[t];
                 t += 1;
                 const d = @as(usize, word & 0x7fff) + 1;
                 const dc = distCode(d);
@@ -1664,7 +1728,7 @@ pub const Encoder = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Encoder) == 435480);
+    std.debug.assert(@sizeOf(Encoder) == 476440);
 }
 
 const TestCheck = struct {
