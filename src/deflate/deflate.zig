@@ -780,7 +780,7 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
 
 // --- Encoder ---
 
-const ENCODE_HASH = 32768;
+const ENCODE_HASH = 65536;
 
 fn rebase(positions: []u16) void {
     const V = @Vector(16, u16);
@@ -1063,6 +1063,9 @@ const ICF_NONE: u32 = 30;
 const ICF_LITERAL: u32 = 31;
 const ICF_CAP = RING + 4;
 
+// fast hashes into the first FAST_HASH heads: 2^16 cost it 2% to 5% for 0.1% to 0.5% more ratio.
+const FAST_HASH = 32768;
+
 fn fastHash(v: u32) usize {
     return (v *% 0x1e35a7bd) >> 17;
 }
@@ -1089,8 +1092,9 @@ pub const Encoder = struct {
         // `previous` is never cleared: with `head` clear, every position a chain reaches was inserted in this
         // stream, which wrote its `previous` slot; a slot reused by a later position is behind `lower` and
         // rejected before it is read. BGZF pays this once per 64 KiB block.
-        // 64 KiB: `@memset` here would call compiler_rt's byte-per-iteration `memset` (see `copy.zero`).
-        copy.zero(std.mem.asBytes(&self.head));
+        // 64 or 128 KiB: `@memset` here would call compiler_rt's byte-per-iteration `memset` (see `copy.zero`).
+        const heads = if (level == .fast) self.head[0..FAST_HASH] else self.head[0..];
+        copy.zero(std.mem.sliceAsBytes(heads));
         var bits: BitWriter = .{ .writer = writer };
         var history: usize = 0;
         var size: u64 = 0;
@@ -1136,7 +1140,7 @@ pub const Encoder = struct {
             if (last) break;
             if (history != 0) {
                 @memcpy(self.window[0..RING], self.window[RING..][0..RING]);
-                rebase(&self.head);
+                rebase(heads);
                 if (level != .fast) rebase(&self.previous);
             }
             history = RING;
@@ -1151,7 +1155,7 @@ pub const Encoder = struct {
             std.mem.readInt(u32, self.window[p..][0..4], .little)
         else
             @as(u32, self.window[p]) | (@as(u32, self.window[p + 1]) << 8) | (@as(u32, self.window[p + 2]) << 16);
-        return (v *% 0x1e35a7bd) >> 17;
+        return (v *% 0x1e35a7bd) >> 16;
     }
 
     fn insert(self: *Encoder, p: usize, h: usize) void {
@@ -1623,7 +1627,7 @@ pub const Encoder = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Encoder) == 369944);
+    std.debug.assert(@sizeOf(Encoder) == 435480);
 }
 
 const TestCheck = struct {
