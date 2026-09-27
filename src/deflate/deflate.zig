@@ -1512,20 +1512,73 @@ pub const Encoder = struct {
         try bits.drain();
         var t: usize = 0;
         var p: usize = 0;
-        while (t < self.token_bytes) {
-            const word = std.mem.readInt(u16, self.tokens[t..][0..2], .little);
-            t += 2;
-            if (word & 0x8000 == 0) {
-                const end = p + @as(usize, word) + 1;
-                while (p + 3 <= end) : (p += 3) {
-                    bits.add(lit_tab[raw[p]]);
-                    bits.add(lit_tab[raw[p + 1]]);
-                    bits.add(lit_tab[raw[p + 2]]);
-                    try bits.drain();
-                }
-                while (p < end) : (p += 1) bits.add(lit_tab[raw[p]]);
-                try bits.drain();
+        var lit_end: usize = 0;
+        const w = bits.writer;
+        while (true) {
+            // Bit buffer and output position in registers; one unconditional 8-byte store per step (at most
+            // three literals or one match, so at most 55 bits are pending) while 8 bytes of room remain.
+            const buf = w.buffer;
+            var pos = w.end;
+            var value = bits.value;
+            var count: u32 = bits.count;
+            while (buf.len - pos >= 8) {
+                if (p + 3 <= lit_end) {
+                    const e0 = lit_tab[raw[p]];
+                    const e1 = lit_tab[raw[p + 1]];
+                    const e2 = lit_tab[raw[p + 2]];
+                    value |= (e0 & 0xffffffff) << @intCast(count);
+                    count += @intCast(e0 >> 32);
+                    value |= (e1 & 0xffffffff) << @intCast(count);
+                    count += @intCast(e1 >> 32);
+                    value |= (e2 & 0xffffffff) << @intCast(count);
+                    count += @intCast(e2 >> 32);
+                    p += 3;
+                } else if (p < lit_end) {
+                    const e = lit_tab[raw[p]];
+                    value |= (e & 0xffffffff) << @intCast(count);
+                    count += @intCast(e >> 32);
+                    p += 1;
+                } else if (t < self.token_bytes) {
+                    const word = std.mem.readInt(u16, self.tokens[t..][0..2], .little);
+                    t += 2;
+                    if (word & 0x8000 == 0) {
+                        lit_end = p + @as(usize, word) + 1;
+                        continue;
+                    }
+                    const v = self.tokens[t];
+                    t += 1;
+                    const d = @as(usize, word & 0x7fff) + 1;
+                    const dc = distCode(d);
+                    const e0 = len_tab[v];
+                    const e1 = dist_tab[dc];
+                    value |= (e0 & 0xffffffff) << @intCast(count);
+                    count += @intCast(e0 >> 32);
+                    value |= (e1 & 0xffffffff) << @intCast(count);
+                    count += @intCast(e1 >> 32);
+                    value |= @as(u64, d - DIST_BASE[dc]) << @intCast(count);
+                    count += DIST_EXTRA[dc];
+                    p += @as(usize, v) + 3;
+                } else break;
+                std.mem.writeInt(u64, buf[pos..][0..8], value, .little);
+                pos += count >> 3;
+                value >>= @intCast(count & 56);
+                count &= 7;
+            }
+            w.end = pos;
+            bits.value = value;
+            bits.count = count;
+            if (p >= lit_end and t >= self.token_bytes) break;
+            // Under 8 bytes of room: one step through the writer, which drains its buffer.
+            if (p < lit_end) {
+                bits.add(lit_tab[raw[p]]);
+                p += 1;
             } else {
+                const word = std.mem.readInt(u16, self.tokens[t..][0..2], .little);
+                t += 2;
+                if (word & 0x8000 == 0) {
+                    lit_end = p + @as(usize, word) + 1;
+                    continue;
+                }
                 const v = self.tokens[t];
                 t += 1;
                 const d = @as(usize, word & 0x7fff) + 1;
@@ -1533,9 +1586,9 @@ pub const Encoder = struct {
                 bits.add(len_tab[v]);
                 bits.add(dist_tab[dc]);
                 bits.add(@as(u64, d - DIST_BASE[dc]) | (@as(u64, DIST_EXTRA[dc]) << 32));
-                try bits.drain();
                 p += @as(usize, v) + 3;
             }
+            try bits.drain();
         }
         std.debug.assert(p == raw.len);
         try bits.symbol(lit, 256);
