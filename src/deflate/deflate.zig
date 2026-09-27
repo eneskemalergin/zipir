@@ -1134,8 +1134,8 @@ pub const Encoder = struct {
             } else {
                 self.parse(history, end, level, skip_search);
                 const stored = try self.emit(&bits, self.window[history..end], last, false);
-                // Stored blocks are a bounded miss signal. Recheck after one skipped block.
-                skip_search = stored and !skip_search;
+                // A stored block turns the search off until `hasEarlyMatch` sees a match near a block start.
+                skip_search = stored;
             }
             if (last) break;
             if (history != 0) {
@@ -1314,6 +1314,24 @@ pub const Encoder = struct {
         var pending: Match = .{};
         var pending_hash: usize = 0;
         const search_disabled = skip_search and !self.hasEarlyMatch(start, end);
+        if (search_disabled) {
+            // All literals: count them in four tables (no store-to-load chain on repeated bytes) and insert every
+            // fourth position, enough for `hasEarlyMatch` to find history again.
+            var q = start;
+            while (q + 3 <= end) : (q += 4) self.insert(q, self.hash(q, end));
+            var counts: [4][256]u32 = @splat(@splat(0));
+            q = start;
+            while (q + 4 <= end) : (q += 4) {
+                counts[0][self.window[q]] += 1;
+                counts[1][self.window[q + 1]] += 1;
+                counts[2][self.window[q + 2]] += 1;
+                counts[3][self.window[q + 3]] += 1;
+            }
+            while (q < end) : (q += 1) counts[0][self.window[q]] += 1;
+            for (0..256) |b| self.lit_freq[b] += counts[0][b] + counts[1][b] + counts[2][b] + counts[3][b];
+            self.addLiterals(end - start);
+            return;
+        }
         while (p < end) {
             var m: Match = undefined;
             var m_hash: usize = undefined;
@@ -1349,6 +1367,13 @@ pub const Encoder = struct {
                 self.dist_freq[distCode(m.dist)] += 1;
                 const stop = p + m.len;
                 p += 1;
+                // A self-overlapping match (runs, short periods) repeats its last `dist` positions: insert the
+                // first three and the last dist + 3 only.
+                if (m.dist + 6 < m.len) {
+                    const first_end = p + 3;
+                    while (p < first_end) : (p += 1) self.insert(p, self.hash(p, end));
+                    p = stop - (m.dist + 3);
+                }
                 while (p < stop) : (p += 1) {
                     if (p + 3 <= end) self.insert(p, self.hash(p, end));
                 }
