@@ -1335,12 +1335,17 @@ pub const Encoder = struct {
             self.token_bytes = 0;
         }
         std.debug.assert(level != .fast);
-        const budget: usize = if (level == .dense) 128 else 12;
-        const nice: usize = if (level == .dense) 128 else 96;
+        // dense (2026-09-27): a deeper walk, no early stop below the longest match, lazy evaluation up to 32 bytes
+        // with 64 candidates, and lazy2 (libdeflate's levels 8 and 9); ratio 3.595 to 3.622 at 37 MB/s.
+        const budget: usize = if (level == .dense) 160 else 12;
+        const nice: usize = if (level == .dense) 258 else 96;
+        const lazy_below: usize = if (level == .dense) 32 else 16;
         var p = start;
         var literal_start = start;
         var pending: Match = .{};
         var pending_hash: usize = 0;
+        var pending_pos: usize = 0;
+        var literal_until: usize = 0;
         const search_disabled = skip_search and !self.hasEarlyMatch(start, end, key);
         if (search_disabled) {
             // All literals: count them in four tables (no store-to-load chain on repeated bytes) and insert every
@@ -1363,10 +1368,10 @@ pub const Encoder = struct {
         while (p < end) {
             var m: Match = undefined;
             var m_hash: usize = undefined;
-            if (pending.len >= 3) {
+            if (pending.len >= 3 and pending_pos == p) {
                 m = pending;
                 m_hash = pending_hash;
-            } else if (search_disabled) {
+            } else if (search_disabled or p < literal_until) {
                 if (p + 3 <= end) m_hash = self.hash(p, end, key) else m_hash = 0;
                 m = .{};
             } else if (p + 3 <= end) {
@@ -1376,14 +1381,26 @@ pub const Encoder = struct {
                 m = .{};
                 m_hash = 0;
             }
-            pending = .{};
+            if (pending_pos == p) pending = .{};
             if (p + 3 <= end) self.insert(p, m_hash);
-            if (m.len >= 3 and m.len < 16 and p + 3 < end) {
+            if (m.len >= 3 and m.len < lazy_below and p + 3 < end) {
                 pending_hash = self.hash(p + 1, end, key);
-                const next = self.find(p + 1, end, @min(budget, 8), nice, pending_hash);
+                const next = self.find(p + 1, end, if (level == .dense) 64 else @min(budget, 8), nice, pending_hash);
                 if (next.len > m.len) {
                     pending = next;
+                    pending_pos = p + 1;
                     m.len = 2;
+                } else if (level == .dense and p + 4 < end) {
+                    // lazy2: p + 2 is worth two literals when its match is at least two longer.
+                    const hash2 = self.hash(p + 2, end, key);
+                    const next2 = self.find(p + 2, end, 16, nice, hash2);
+                    if (next2.len > m.len + 1) {
+                        pending = next2;
+                        pending_hash = hash2;
+                        pending_pos = p + 2;
+                        literal_until = p + 2;
+                        m.len = 2;
+                    }
                 }
             }
             if (m.len >= 3) {
