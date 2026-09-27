@@ -11,6 +11,8 @@ BENCH_CPU="${BENCH_CPU:-4}"
 RUN=""
 OPS="compress decompress"
 ONLY_FORMAT=""
+ROUNDS=25
+WARMUP=3
 
 usage() {
     printf '%s\n' \
@@ -24,12 +26,14 @@ usage() {
         '--full                       every class (default classes are sanity and small)' \
         '--op compress|decompress     time only that operation (default both)' \
         '--format gzip|zlib|deflate|bgzf  time only that format (default all)' \
+        '--rounds N, --warmup N       measured rounds and warmups per batch (default 25 and 3); fewer' \
+        '                             rounds suit placing points on a curve, not publication numbers' \
         '--force                      re-time batches that are already complete' \
         '--list                       print the planned matrix and corpus size; run nothing' \
         '' \
         'Daily work uses the defaults. --peers all --levels all --full is for publication runs.' \
         'Every tool needs a passing tools/qualify.sh receipt for its current binary and levels.' \
-        'Sampling: 3 warmups, exactly 25 rounds, taskset -c BENCH_CPU (default 4).' \
+        'Sampling: 3 warmups, exactly 25 rounds by default, taskset -c BENCH_CPU (default 4).' \
         'A batch is skipped when its tools, levels, binaries, and input are unchanged.'
 }
 
@@ -37,15 +41,15 @@ usage() {
 batch_key() {
     local input="$1" subject
     shift
-    printf 'input %s %s %s; cpu %s; w3 n25' "${input#"$ROOT_DIR"/}" "$(stat -c '%s' "$input")" "$(stat -c '%Y' "$input")" "$BENCH_CPU"
+    printf 'input %s %s %s; cpu %s; w%s n%s' "${input#"$ROOT_DIR"/}" "$(stat -c '%s' "$input")" "$(stat -c '%Y' "$input")" "$BENCH_CPU" "$WARMUP" "$ROUNDS"
     for subject in "$@"; do
         printf '; %s %s %s' "$subject" "$(lane_of "${subject%% *}" "${subject##* }")" "$(tool_identity "${subject%% *}")"
     done
 }
 
 batch_complete() {
-    jq -e --argjson n "$2" \
-        '(.results | length) == $n and all(.results[]; .sample_count == 25 and .failed_sample_count == 0)' \
+    jq -e --argjson n "$2" --argjson rounds "$ROUNDS" \
+        '(.results | length) == $n and all(.results[]; .sample_count == $rounds and .failed_sample_count == 0)' \
         "$1" >/dev/null 2>&1
 }
 
@@ -82,7 +86,7 @@ run_batch() {
     mkdir -p "$(dirname "$base")"
     printf 'time: %s %s %s.%s, %s subjects\n' "$format" "$op" "$category" "$class" $#
     load_before="$(cut -d' ' -f1-3 /proc/loadavg)"
-    taskset -c "$BENCH_CPU" zebrac --color never -q -w 3 -i 25 -a 25 -d 1 \
+    taskset -c "$BENCH_CPU" zebrac --color never -q -w "$WARMUP" -i "$ROUNDS" -a "$ROUNDS" -d 1 \
         --json="$base.part.json" -- "${cmds[@]}" >/dev/null
     batch_complete "$base.part.json" $# || die "incomplete Zebrac batch: $base.part.json"
     [[ "$(jq -r '.results[].command' "$base.part.json")" == "$(printf '%s\n' "${cmds[@]}")" ]] ||
@@ -91,6 +95,7 @@ run_batch() {
         printf '# key\t%s\n' "$key"
         printf '# format\t%s\n# op\t%s\n# category\t%s\n# class\t%s\n' "$format" "$op" "$category" "$class"
         printf '# input\t%s\n# input_bytes\t%s\n# plain_bytes\t%s\n' "${input#"$ROOT_DIR"/}" "$(stat -c '%s' "$input")" "$plain_bytes"
+        printf '# rounds\t%s\n# warmup\t%s\n' "$ROUNDS" "$WARMUP"
         printf '# load_before\t%s\n# load_after\t%s\n# cpu\t%s\n' "$load_before" "$(cut -d' ' -f1-3 /proc/loadavg)" "$BENCH_CPU"
         host_state | sed 's/^/# /'
         git_state | sed 's/^/# /'
@@ -109,6 +114,10 @@ main() {
         if [[ "$1" == --op ]]; then
             [[ $# -ge 2 && "$2" =~ ^(compress|decompress)$ ]] || usage_error "--op must be compress or decompress"
             OPS="$2"
+            shift 2
+        elif [[ "$1" == --rounds || "$1" == --warmup ]]; then
+            [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || usage_error "$1 needs a positive whole number"
+            if [[ "$1" == --rounds ]]; then ROUNDS="$2"; else WARMUP="$2"; fi
             shift 2
         elif [[ "$1" == --format ]]; then
             [[ $# -ge 2 && " ${FORMATS[*]} " == *" $2 "* ]] || usage_error "--format must be one of: ${FORMATS[*]}"

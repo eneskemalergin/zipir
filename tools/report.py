@@ -68,7 +68,8 @@ def load(run):
         if len(results) != len(subjects):
             problems.append(f"{json_path}: {len(results)} results for {len(subjects)} subjects")
             continue
-        bad = [r["command"] for r in results if r["sample_count"] != 25 or r["failed_sample_count"] != 0]
+        rounds = int(meta.get("rounds", 25))
+        bad = [r["command"] for r in results if r["sample_count"] != rounds or r["failed_sample_count"] != 0]
         if bad:
             problems.append(f"{json_path}: incomplete samples for {bad}")
             continue
@@ -158,12 +159,17 @@ def file_table(rows):
                   "time vs zipir", "size vs zipir"], out)
 
 
+def rounds_text(facts):
+    counts = sorted({r["samples"] for r in facts})
+    return ", ".join(f"{c} rounds" for c in counts) + " after warmups"
+
+
 def summary(run, facts):
     loads = sorted(float(r[k].split()[0]) for r in facts for k in ("load_before", "load_after"))
     commits = sorted({f"{r['commit']}{' (dirty)' if r['dirty'] == 'true' else ''}" for r in facts})
     lines = [f"# Bench summary: {run}", "",
              f"Matched Zebrac batches: every subject of a file and operation runs in the same interleaved "
-             f"rounds (3 warmups, 25 rounds, one pinned CPU). Commit {', '.join(commits)}. Host load "
+             f"rounds ({rounds_text(facts)}, one pinned CPU). Commit {', '.join(commits)}. Host load "
              f"(1 min) {loads[0]:.1f} to {loads[-1]:.1f}. MB/s is uncompressed bytes per second (10^6). "
              f"'vs zipir' is the tool divided by zipir in the same batch and lane: time above 1.00 is "
              f"slower, size above 1.000 is larger. Streaming and full-buffer decoders are labeled, not ranked.",
