@@ -3,7 +3,7 @@
 <rect width="1180" height="732" rx="12" fill="#1a1a19"/>
 <text x="28.0" y="38.0" font-size="20" fill="#ffffff" text-anchor="start" font-weight="650" >zipir against the fastest peer on every path</text>
 <text x="28.0" y="62.0" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >Peer time divided by zipir time: geometric mean over the small and medium corpus files, whiskers across files. Left of 1 the peer is faster.</text>
-<text x="28.0" y="81.0" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >AMD Ryzen 9 3950X (Zen 2, AVX2), Linux, one thread per process, matched interleaved rounds. zipir ff8e9e8.</text>
+<text x="28.0" y="81.0" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >AMD Ryzen 9 3950X (Zen 2, AVX2), Linux, one thread per process, matched interleaved rounds (zipir compression re-timed separately). zipir 1b9b531.</text>
 <rect x="236.0" y="124.0" width="214.7" height="500.0" rx="0" fill="#222221" />
 <rect x="450.7" y="124.0" width="115.3" height="500.0" rx="0" fill="#2b2416" />
 <line x1="236.0" y1="124.0" x2="236.0" y2="624.0" stroke="#2c2c2a" stroke-width="1" />
@@ -47,69 +47,68 @@
 <text x="28.0" y="288.0" font-size="13" fill="#ffffff" text-anchor="start" font-weight="650" >Compression, by level</text>
 <line x1="28.0" y1="295.0" x2="1152.0" y2="295.0" stroke="#2c2c2a" stroke-width="1" />
 <text x="40.0" y="317.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >gzip · level 1</text>
-<line x1="381.0" y1="313.5" x2="412.6" y2="313.5" stroke="#199e70" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<path d="M520.9,307.0 L527.4,313.5 L520.9,320.0 L514.4,313.5 Z" fill="#1a1a19" stroke="#898781" stroke-width="2.2" stroke-linejoin="round"><title>Zig std 1: zipir 2.66x faster, same size</title></path>
-<path d="M399.5,305.9 L406.4,319.0 L392.6,319.0 Z" fill="#199e70" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>ISA-L igzip: 2.04x faster than zipir</title></path>
-<text x="600.0" y="317.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >ISA-L igzip 0 · 2.04× faster · +18% size</text>
-<text x="912.0" y="317.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >Zig std 1 · zipir 2.66× faster</text>
+<line x1="414.6" y1="313.5" x2="446.0" y2="313.5" stroke="#199e70" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<path d="M430.8,305.9 L437.7,319.0 L423.9,319.0 Z" fill="#199e70" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>ISA-L igzip: 1.32x faster than zipir</title></path>
+<text x="600.0" y="317.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >ISA-L igzip 0 · 1.32× faster · +22% size</text>
+<text x="912.0" y="317.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >none</text>
 <text x="40.0" y="344.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >gzip · level 5</text>
-<line x1="328.9" y1="340.5" x2="366.1" y2="340.5" stroke="#199e70" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<rect x="438.8" y="336.0" width="9.0" height="9.0" rx="1.5" fill="#1a1a19" stroke="#3987e5" stroke-width="2.2"><title>zlib-ng 5: 1.11x faster than zipir, -0.6% size</title></rect>
-<path d="M345.0,332.9 L351.8,346.0 L338.1,346.0 Z" fill="#199e70" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>ISA-L igzip: 4.37x faster than zipir</title></path>
-<text x="600.0" y="344.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >ISA-L igzip 1 · 4.37× faster · +13% size</text>
-<text x="912.0" y="344.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >zlib-ng 5 · 1.11× faster</text>
+<line x1="330.5" y1="340.5" x2="376.5" y2="340.5" stroke="#199e70" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<path d="M346.4,332.9 L353.3,346.0 L339.6,346.0 Z" fill="#199e70" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>ISA-L igzip: 4.28x faster than zipir</title></path>
+<text x="600.0" y="344.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >ISA-L igzip 1 · 4.28× faster · +15% size</text>
+<text x="912.0" y="344.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >none</text>
 <text x="40.0" y="371.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >gzip · level 9</text>
-<line x1="280.5" y1="367.5" x2="367.0" y2="367.5" stroke="#199e70" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<rect x="517.1" y="363.0" width="9.0" height="9.0" rx="1.5" fill="#1a1a19" stroke="#3987e5" stroke-width="2.2"><title>zlib-ng 9: zipir 2.69x faster, +0.6% size</title></rect>
-<path d="M325.8,359.9 L332.7,373.0 L318.9,373.0 Z" fill="#199e70" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>ISA-L igzip: 5.71x faster than zipir</title></path>
-<text x="600.0" y="371.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >ISA-L igzip 2 · 5.71× faster · +14% size</text>
-<text x="912.0" y="371.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >zlib-ng 9 · zipir 2.69× faster</text>
+<line x1="241.8" y1="367.5" x2="356.9" y2="367.5" stroke="#199e70" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<path d="M295.3,359.9 L302.1,373.0 L288.4,373.0 Z" fill="#199e70" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>ISA-L igzip: 8.75x faster than zipir</title></path>
+<text x="600.0" y="371.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >ISA-L igzip 2 · 8.75× faster · +15% size</text>
+<text x="912.0" y="371.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >none</text>
 <text x="40.0" y="398.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >zlib · level 1</text>
-<line x1="429.5" y1="394.5" x2="441.5" y2="394.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<rect x="428.8" y="389.6" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: 1.27x faster than zipir</title></rect>
-<text x="600.0" y="398.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 1 · 1.27× faster · +30% size</text>
+<line x1="463.8" y1="394.5" x2="474.5" y2="394.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<rect x="464.9" y="389.6" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: zipir 1.31x faster</title></rect>
+<text x="600.0" y="398.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 1 · zipir 1.31× faster · +34% size</text>
 <text x="912.0" y="398.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >none</text>
 <text x="40.0" y="425.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >zlib · level 5</text>
-<line x1="434.5" y1="421.5" x2="454.3" y2="421.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<rect x="438.6" y="416.6" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: 1.10x faster than zipir</title></rect>
-<text x="600.0" y="425.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 5 · 1.10× faster · -0.6% size</text>
-<text x="912.0" y="425.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >same peer</text>
+<line x1="443.6" y1="421.5" x2="461.9" y2="421.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<rect x="447.5" y="416.6" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: zipir 1.02x faster</title></rect>
+<text x="600.0" y="425.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 5 · zipir 1.02× faster · +1.5% size</text>
+<text x="912.0" y="425.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >none</text>
 <text x="40.0" y="452.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >zlib · level 9</text>
-<line x1="484.7" y1="448.5" x2="566.0" y2="448.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<rect x="517.2" y="443.6" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: zipir 2.71x faster</title></rect>
-<text x="600.0" y="452.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 9 · zipir 2.71× faster · +0.6% size</text>
-<text x="912.0" y="452.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >same peer</text>
+<line x1="459.5" y1="448.5" x2="543.9" y2="448.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<rect x="491.0" y="443.6" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: zipir 1.88x faster</title></rect>
+<text x="600.0" y="452.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 9 · zipir 1.88× faster · +2% size</text>
+<text x="912.0" y="452.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >none</text>
 <text x="40.0" y="479.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >raw DEFLATE · level 1</text>
-<line x1="429.9" y1="475.5" x2="441.8" y2="475.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<rect x="429.5" y="470.6" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: 1.25x faster than zipir</title></rect>
-<text x="600.0" y="479.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 1 · 1.25× faster · +30% size</text>
+<line x1="463.1" y1="475.5" x2="479.1" y2="475.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<rect x="464.9" y="470.6" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: zipir 1.31x faster</title></rect>
+<text x="600.0" y="479.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 1 · zipir 1.31× faster · +34% size</text>
 <text x="912.0" y="479.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >none</text>
 <text x="40.0" y="506.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >raw DEFLATE · level 5</text>
-<line x1="434.1" y1="502.5" x2="454.1" y2="502.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<rect x="438.7" y="497.6" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: 1.10x faster than zipir</title></rect>
-<text x="600.0" y="506.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 5 · 1.10× faster · -0.6% size</text>
-<text x="912.0" y="506.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >same peer</text>
+<line x1="440.4" y1="502.5" x2="461.6" y2="502.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<rect x="446.7" y="497.6" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: same speed</title></rect>
+<text x="600.0" y="506.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 5 · same speed · +1.5% size</text>
+<text x="912.0" y="506.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >none</text>
 <text x="40.0" y="533.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >raw DEFLATE · level 9</text>
-<line x1="484.1" y1="529.5" x2="566.0" y2="529.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<rect x="517.2" y="524.5" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: zipir 2.71x faster</title></rect>
-<text x="600.0" y="533.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 9 · zipir 2.71× faster · +0.6% size</text>
-<text x="912.0" y="533.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >same peer</text>
+<line x1="456.4" y1="529.5" x2="541.4" y2="529.5" stroke="#3987e5" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<rect x="490.0" y="524.5" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"><title>zlib-ng: zipir 1.86x faster</title></rect>
+<text x="600.0" y="533.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >zlib-ng 9 · zipir 1.86× faster · +2% size</text>
+<text x="912.0" y="533.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >none</text>
 <text x="40.0" y="560.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >BGZF · level 1</text>
-<line x1="428.9" y1="556.5" x2="441.5" y2="556.5" stroke="#d55181" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<rect x="444.2" y="552.0" width="9.0" height="9.0" rx="1.5" fill="#1a1a19" stroke="#9085e9" stroke-width="2.2"><title>bgzip + libdeflate 1: 1.03x faster than zipir, -9% size</title></rect>
-<path d="M435.2,548.9 L442.0,562.0 L428.3,562.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng: 1.24x faster than zipir</title></path>
-<text x="600.0" y="560.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >bgzip + zlib-ng 1 · 1.24× faster · +29% size</text>
-<text x="912.0" y="560.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >bgzip + libdeflate 1 · 1.03× faster</text>
+<line x1="460.9" y1="556.5" x2="473.8" y2="556.5" stroke="#d55181" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<rect x="476.2" y="552.0" width="9.0" height="9.0" rx="1.5" fill="#1a1a19" stroke="#9085e9" stroke-width="2.2"><title>bgzip + libdeflate 1: zipir 1.52x faster, -6% size</title></rect>
+<path d="M467.2,548.9 L474.0,562.0 L460.3,562.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng: zipir 1.26x faster</title></path>
+<text x="600.0" y="560.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >bgzip + zlib-ng 1 · zipir 1.26× faster · +32% size</text>
+<text x="912.0" y="560.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >bgzip + libdeflate 1 · zipir 1.52× faster</text>
 <text x="40.0" y="587.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >BGZF · level 5</text>
-<line x1="438.9" y1="583.5" x2="450.2" y2="583.5" stroke="#d55181" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<path d="M445.5,575.9 L452.4,589.0 L438.6,589.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng: 1.07x faster than zipir</title></path>
-<text x="600.0" y="587.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >bgzip + zlib-ng 5 · 1.07× faster · same size</text>
-<text x="912.0" y="587.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >same peer</text>
+<line x1="447.1" y1="583.5" x2="459.8" y2="583.5" stroke="#d55181" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<rect x="454.4" y="579.0" width="9.0" height="9.0" rx="1.5" fill="#1a1a19" stroke="#9085e9" stroke-width="2.2"><title>bgzip + libdeflate 5: zipir 1.12x faster, -1.4% size</title></rect>
+<path d="M453.9,575.9 L460.7,589.0 L447.0,589.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng: zipir 1.05x faster</title></path>
+<text x="600.0" y="587.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >bgzip + zlib-ng 5 · zipir 1.05× faster · +1.3% size</text>
+<text x="912.0" y="587.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >bgzip + libdeflate 5 · zipir 1.12× faster</text>
 <text x="40.0" y="614.5" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >BGZF · level 9</text>
-<line x1="485.5" y1="610.5" x2="566.0" y2="610.5" stroke="#d55181" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
-<path d="M511.4,602.9 L518.3,616.0 L504.5,616.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng: zipir 2.33x faster</title></path>
-<text x="600.0" y="614.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >bgzip + zlib-ng 9 · zipir 2.33× faster · +0.7% size</text>
-<text x="912.0" y="614.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >same peer</text>
+<line x1="461.7" y1="610.5" x2="535.3" y2="610.5" stroke="#d55181" stroke-width="2" stroke-linecap="round" opacity="0.55"/>
+<rect x="561.5" y="606.0" width="9.0" height="9.0" rx="1.5" fill="#1a1a19" stroke="#9085e9" stroke-width="2.2"><title>bgzip + libdeflate 9: zipir 15.77x faster, -6% size</title></rect>
+<path d="M486.9,602.9 L493.7,616.0 L480.0,616.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng: zipir 1.66x faster</title></path>
+<text x="600.0" y="614.5" font-size="12" fill="#ffffff" text-anchor="start" font-weight="400" >bgzip + zlib-ng 9 · zipir 1.66× faster · +3% size</text>
+<text x="912.0" y="614.5" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >bgzip + libdeflate 9 · zipir 15.77× faster</text>
 <rect x="29.1" y="685.0" width="9.9" height="9.9" rx="1.5" fill="#3987e5" stroke="#1a1a19" stroke-width="2"></rect>
 <text x="46.0" y="694.0" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >zlib-ng</text>
 <path d="M111.0,682.4 L117.9,695.5 L104.2,695.5 Z" fill="#199e70" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"></path>

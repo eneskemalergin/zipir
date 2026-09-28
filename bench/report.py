@@ -101,6 +101,11 @@ def load(run):
         meta.setdefault('dirty', head.get('dirty'))
         loads = [float(head[k].split()[0]) for k in ('load_before', 'load_after') if k in head]
         meta.setdefault('loads', []).extend(loads)
+    # A spliced run (bench/splice.py) carries zipir's compression rows from a later zipir-only run.
+    splice = ROOT / 'tools/.local/bench' / run / 'splice.tsv'
+    if splice.exists():
+        meta['splice'] = dict(line.split('\t', 1) for line in splice.read_text().splitlines() if '\t' in line)
+        meta['commit'] = meta['splice']['zipir_commit']
     for r in rows:
         for k in ('wall_median_ns', 'wall_q1_ns', 'wall_q3_ns', 'rss_median_bytes', 'plain_bytes', 'input_bytes',
                   'compressed_bytes', 'mbs', 'time_vs_zipir', 'rss_vs_zipir'):
@@ -280,7 +285,9 @@ def figure_summary(summary, meta, theme, path):
     svg.text(left, 38, 'zipir against the fastest peer on every path', 20, weight=650)
     svg.text(left, 62, 'Peer time divided by zipir time: geometric mean over the small and medium corpus files, '
              'whiskers across files. Left of 1 the peer is faster.', 13, 'ink2')
-    svg.text(left, 81, f'{meta["cpu"]} (Zen 2, AVX2), Linux, one thread per process, matched interleaved rounds. '
+    rounds = ('matched interleaved rounds (zipir compression re-timed separately)' if meta.get('splice')
+              else 'matched interleaved rounds')
+    svg.text(left, 81, f'{meta["cpu"]} (Zen 2, AVX2), Linux, one thread per process, {rounds}. '
              f'zipir {meta["commit"][:7]}.', 13, 'ink2')
     x = log_scale(0.05, 5.0, plot_l, plot_r)
     y = top
@@ -672,6 +679,13 @@ def write_readme(target, rows, summary, meta, out):
     L.append('## Method')
     L.append('')
     L.extend(METHOD)
+    if meta.get('splice'):
+        sp = meta['splice']
+        L.append(f'- **zipir compression re-timed alone.** zipir\'s compression rows come from a zipir-only run '
+                 f'(`{sp["new"]}`, zipir `{sp["zipir_commit"][:12]}`); every peer row and zipir\'s decompression rows '
+                 f'come from `{sp["base"]}` (zipir `{sp["peers_commit"][:12]}`, whose decoder is unchanged since). '
+                 f'So zipir\'s compression was not timed in the same rounds as the peers: load that differed between '
+                 f'the two runs shifts zipir against every peer. {sp.get("control_note", "")}'.rstrip())
     L.extend(noise_lines(rows))
     L.append('')
     L.append('## Tools and versions')

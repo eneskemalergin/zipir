@@ -4,7 +4,7 @@ Published benchmark reports, one directory per measured target. Each report stat
 
 | Target | Host | zipir | Report |
 | --- | --- | --- | --- |
-| `linux-x86-avx2` | AMD Ryzen 9 3950X (Zen 2), Linux x86-64 | `ff8e9e8` | [linux-x86-avx2/README.md](linux-x86-avx2/README.md) |
+| `linux-x86-avx2` | AMD Ryzen 9 3950X (Zen 2), Linux x86-64 | `1b9b531` (compression), `ff8e9e8` (decompression and peers) | [linux-x86-avx2/README.md](linux-x86-avx2/README.md) |
 
 ## How the numbers are made
 
@@ -19,6 +19,14 @@ The measurements come from the comparison harness in [`tools/`](../tools/README.
 
 ```sh
 python3 bench/report.py prime-lanes --target linux-x86-avx2
+```
+
+When only zipir's encoder changed, its compression rows can be re-timed without re-timing the peers: time the zipir adapters alone (`tools/bench.sh --op compress zipir-gzip zipir-zlib zipir-deflate zipir-bgzf` with the classes of the base run), then [`splice.py`](splice.py) writes a run with zipir's rows replaced and every other row as measured, and `report.py` states in the report that those rows were not timed in the same rounds as the peers:
+
+```sh
+python3 bench/splice.py prime-lanes named-zipir-gzip+zipir-zlib+zipir-deflate+zipir-bgzf-lanes prime-lanes-1b9b531
+python3 tools/report.py prime-lanes-1b9b531
+python3 bench/report.py prime-lanes-1b9b531 --target linux-x86-avx2
 ```
 
 A single command that runs the whole publication set (install, qualify, bench, checks, report) will replace these steps; until then, `tools/README.md` has the commands and their run times.
