@@ -96,13 +96,13 @@ while (decoder.reader.peekGreedy(1)) |chunk| {
 // Plain bytes in, one gzip member out; the output does not depend on the write sizes.
 const encoder = try allocator.create(zipir.gzip.Compressor);
 defer allocator.destroy(encoder);
-try encoder.init(&out.interface, .{ .level = .even });
+try encoder.init(&out.interface, .{ .preset = .even }); // .fast, .even, or .dense
 try encoder.writer.writeAll(record);
 _ = try encoder.finish();
 try out.interface.flush();
 ```
 
-A whole stream is one pump either way: `decoder.reader.streamRemaining(writer)`, or `input.streamRemaining(&encoder.writer)` then `encoder.finish()`. The same shape serves `zipir.zlib`, `zipir.deflate`, and `zipir.bgzf`, whose decompressor also seeks by virtual offset or through a `.gzi` index. `max_output_bytes` bounds decoded output and gzip's `max_header_bytes` bounds header fields.
+A whole stream is one pump either way: `decoder.reader.streamRemaining(writer)`, or `input.streamRemaining(&encoder.writer)` then `encoder.finish()`. Every format namespace (`zipir.gzip`, `zipir.zlib`, `zipir.deflate`, `zipir.bgzf`) has the same `Decompressor`, `DecompressOptions`, `DecompressError`, `Compressor`, `CompressOptions`, and `CompressError`; BGZF's decompressor also seeks by virtual offset or through a `.gzi` index. `max_output_bytes` bounds decoded output and gzip's `max_header_bytes` bounds header fields.
 
 To use zipir from another Zig project, add it to `build.zig.zon` (for example `.zipir = .{ .path = "../zipir" }`) and import its module:
 
