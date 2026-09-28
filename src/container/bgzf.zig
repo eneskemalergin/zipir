@@ -555,7 +555,7 @@ fn readBlock(br: *engine.BitReader, session: *engine.Session(crc.Crc32), room: u
         break :blk std.mem.eql(u8, br.src[br.i..][0..EOF_MARKER.len], &EOF_MARKER);
     };
     var visitor: BlockVisitor = .{};
-    try gzip.parseHeader(br, BlockVisitor, &visitor);
+    try gzip.parseHeader(br, BlockVisitor, &visitor, std.math.maxInt(u64));
     const block_size = @as(u64, visitor.bsize orelse return error.NotBgzf) + 1;
     if (block_size < br.consumed() - start + 2 + 8) return error.BadBlockSize;
     var check: crc.Crc32 = .init();

@@ -88,7 +88,11 @@ fn decompressPath(comptime codec_format: zipir.Format, io: Io, paths: adapter.Pa
     var out_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
     var out_writer = out_file.writerStreaming(io, &out_buf);
 
-    _ = try decoder.decompress(&in_reader.interface, &out_writer.interface, .{});
+    decoder.init(&in_reader.interface, .{});
+    _ = decoder.reader.streamRemaining(&out_writer.interface) catch |err| return switch (err) {
+        error.ReadFailed => decoder.err.?,
+        error.WriteFailed => error.WriteFailed,
+    };
     try out_writer.interface.flush();
 }
 

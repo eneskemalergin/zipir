@@ -23,7 +23,7 @@ test "[integration] - [gzip]: bounded refills and partial drains preserve member
         for ([_][3]usize{ .{ 16, 1, 1 }, .{ 17, 3, 17 }, .{ 257, 257, 4096 }, .{ 32768, 65536, 65536 } }) |shape| {
             var source = support.Source.init(case[0], input[0..shape[0]], shape[1]);
             var sink: support.Sink = .{ .output = output[0..shape[2]], .sink = got, .max_drain = 317 };
-            const n = try work.decompress(&source.reader, &sink.writer, .{});
+            const n = try support.decompress(work, &source.reader, &sink.writer, .{});
             try std.testing.expectEqual(case[1].len, n);
             try std.testing.expectEqualSlices(u8, case[1], got);
         }
@@ -48,12 +48,12 @@ test "[integration] - [gzip]: optional headers without FHCRC preserve refills an
     for ([_]usize{ 16, 32768 }) |size| {
         var source = support.Source.init(compressed, input[0..size], if (size == 16) 1 else size);
         var sink: support.Sink = .{ .output = &output, .sink = got };
-        try std.testing.expectEqual(plain.len, try work.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectEqual(plain.len, try support.decompress(work, &source.reader, &sink.writer, .{}));
         try std.testing.expectEqualSlices(u8, plain, got);
         compressed[compressed.len - 8] ^= 1;
         source = support.Source.init(compressed, input[0..size], size);
         sink = .{ .output = &output };
-        try std.testing.expectError(error.CrcMismatch, work.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectError(error.CrcMismatch, support.decompress(work, &source.reader, &sink.writer, .{}));
         compressed[compressed.len - 8] ^= 1;
     }
 }
@@ -68,12 +68,12 @@ test "[property] - [gzip]: every small input split and truncated prefix is check
         var source = support.Source.init(seed, &input, 65536);
         source.split_at = split;
         var sink: support.Sink = .{ .output = &output };
-        try std.testing.expectEqual(@as(usize, 1), try work.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectEqual(@as(usize, 1), try support.decompress(work, &source.reader, &sink.writer, .{}));
         try std.testing.expectEqual(@as(u8, 'A'), output[0]);
         if (split == seed.len) continue;
         source = support.Source.init(seed[0..split], &input, 1);
         sink.count = 0;
-        if (work.decompress(&source.reader, &sink.writer, .{})) |_| return error.AcceptedTruncation else |_| {}
+        if (support.decompress(work, &source.reader, &sink.writer, .{})) |_| return error.AcceptedTruncation else |_| {}
     }
 }
 
@@ -85,7 +85,7 @@ test "[failure] - [gzip]: corrupt history and headers fail across refills" {
     inline for (.{ .{ @embedFile("data/synthetic/invalid-history.gz"), error.BadDistance }, .{ @embedFile("data/synthetic/invalid-fhcrc.gz"), error.HeaderCrcMismatch } }) |case| {
         var source = support.Source.init(case[0], &input, 1);
         var sink: support.Sink = .{ .output = &output };
-        try std.testing.expectError(case[1], work.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectError(case[1], support.decompress(work, &source.reader, &sink.writer, .{}));
     }
     const seed = @embedFile("data/synthetic/long-header.gz");
     const damaged = try std.testing.allocator.dupe(u8, seed);
@@ -93,7 +93,7 @@ test "[failure] - [gzip]: corrupt history and headers fail across refills" {
     damaged[70000] ^= 1;
     var source = support.Source.init(damaged, &input, 3);
     var sink: support.Sink = .{ .output = &output };
-    try std.testing.expectError(error.HeaderCrcMismatch, work.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectError(error.HeaderCrcMismatch, support.decompress(work, &source.reader, &sink.writer, .{}));
 }
 
 test "[failure] - [gzip]: I/O errors propagate and workspace can be reused" {
@@ -106,14 +106,14 @@ test "[failure] - [gzip]: I/O errors propagate and workspace can be reused" {
         var source = support.Source.init(seed, &input, 3);
         source.fail_at = offset;
         var sink: support.Sink = .{ .output = &output };
-        try std.testing.expectError(error.ReadFailed, work.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectError(error.ReadFailed, support.decompress(work, &source.reader, &sink.writer, .{}));
     }
     var source = support.Source.init(seed, &input, 17);
     var sink: support.Sink = .{ .output = &output, .fail_at = 4096 };
-    try std.testing.expectError(error.WriteFailed, work.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectError(error.WriteFailed, support.decompress(work, &source.reader, &sink.writer, .{}));
     source = support.Source.init(seed, &input, 17);
     sink = .{ .output = &output };
-    try std.testing.expectEqual(@as(usize, 231823), try work.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectEqual(@as(usize, 231823), try support.decompress(work, &source.reader, &sink.writer, .{}));
 }
 
 test "[edge] - [gzip]: buffer minimum and unread trailing bytes preserve the caller contract" {
@@ -125,17 +125,17 @@ test "[edge] - [gzip]: buffer minimum and unread trailing bytes preserve the cal
     for ([_]usize{ 0, 1, 15 }) |capacity| {
         var source = support.Source.init(seed, input[0..capacity], 1);
         var sink: support.Sink = .{ .output = &output };
-        try std.testing.expectError(error.InputBufferTooSmall, work.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectError(error.InputBufferTooSmall, support.decompress(work, &source.reader, &sink.writer, .{}));
     }
     var source = support.Source.init(seed.* ++ "tail", &input, 3);
     var sink: support.Sink = .{ .output = &output };
-    try std.testing.expectEqual(@as(usize, 1), try work.decompress(&source.reader, &sink.writer, .{ .trailing_data = .leave }));
+    try std.testing.expectEqual(@as(usize, 1), try support.decompress(work, &source.reader, &sink.writer, .{ .trailing_data = .leave }));
     try std.testing.expectEqualSlices(u8, "tail", try source.reader.take(4));
     const header = @embedFile("data/synthetic/long-header.gz");
     for ([_]usize{ 10, 11, 12, 65545, 65547, 70000, 135548, 201549, header.len - 1 }) |cut| {
         source = support.Source.init(header[0..cut], &input, 17);
         sink.count = 0;
-        if (work.decompress(&source.reader, &sink.writer, .{})) |_| return error.AcceptedTruncation else |_| {}
+        if (support.decompress(work, &source.reader, &sink.writer, .{})) |_| return error.AcceptedTruncation else |_| {}
     }
 }
 
@@ -152,10 +152,10 @@ test "[failure] - [gzip]: output limits cover matches stored blocks and member b
             var reader = std.Io.Reader.fixed(case[0]);
             var writer: std.Io.Writer.Discarding = .init(&.{});
             if (limit < case[1]) {
-                try std.testing.expectError(error.OutputLimitExceeded, decoder.decompress(&reader, &writer.writer, .{ .max_output_bytes = limit }));
+                try std.testing.expectError(error.OutputLimitExceeded, support.decompress(decoder, &reader, &writer.writer, .{ .max_output_bytes = limit }));
                 try std.testing.expect(writer.fullCount() <= limit);
             } else {
-                try std.testing.expectEqual(case[1], try decoder.decompress(&reader, &writer.writer, .{ .max_output_bytes = limit }));
+                try std.testing.expectEqual(case[1], try support.decompress(decoder, &reader, &writer.writer, .{ .max_output_bytes = limit }));
                 try std.testing.expectEqual(case[1], writer.fullCount());
             }
         }
@@ -181,7 +181,7 @@ test "[failure] - [gzip]: validates headers blocks CRC and ISIZE" {
         damaged[case[0]] ^= case[1];
         var reader = std.Io.Reader.fixed(damaged);
         var writer: std.Io.Writer.Discarding = .init(&.{});
-        try std.testing.expectError(case[2], decoder.decompress(&reader, &writer.writer, .{}));
+        try std.testing.expectError(case[2], support.decompress(decoder, &reader, &writer.writer, .{}));
     }
 }
 
@@ -192,23 +192,23 @@ test "[edge] - [gzip]: strict trailing data empty members and fixed output capac
     defer std.testing.allocator.destroy(decoder);
     var reader = std.Io.Reader.fixed(empty);
     var writer = std.Io.Writer.fixed(&.{});
-    try std.testing.expectEqual(@as(u64, 0), try decoder.decompress(&reader, &writer, .{ .max_output_bytes = 0 }));
+    try std.testing.expectEqual(@as(u64, 0), try support.decompress(decoder, &reader, &writer, .{ .max_output_bytes = 0 }));
     reader = std.Io.Reader.fixed(seed);
-    try std.testing.expectError(error.WriteFailed, decoder.decompress(&reader, &writer, .{}));
+    try std.testing.expectError(error.WriteFailed, support.decompress(decoder, &reader, &writer, .{}));
     inline for (.{ "x", "tail", "\x00", "\x1f" }) |suffix| {
         var input: [16]u8 = undefined;
         var source = support.Source.init(seed.* ++ suffix, &input, 1);
         var sink: std.Io.Writer.Discarding = .init(&.{});
-        try std.testing.expectError(error.TrailingData, decoder.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectError(error.TrailingData, support.decompress(decoder, &source.reader, &sink.writer, .{}));
         source = support.Source.init(seed.* ++ suffix, &input, 1);
         sink = .init(&.{});
-        try std.testing.expectEqual(@as(u64, 1), try decoder.decompress(&source.reader, &sink.writer, .{ .trailing_data = .leave }));
+        try std.testing.expectEqual(@as(u64, 1), try support.decompress(decoder, &source.reader, &sink.writer, .{ .trailing_data = .leave }));
         try std.testing.expectEqualSlices(u8, suffix, try source.reader.take(suffix.len));
     }
     var one: [1]u8 = undefined;
     reader = std.Io.Reader.fixed(empty ++ seed.* ++ empty);
     writer = .fixed(&one);
-    try std.testing.expectEqual(@as(u64, 1), try decoder.decompress(&reader, &writer, .{ .max_output_bytes = 1 }));
+    try std.testing.expectEqual(@as(u64, 1), try support.decompress(decoder, &reader, &writer, .{ .max_output_bytes = 1 }));
     try std.testing.expectEqualStrings("A", writer.buffered());
 }
 
@@ -217,10 +217,10 @@ test "[failure] - [gzip]: incomplete and oversubscribed Huffman trees are reject
     defer std.testing.allocator.destroy(decoder);
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var reader = std.Io.Reader.fixed(@embedFile("data/synthetic/empty-single.gz"));
-    try std.testing.expectEqual(@as(u64, 0), try decoder.decompress(&reader, &sink.writer, .{}));
+    try std.testing.expectEqual(@as(u64, 0), try support.decompress(decoder, &reader, &sink.writer, .{}));
     inline for (.{ "incomplete-literal", "incomplete-distance", "incomplete-code-length", "oversubscribed-literal" }) |name| {
         reader = .fixed(@embedFile("data/synthetic/" ++ name ++ ".gz"));
-        try std.testing.expectError(error.BadHuffman, decoder.decompress(&reader, &sink.writer, .{}));
+        try std.testing.expectError(error.BadHuffman, support.decompress(decoder, &reader, &sink.writer, .{}));
     }
 }
 
@@ -236,7 +236,7 @@ test "[property] - [gzip]: bounded mutations and truncations never escape valida
         for (first_cut..seed.len) |cut| {
             var reader = std.Io.Reader.fixed(seed[0..cut]);
             var sink: std.Io.Writer.Discarding = .init(&.{});
-            if (decoder.decompress(&reader, &sink.writer, .{})) |_| return error.AcceptedTruncation else |_| {}
+            if (support.decompress(decoder, &reader, &sink.writer, .{})) |_| return error.AcceptedTruncation else |_| {}
         }
         for (0..256) |_| {
             @memcpy(mutated, seed);
@@ -244,7 +244,7 @@ test "[property] - [gzip]: bounded mutations and truncations never escape valida
             mutated[position] ^= @as(u8, 1) << random.random().int(u3);
             var reader = std.Io.Reader.fixed(mutated);
             var sink: std.Io.Writer.Discarding = .init(&.{});
-            _ = decoder.decompress(&reader, &sink.writer, .{ .max_output_bytes = 262144 }) catch {};
+            _ = support.decompress(decoder, &reader, &sink.writer, .{ .max_output_bytes = 262144 }) catch {};
             try std.testing.expect(sink.fullCount() <= 262144);
         }
     }
@@ -255,7 +255,7 @@ test "[property] - [gzip]: bounded mutations and truncations never escape valida
         var buffer: [16]u8 = undefined;
         var source = support.Source.init(bytes[0..length], &buffer, 3);
         var sink: std.Io.Writer.Discarding = .init(&.{});
-        _ = decoder.decompress(&source.reader, &sink.writer, .{ .max_output_bytes = 262144 }) catch {};
+        _ = support.decompress(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = 262144 }) catch {};
         try std.testing.expect(sink.fullCount() <= 262144);
     }
 }
@@ -274,12 +274,12 @@ test "[regression] - [gzip]: fixed tables preserve all slots across dynamic memb
     for ([_]usize{ 16, 17, 32768 }) |size| {
         var source = support.Source.init(&compressed, input[0..size], size);
         var sink: support.Sink = .{ .output = &output, .sink = got };
-        try std.testing.expectEqual(plain.len, try decoder.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectEqual(plain.len, try support.decompress(decoder, &source.reader, &sink.writer, .{}));
         try std.testing.expectEqualSlices(u8, &plain, got);
         inline for (.{ "286", "287", "30", "31" }) |symbol| {
             source = support.Source.init(@embedFile("data/synthetic/fixed-invalid-" ++ symbol ++ ".gz"), input[0..size], size);
             sink = .{ .output = &output };
-            try std.testing.expectError(error.BadSymbol, decoder.decompress(&source.reader, &sink.writer, .{}));
+            try std.testing.expectError(error.BadSymbol, support.decompress(decoder, &source.reader, &sink.writer, .{}));
         }
     }
 }
@@ -313,7 +313,7 @@ test "[integration] - [gzip compressor]: empty and repeated calls produce indepe
     reader = .fixed(writer.buffered());
     var output: [1]u8 = undefined;
     var decoded = std.Io.Writer.fixed(&output);
-    try std.testing.expectEqual(@as(u64, 1), try decoder.decompress(&reader, &decoded, .{}));
+    try std.testing.expectEqual(@as(u64, 1), try support.decompress(decoder, &reader, &decoded, .{}));
     try std.testing.expectEqualSlices(u8, "A", decoded.buffered());
 }
 
@@ -490,6 +490,6 @@ test "[failure] - [gzip compressor]: I/O errors propagate and workspace resets" 
 }
 
 test "[unit] - [gzip]: the public error set names exactly the documented errors" {
-    const expected = [_][]const u8{ "BadBlock", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "CrcMismatch", "HeaderCrcMismatch", "InputBufferTooSmall", "IsizeMismatch", "OutputLimitExceeded", "ReadFailed", "ReservedFlag", "TrailingData", "Truncated", "UnsupportedMethod", "WriteFailed" };
+    const expected = [_][]const u8{ "BadBlock", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "CrcMismatch", "HeaderCrcMismatch", "HeaderTooLong", "InputBufferTooSmall", "IsizeMismatch", "OutputLimitExceeded", "PeekTooLarge", "ReadFailed", "ReservedFlag", "TrailingData", "Truncated", "UnsupportedMethod", "WriteFailed" };
     try support.expectErrorNames(zipir.gzip.Error, &expected);
 }

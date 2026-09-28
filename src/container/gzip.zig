@@ -3,6 +3,7 @@
 const std = @import("std");
 const engine = @import("../deflate/deflate.zig");
 const crc = @import("../kernel/crc32.zig");
+const inflate = @import("inflate.zig");
 
 pub const Error = engine.Error || error{
     InputBufferTooSmall,
@@ -13,25 +14,57 @@ pub const Error = engine.Error || error{
     IsizeMismatch,
     CrcMismatch,
     TrailingData,
+    HeaderTooLong,
 };
 
-pub const Options = engine.DecompressOptions;
+pub const Options = struct {
+    max_output_bytes: u64 = std.math.maxInt(u64),
+    trailing_data: engine.TrailingData = .reject,
+    /// Header bytes after the fixed ten (extra field, name, comment, header CRC) allowed in each member;
+    /// more is `HeaderTooLong`. Bounds the work a header can cause before any output.
+    max_header_bytes: u64 = 1 << 20,
+};
 
-/// Reusable without initialization, including after errors. No allocation occurs during decode.
-/// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
-pub const Decompressor = struct {
-    decoder: engine.Decoder = .{},
+/// Decodes concatenated gzip members, checking each CRC-32 and ISIZE; empty input is `Truncated`.
+/// `init(input, options)` starts it in place; `reader` gives the decoded bytes and `err` the reason for a
+/// `ReadFailed`. Input reader capacity must be >=16. No allocation occurs.
+pub const Decompressor = inflate.Inflate(Member);
 
-    /// Reader capacity must be >=16; underlying reads may be shorter. Caller flushes writer.
-    /// Output is provisional until success. Errors abort; a failed call cannot be resumed.
-    pub fn decompress(self: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) Error!u64 {
-        return inflate(self, reader, writer, options);
+const Member = struct {
+    pub const Check = crc.Crc32;
+    pub const Error = gzip.Error;
+    pub const Options = gzip.Options;
+    pub const min_input_buffer = 16;
+
+    options: gzip.Options,
+    members: u64 = 0,
+
+    pub fn init(options: gzip.Options) Member {
+        return .{ .options = options };
+    }
+
+    pub fn begin(self: *Member, br: *engine.BitReader) gzip.Error!bool {
+        _ = try br.window(2);
+        if (br.src.len == 0 and self.members != 0) return false;
+        if (br.src.len < 2 or br.src[0] != 0x1f or br.src[1] != 0x8b) {
+            if (self.members != 0) {
+                if (self.options.trailing_data == .leave) return false;
+                return error.TrailingData;
+            }
+            if (br.src.len < 2) return error.Truncated;
+            return error.BadHeader;
+        }
+        try parseHeader(br, void, {}, self.options.max_header_bytes);
+        self.members += 1;
+        return true;
+    }
+
+    pub fn end(_: *Member, br: *engine.BitReader, check: *Check, size: u64) gzip.Error!void {
+        try readTrailer(br, check.final(), size);
     }
 };
 
-comptime {
-    std.debug.assert(@sizeOf(Decompressor) == 196608);
-}
+const gzip = @This();
 
 pub const CompressError = engine.EncodeError;
 
@@ -63,7 +96,8 @@ comptime {
 // Shared with BGZF. `Visitor` is `void` (plain gzip) or provides
 // `subfield(*Visitor, id: [2]u8, len: u16, offset: u16, bytes: []const u8) !void`, called as extra subfield
 // bytes stream by; a subfield that overruns XLEN is `BadHeader`.
-pub fn parseHeader(br: *engine.BitReader, comptime Visitor: type, visitor: if (Visitor == void) void else *Visitor) !void {
+/// `limit` bounds the bytes after the fixed ten.
+pub fn parseHeader(br: *engine.BitReader, comptime Visitor: type, visitor: if (Visitor == void) void else *Visitor, limit: u64) !void {
     const header = try br.getBytes(10);
     if (header[0] != 0x1f or header[1] != 0x8b) return error.BadHeader;
     if (header[2] != 8) return error.UnsupportedMethod;
@@ -71,10 +105,15 @@ pub fn parseHeader(br: *engine.BitReader, comptime Visitor: type, visitor: if (V
     if (flags & 0xe0 != 0) return error.ReservedFlag;
     var checksum = crc.Crc32.init();
     checksum.update(header);
+    var optional: u64 = 0;
     if (flags & 4 != 0) {
+        optional = 2;
+        if (optional > limit) return error.HeaderTooLong;
         const size_bytes = try br.getBytes(2);
         const size = std.mem.readInt(u16, size_bytes[0..2], .little);
         checksum.update(size_bytes);
+        optional += size;
+        if (optional > limit) return error.HeaderTooLong;
         if (Visitor == void) {
             var left: usize = size;
             while (left != 0) {
@@ -92,11 +131,14 @@ pub fn parseHeader(br: *engine.BitReader, comptime Visitor: type, visitor: if (V
             const remaining = br.src[br.i..];
             const zero = std.mem.indexOfScalar(u8, remaining, 0);
             const n = if (zero) |end| end + 1 else remaining.len;
+            optional += n;
+            if (optional > limit) return error.HeaderTooLong;
             checksum.update(try br.getBytes(n));
             if (zero != null) break;
         }
     }
     if (flags & 2 != 0) {
+        if (optional + 2 > limit) return error.HeaderTooLong;
         const expected: u16 = @truncate(checksum.final());
         const field = try br.getBytes(2);
         if (std.mem.readInt(u16, field[0..2], .little) != expected) return error.HeaderCrcMismatch;
@@ -143,36 +185,6 @@ pub fn readTrailer(br: *engine.BitReader, crc_value: u32, size: u64) Error!void 
     const footer = try br.getBytes(8);
     if (std.mem.readInt(u32, footer[4..8], .little) != @as(u32, @truncate(size))) return error.IsizeMismatch;
     if (std.mem.readInt(u32, footer[0..4], .little) != crc_value) return error.CrcMismatch;
-}
-
-fn inflateMember(session: *engine.Session(crc.Crc32), br: *engine.BitReader) Error!void {
-    try parseHeader(br, void, {});
-    var check: crc.Crc32 = .init();
-    const size = try session.stream(br, &check);
-    try readTrailer(br, check.final(), size);
-}
-
-fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) Error!u64 {
-    if (reader.buffer.len < 16) return error.InputBufferTooSmall;
-    var br: engine.BitReader = .{ .reader = reader };
-    defer br.release();
-    var session = work.decoder.session(crc.Crc32, writer, .{ .max_output_bytes = options.max_output_bytes });
-    var have_member = false;
-    while (true) {
-        _ = try br.window(2);
-        if (br.src.len == 0 and have_member) break;
-        if (br.src.len < 2 or br.src[0] != 0x1f or br.src[1] != 0x8b) {
-            if (have_member) {
-                if (options.trailing_data == .leave) break;
-                return error.TrailingData;
-            }
-            if (br.src.len < 2) return error.Truncated;
-            return error.BadHeader;
-        }
-        try inflateMember(&session, &br);
-        have_member = true;
-    }
-    return session.finish();
 }
 
 test {

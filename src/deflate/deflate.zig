@@ -4,7 +4,8 @@
 const std = @import("std");
 const copy = @import("../kernel/copy.zig");
 
-pub const Error = error{ Truncated, BadHuffman, BadSymbol, BadDistance, BadStored, BadBlock, OutputLimitExceeded, ReadFailed, WriteFailed };
+/// `PeekTooLarge`: a reader was asked to hold more than its buffer allows (at most 128 KiB is always possible).
+pub const Error = error{ Truncated, BadHuffman, BadSymbol, BadDistance, BadStored, BadBlock, OutputLimitExceeded, ReadFailed, WriteFailed, PeekTooLarge };
 
 pub const TrailingData = enum { reject, leave };
 
@@ -25,7 +26,7 @@ const DIST_EXTRA = [_]u4{ 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 
 const LEN_BASE = [_]u16{ 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 };
 const DIST_BASE = [_]u16{ 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 };
 
-const RING = 32768;
+pub const RING = 32768;
 
 const FIXED_LIT_LENS: [288]u4 = blk: {
     var lengths: [288]u4 = undefined;

@@ -97,7 +97,7 @@ test "[integration] - [bgzf reader]: blocks decode through short I/O and report 
     var gzip_decoder: zipir.Decompressor(.gzip) = undefined;
     var fixed = std.Io.Reader.fixed(f.stream());
     var discard: std.Io.Writer.Discarding = .init(&.{});
-    try std.testing.expectEqual(@as(u64, f.plain_len), try gzip_decoder.decompress(&fixed, &discard.writer, .{}));
+    try std.testing.expectEqual(@as(u64, f.plain_len), try support.decompress(&gzip_decoder, &fixed, &discard.writer, .{}));
 }
 
 test "[failure] - [bgzf reader]: structure, size, and end-of-file errors are documented" {
@@ -360,7 +360,7 @@ test "[property] - [bgzf writer]: output decodes with the BGZF and gzip readers 
             var gzip_decoder: zipir.Decompressor(.gzip) = undefined;
             var fixed = std.Io.Reader.fixed(stream);
             var discard: std.Io.Writer.Discarding = .init(&.{});
-            try std.testing.expectEqual(@as(u64, n), try gzip_decoder.decompress(&fixed, &discard.writer, .{}));
+            try std.testing.expectEqual(@as(u64, n), try support.decompress(&gzip_decoder, &fixed, &discard.writer, .{}));
         }
     }
 }
@@ -555,6 +555,6 @@ test "[property] - [bgzf reader]: reads at uncompressed offsets through a full, 
 }
 
 test "[unit] - [bgzf]: the public error set names exactly the documented errors" {
-    const expected = [_][]const u8{ "BadBlock", "BadBlockSize", "BadDistance", "BadHeader", "BadIndex", "BadHuffman", "BadStored", "BadSymbol", "BadVirtualOffset", "BlockSizeMismatch", "BlockTooLarge", "CrcMismatch", "HeaderCrcMismatch", "InputBufferTooSmall", "IsizeMismatch", "MissingEofMarker", "NotBgzf", "OutputLimitExceeded", "ReadFailed", "ReservedFlag", "TrailingData", "Truncated", "UnsupportedMethod", "WriteFailed" };
+    const expected = [_][]const u8{ "BadBlock", "BadBlockSize", "BadDistance", "BadHeader", "BadHuffman", "BadIndex", "BadStored", "BadSymbol", "BadVirtualOffset", "BlockSizeMismatch", "BlockTooLarge", "CrcMismatch", "HeaderCrcMismatch", "HeaderTooLong", "InputBufferTooSmall", "IsizeMismatch", "MissingEofMarker", "NotBgzf", "OutputLimitExceeded", "PeekTooLarge", "ReadFailed", "ReservedFlag", "TrailingData", "Truncated", "UnsupportedMethod", "WriteFailed" };
     try support.expectErrorNames(bgzf.Error, &expected);
 }

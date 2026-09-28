@@ -134,7 +134,7 @@ test "[integration] - [tar reader]: an archive written through the gzip decoder 
     var reader: tar.Reader(Transcript) = .init(&visitor, .{ .name = &name, .link = &link });
     var buffer: [64]u8 = undefined;
     var source = support.Source.init(sink.buffered(), &buffer, 13);
-    _ = try decompressor.decompress(&source.reader, &reader.writer, .{});
+    _ = try support.decompress(decompressor, &source.reader, &reader.writer, .{});
     try std.testing.expectEqual(direct.summary, try reader.finish());
     try std.testing.expectEqualStrings(direct.transcript, visitor.out.buffered());
 }
@@ -303,7 +303,7 @@ test "[failure] - [tar reader]: a visitor's error stops the stream and is return
     var visitor: Transcript = .{ .out = .fixed(&storage), .fail_on = "d/fifo" };
     var reader: tar.Reader(Transcript) = .init(&visitor, .{ .name = &name, .link = &link });
     var source = std.Io.Reader.fixed(sink.buffered());
-    try std.testing.expectError(error.WriteFailed, decompressor.decompress(&source, &reader.writer, .{}));
+    try std.testing.expectError(error.WriteFailed, support.decompress(decompressor, &source, &reader.writer, .{}));
     try std.testing.expectError(error.Stop, reader.finish());
     try std.testing.expectError(error.WriteFailed, reader.writer.writeAll("more"));
 }
@@ -441,7 +441,7 @@ test "[integration] - [tar writer]: the gzip compressor reads an archive the gzi
     var plain: [16384]u8 = undefined;
     var direct: std.Io.Writer = .fixed(&plain);
     var gz = std.Io.Reader.fixed(sink.buffered());
-    _ = try decompressor.decompress(&gz, &direct, .{});
+    _ = try support.decompress(decompressor, &gz, &direct, .{});
     var reference: [16384]u8 = undefined;
     try std.testing.expectEqualSlices(u8, try writeArchive(&files, &.{}, reference.len, .{}, &reference), direct.buffered());
 }

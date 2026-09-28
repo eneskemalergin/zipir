@@ -161,7 +161,7 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
             inline else => |known| {
                 const decoder = try allocator.create(zipir.Decompressor(known));
                 defer allocator.destroy(decoder);
-                _ = try decoder.decompress(&reader.interface, writer, .{ .max_output_bytes = max_output_bytes });
+                try pump(decoder, &reader.interface, writer, .{ .max_output_bytes = max_output_bytes });
             },
         }
         try writer.flush();
@@ -169,6 +169,15 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     }
     try decompressBgzf(io, allocator, &reader.interface, writer, max_output_bytes, verify);
     return 0;
+}
+
+// Decodes all of `input` into `out`; a decode error is returned as itself rather than as `ReadFailed`.
+fn pump(decoder: anytype, input: *std.Io.Reader, out: *std.Io.Writer, options: std.meta.Child(@TypeOf(decoder)).Options) !void {
+    decoder.init(input, options);
+    _ = decoder.reader.streamRemaining(out) catch |err| return switch (err) {
+        error.ReadFailed => decoder.err.?,
+        error.WriteFailed => error.WriteFailed,
+    };
 }
 
 // What `--format` names or `auto` detects: a codec, BGZF (gzip read with its structure checks), or a
@@ -373,7 +382,7 @@ fn readArchive(io: std.Io, allocator: std.mem.Allocator, reader: *std.Io.Reader,
             inline else => |known| {
                 const decoder = try allocator.create(zipir.Decompressor(known));
                 defer allocator.destroy(decoder);
-                _ = try decoder.decompress(reader, archive, .{});
+                try pump(decoder, reader, archive, .{});
             },
         },
         .bgzf => try decompressBgzf(io, allocator, reader, archive, std.math.maxInt(u64), verify),

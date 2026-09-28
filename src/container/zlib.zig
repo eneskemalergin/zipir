@@ -3,6 +3,7 @@
 const std = @import("std");
 const engine = @import("../deflate/deflate.zig");
 const adler32 = @import("../kernel/adler32.zig");
+const inflate = @import("inflate.zig");
 
 pub const Error = engine.Error || error{
     InputBufferTooSmall,
@@ -16,21 +17,40 @@ pub const Error = engine.Error || error{
 
 pub const Options = engine.DecompressOptions;
 
-/// Reusable without initialization, including after errors. No allocation occurs during decode.
-/// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
-pub const Decompressor = struct {
-    decoder: engine.Decoder = .{},
+/// Decodes one zlib stream and checks its Adler-32. `init(input, options)` starts it in place; `reader` gives
+/// the decoded bytes and `err` the reason for a `ReadFailed`. Input reader capacity must be >=16. No allocation occurs.
+pub const Decompressor = inflate.Inflate(Stream);
 
-    /// Reader capacity must be >=16; underlying reads may be shorter. Caller flushes writer.
-    /// Output is provisional until success. Errors abort; a failed call cannot be resumed.
-    pub fn decompress(self: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) Error!u64 {
-        return inflate(self, reader, writer, options);
+const Stream = struct {
+    pub const Check = adler32.Adler32;
+    pub const Error = zlib.Error;
+    pub const Options = zlib.Options;
+    pub const min_input_buffer = 16;
+
+    options: zlib.Options,
+    started: bool = false,
+
+    pub fn init(options: zlib.Options) Stream {
+        return .{ .options = options };
+    }
+
+    pub fn begin(self: *Stream, br: *engine.BitReader) zlib.Error!bool {
+        if (!self.started) {
+            self.started = true;
+            try parseHeader(br);
+            return true;
+        }
+        if (try br.window(1) and self.options.trailing_data == .reject) return error.TrailingData;
+        return false;
+    }
+
+    pub fn end(_: *Stream, br: *engine.BitReader, check: *Check, _: u64) zlib.Error!void {
+        const footer = try br.getBytes(4);
+        if (check.final() != std.mem.readInt(u32, footer[0..4], .big)) return error.BadAdler;
     }
 };
 
-comptime {
-    std.debug.assert(@sizeOf(Decompressor) == 196608);
-}
+const zlib = @This();
 
 pub const CompressError = engine.EncodeError;
 
@@ -75,22 +95,6 @@ fn parseHeader(br: *engine.BitReader) !void {
     if (cmf >> 4 > 7) return error.WindowTooLarge;
     if ((@as(u16, cmf) << 8 | flg) % 31 != 0) return error.BadHeader;
     if (flg & 0x20 != 0) return error.DictionaryUnsupported;
-}
-
-fn inflate(work: *Decompressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: Options) Error!u64 {
-    if (reader.buffer.len < 16) return error.InputBufferTooSmall;
-    var br: engine.BitReader = .{ .reader = reader };
-    defer br.release();
-    var session = work.decoder.session(adler32.Adler32, writer, .{ .max_output_bytes = options.max_output_bytes });
-    try parseHeader(&br);
-    var check: adler32.Adler32 = .init();
-    _ = try session.stream(&br, &check);
-    const footer = try br.getBytes(4);
-    if (check.final() != std.mem.readInt(u32, footer[0..4], .big)) return error.BadAdler;
-    if (try br.window(1)) {
-        if (options.trailing_data == .reject) return error.TrailingData;
-    }
-    return session.finish();
 }
 
 test {

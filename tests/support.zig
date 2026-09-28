@@ -72,6 +72,16 @@ pub const Sink = struct {
     }
 };
 
+/// A whole stream through a decompressor's reader, as the removed `decompress(reader, writer, options)` did:
+/// the decode error itself rather than `ReadFailed`, and the decoded length.
+pub fn decompress(decoder: anytype, reader: *std.Io.Reader, writer: *std.Io.Writer, options: std.meta.Child(@TypeOf(decoder)).Options) !u64 {
+    decoder.init(reader, options);
+    return decoder.reader.streamRemaining(writer) catch |err| switch (err) {
+        error.ReadFailed => decoder.err.?,
+        error.WriteFailed => error.WriteFailed,
+    };
+}
+
 pub fn encodeRoundtrip(
     comptime Codec: type,
     encoder: *Codec.Compressor,

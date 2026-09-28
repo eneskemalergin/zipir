@@ -14,7 +14,7 @@ fn decode(decoder: *Decompressor, stream: []const u8, expected: []const u8, chun
     var oracle = std.Io.Reader.fixed(expected);
     var scratch: [13]u8 = undefined;
     var sink = support.Sink{ .output = &scratch, .oracle = &oracle, .max_drain = 7 };
-    try std.testing.expectEqual(@as(u64, expected.len), try decoder.decompress(&source.reader, &sink.writer, options));
+    try std.testing.expectEqual(@as(u64, expected.len), try support.decompress(decoder, &source.reader, &sink.writer, options));
     try std.testing.expect(!sink.mismatch);
     try std.testing.expectEqual(expected.len, sink.count);
 }
@@ -91,9 +91,9 @@ test "[edge] - [raw deflate decoder]: bytes after the final block are rejected o
     var source = support.Source.init(stream, &buffer, 1);
     var scratch: [1]u8 = undefined;
     var sink = support.Sink{ .output = &scratch };
-    try std.testing.expectError(error.TrailingData, decoder.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectError(error.TrailingData, support.decompress(decoder, &source.reader, &sink.writer, .{}));
     var reader = std.Io.Reader.fixed(stream);
-    try std.testing.expectEqual(@as(u64, 0), try decoder.decompress(&reader, &sink.writer, .{ .trailing_data = .leave }));
+    try std.testing.expectEqual(@as(u64, 0), try support.decompress(decoder, &reader, &sink.writer, .{ .trailing_data = .leave }));
     try std.testing.expectEqualStrings("bytes after the stream", try reader.take(stream.len - 2));
 }
 
@@ -114,14 +114,14 @@ test "[failure] - [raw deflate decoder]: every prefix is truncated, and limits a
     for (0..stream.len) |n| {
         var source = support.Source.init(stream[0..n], &buffer, 5);
         var sink = support.Sink{ .output = &scratch };
-        try std.testing.expectError(error.Truncated, decoder.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectError(error.Truncated, support.decompress(decoder, &source.reader, &sink.writer, .{}));
     }
     var source = support.Source.init(stream, &buffer, 5);
     var sink = support.Sink{ .output = &scratch };
-    try std.testing.expectError(error.OutputLimitExceeded, decoder.decompress(&source.reader, &sink.writer, .{ .max_output_bytes = plain.len - 1 }));
+    try std.testing.expectError(error.OutputLimitExceeded, support.decompress(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = plain.len - 1 }));
     var small: [15]u8 = undefined;
     source = support.Source.init(stream, &small, 5);
-    try std.testing.expectError(error.InputBufferTooSmall, decoder.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectError(error.InputBufferTooSmall, support.decompress(decoder, &source.reader, &sink.writer, .{}));
     try decode(decoder, stream, &plain, 5, .{ .max_output_bytes = plain.len });
 }
 
@@ -141,7 +141,7 @@ test "[property] - [raw deflate decoder]: bounded bit flips end in success or a 
         var source = support.Source.init(mutated, &buffer, 7);
         var sink = support.Sink{ .output = &scratch };
         const limit = 1 << 20;
-        if (decoder.decompress(&source.reader, &sink.writer, .{ .max_output_bytes = limit })) |n| {
+        if (support.decompress(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = limit })) |n| {
             try std.testing.expect(n <= limit);
         } else |err| switch (err) {
             error.Truncated, error.BadHuffman, error.BadSymbol, error.BadDistance, error.BadStored, error.BadBlock, error.OutputLimitExceeded, error.TrailingData => {},
@@ -151,6 +151,6 @@ test "[property] - [raw deflate decoder]: bounded bit flips end in success or a 
 }
 
 test "[unit] - [raw deflate]: the public error set names exactly the documented errors" {
-    const expected = [_][]const u8{ "BadBlock", "BadDistance", "BadHuffman", "BadStored", "BadSymbol", "InputBufferTooSmall", "OutputLimitExceeded", "ReadFailed", "TrailingData", "Truncated", "WriteFailed" };
+    const expected = [_][]const u8{ "BadBlock", "BadDistance", "BadHuffman", "BadStored", "BadSymbol", "InputBufferTooSmall", "OutputLimitExceeded", "PeekTooLarge", "ReadFailed", "TrailingData", "Truncated", "WriteFailed" };
     try support.expectErrorNames(deflate.Error, &expected);
 }

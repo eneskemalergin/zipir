@@ -49,7 +49,7 @@ fn decode(
     var source = support.Source.init(input_bytes, input_buffer, chunk);
     var scratch: [13]u8 = undefined;
     var sink = support.Sink{ .output = &scratch, .sink = output_buffer, .max_drain = 7 };
-    const produced = try decoder.decompress(&source.reader, &sink.writer, options);
+    const produced = try support.decompress(decoder, &source.reader, &sink.writer, options);
     try std.testing.expectEqual(@as(u64, expected.len), produced);
     try std.testing.expectEqual(expected.len, sink.count);
     try std.testing.expectEqualSlices(u8, expected, output_buffer[0..sink.count]);
@@ -120,7 +120,7 @@ test "[failure] - [zlib decoder]: malformed wrapper, payload, trailer, and trunc
         var source = support.Source.init(case[0], &input_buffer, 3);
         var scratch: [13]u8 = undefined;
         var sink = support.Sink{ .output = &scratch, .sink = &output, .max_drain = 7 };
-        try std.testing.expectError(case[1], decoder.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectError(case[1], support.decompress(decoder, &source.reader, &sink.writer, .{}));
     }
 }
 
@@ -145,7 +145,7 @@ test "[failure] - [zlib decoder]: invalid history, trees, and fixed symbols fail
         for ([_]usize{ 1, 17 }) |chunk| {
             var source = support.Source.init(stream, &input_buffer, chunk);
             var sink: std.Io.Writer.Discarding = .init(&.{});
-            try std.testing.expectError(case[1], decoder.decompress(&source.reader, &sink.writer, .{}));
+            try std.testing.expectError(case[1], support.decompress(decoder, &source.reader, &sink.writer, .{}));
         }
     }
 }
@@ -161,16 +161,16 @@ test "[failure] - [zlib decoder]: I/O errors propagate and the workspace decodes
         var source = support.Source.init(stream, &input_buffer, 3);
         source.fail_at = offset;
         var sink: support.Sink = .{ .output = &output };
-        try std.testing.expectError(error.ReadFailed, decoder.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectError(error.ReadFailed, support.decompress(decoder, &source.reader, &sink.writer, .{}));
     }
     for ([_]usize{ 0, 4096, 131072 }) |offset| {
         var source = support.Source.init(stream, &input_buffer, 17);
         var sink: support.Sink = .{ .output = &output, .fail_at = offset };
-        try std.testing.expectError(error.WriteFailed, decoder.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectError(error.WriteFailed, support.decompress(decoder, &source.reader, &sink.writer, .{}));
     }
     var source = support.Source.init(stream, &input_buffer, 17);
     var sink: support.Sink = .{ .output = &output };
-    try std.testing.expectEqual(@as(u64, STORED_MEMBER_PLAIN.len), try decoder.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectEqual(@as(u64, STORED_MEMBER_PLAIN.len), try support.decompress(decoder, &source.reader, &sink.writer, .{}));
 }
 
 test "[property] - [zlib decoder]: splits pass while truncations and bit flips stay bounded" {
@@ -184,7 +184,7 @@ test "[property] - [zlib decoder]: splits pass while truncations and bit flips s
         var source = support.Source.init(small, &input_buffer, 65536);
         source.split_at = split;
         var sink: support.Sink = .{ .output = &one };
-        try std.testing.expectEqual(@as(u64, 1), try decoder.decompress(&source.reader, &sink.writer, .{}));
+        try std.testing.expectEqual(@as(u64, 1), try support.decompress(decoder, &source.reader, &sink.writer, .{}));
         try std.testing.expectEqual(@as(u8, 'A'), one[0]);
     }
 
@@ -203,7 +203,7 @@ test "[property] - [zlib decoder]: splits pass while truncations and bit flips s
         for (first_cut..stream.len) |cut| {
             var source = support.Source.init(stream[0..cut], &input_buffer, 3);
             var sink: std.Io.Writer.Discarding = .init(&.{});
-            try std.testing.expectError(error.Truncated, decoder.decompress(&source.reader, &sink.writer, .{}));
+            try std.testing.expectError(error.Truncated, support.decompress(decoder, &source.reader, &sink.writer, .{}));
         }
         for (0..256) |_| {
             @memcpy(mutated, stream);
@@ -211,7 +211,7 @@ test "[property] - [zlib decoder]: splits pass while truncations and bit flips s
             mutated[position] ^= @as(u8, 1) << random.random().int(u3);
             var reader = std.Io.Reader.fixed(mutated);
             var sink: std.Io.Writer.Discarding = .init(&.{});
-            _ = decoder.decompress(&reader, &sink.writer, .{ .max_output_bytes = 262144 }) catch {};
+            _ = support.decompress(decoder, &reader, &sink.writer, .{ .max_output_bytes = 262144 }) catch {};
             try std.testing.expect(sink.fullCount() <= 262144);
         }
     }
@@ -235,11 +235,11 @@ test "[edge] - [zlib decoder]: strict and leaving trailing bytes preserve the re
     defer std.testing.allocator.free(output);
     var scratch: [13]u8 = undefined;
     var sink = support.Sink{ .output = &scratch, .sink = output, .max_drain = 7 };
-    try std.testing.expectError(error.TrailingData, decoder.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectError(error.TrailingData, support.decompress(decoder, &source.reader, &sink.writer, .{}));
 
     source = support.Source.init(input, &input_buffer, 1);
     sink = .{ .output = &scratch, .sink = output, .max_drain = 7 };
-    try std.testing.expectEqual(expected.len, try decoder.decompress(&source.reader, &sink.writer, .{ .trailing_data = .leave }));
+    try std.testing.expectEqual(expected.len, try support.decompress(decoder, &source.reader, &sink.writer, .{ .trailing_data = .leave }));
     try std.testing.expectEqualSlices(u8, "tail", try source.reader.take(4));
 
     const concatenated = try std.testing.allocator.alloc(u8, stream.len * 2);
@@ -248,11 +248,11 @@ test "[edge] - [zlib decoder]: strict and leaving trailing bytes preserve the re
     @memcpy(concatenated[stream.len..], stream);
     source = support.Source.init(concatenated, &input_buffer, 1);
     sink = .{ .output = &scratch, .sink = output, .max_drain = 7 };
-    try std.testing.expectError(error.TrailingData, decoder.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectError(error.TrailingData, support.decompress(decoder, &source.reader, &sink.writer, .{}));
 
     source = support.Source.init(concatenated, &input_buffer, 1);
     sink = .{ .output = &scratch, .sink = output, .max_drain = 7 };
-    try std.testing.expectEqual(expected.len, try decoder.decompress(&source.reader, &sink.writer, .{ .trailing_data = .leave }));
+    try std.testing.expectEqual(expected.len, try support.decompress(decoder, &source.reader, &sink.writer, .{ .trailing_data = .leave }));
     for (stream) |byte| try std.testing.expectEqual(byte, try source.reader.takeByte());
 }
 
@@ -272,10 +272,10 @@ test "[failure] - [zlib decoder]: output limits cover matches, stored blocks, an
             var reader = std.Io.Reader.fixed(stream);
             var sink: std.Io.Writer.Discarding = .init(&.{});
             if (limit < size) {
-                try std.testing.expectError(error.OutputLimitExceeded, decoder.decompress(&reader, &sink.writer, .{ .max_output_bytes = limit }));
+                try std.testing.expectError(error.OutputLimitExceeded, support.decompress(decoder, &reader, &sink.writer, .{ .max_output_bytes = limit }));
                 try std.testing.expect(sink.fullCount() <= limit);
             } else {
-                try std.testing.expectEqual(size, try decoder.decompress(&reader, &sink.writer, .{ .max_output_bytes = limit }));
+                try std.testing.expectEqual(size, try support.decompress(decoder, &reader, &sink.writer, .{ .max_output_bytes = limit }));
                 try std.testing.expectEqual(size, sink.fullCount());
             }
         }
@@ -292,12 +292,12 @@ test "[failure] - [zlib decoder]: rejects undersized input buffers and preset di
     var input_buffer: [15]u8 = undefined;
     var source = support.Source.init(valid, &input_buffer, 1);
     var sink = std.Io.Writer.Discarding.init(&.{});
-    try std.testing.expectError(error.InputBufferTooSmall, decoder.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectError(error.InputBufferTooSmall, support.decompress(decoder, &source.reader, &sink.writer, .{}));
 
     const dictionary_header = [_]u8{ 0x78, 0x20, 0, 0, 0, 1 };
     var dictionary_buffer: [17]u8 = undefined;
     source = support.Source.init(&dictionary_header, &dictionary_buffer, 1);
-    try std.testing.expectError(error.DictionaryUnsupported, decoder.decompress(&source.reader, &sink.writer, .{}));
+    try std.testing.expectError(error.DictionaryUnsupported, support.decompress(decoder, &source.reader, &sink.writer, .{}));
 }
 
 // --- Compression ---
@@ -388,6 +388,6 @@ test "[failure] - [zlib compressor]: I/O errors propagate and the workspace comp
 }
 
 test "[unit] - [zlib]: the public error set names exactly the documented errors" {
-    const expected = [_][]const u8{ "BadAdler", "BadBlock", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "DictionaryUnsupported", "InputBufferTooSmall", "OutputLimitExceeded", "ReadFailed", "TrailingData", "Truncated", "UnsupportedMethod", "WindowTooLarge", "WriteFailed" };
+    const expected = [_][]const u8{ "BadAdler", "BadBlock", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "DictionaryUnsupported", "InputBufferTooSmall", "OutputLimitExceeded", "PeekTooLarge", "ReadFailed", "TrailingData", "Truncated", "UnsupportedMethod", "WindowTooLarge", "WriteFailed" };
     try support.expectErrorNames(zlib.Error, &expected);
 }
