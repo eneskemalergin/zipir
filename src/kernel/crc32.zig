@@ -3,7 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("kernel_options");
-const cpu = @import("../cpu.zig");
+const cpu = @import("cpu.zig");
 const pclmul = if (options.crc32_x86_pclmul == .direct) @import("crc32_x86_pclmul.zig") else struct {};
 
 extern fn zipir_crc32_x86_pclmul_update(crc_in: u32, data: [*]const u8, len: usize) callconv(.c) u32;

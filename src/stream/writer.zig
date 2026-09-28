@@ -2,25 +2,26 @@
 //! into the encoder's window, and each 32 KiB window is coded once more than a window is buffered.
 
 const std = @import("std");
-const engine = @import("../deflate/deflate.zig");
+const encode = @import("../engine/encode.zig");
+const codes = @import("../engine/codes.zig");
 
-const RING = engine.RING;
+const RING = codes.RING;
 
 /// `Format` is a container's framing around one DEFLATE stream. It declares `Check` (with `init() Check`),
-/// `header(*std.Io.Writer, engine.Level) std.Io.Writer.Error!void`, and `trailer(*std.Io.Writer, *Check, size: u64)
+/// `header(*std.Io.Writer, encode.Level) std.Io.Writer.Error!void`, and `trailer(*std.Io.Writer, *Check, size: u64)
 /// std.Io.Writer.Error!void`.
 pub fn Deflate(comptime Format: type) type {
     return struct {
         const Self = @This();
         const Check = Format.Check;
-        pub const Options = engine.CompressOptions;
+        pub const Options = encode.CompressOptions;
 
         /// Plain bytes go here, in any sizes; the output bytes depend only on the bytes, never on the write sizes.
         /// A contiguous request (`writableSlice`, `writeInt`, `print`) of up to 32 KiB always fits.
         /// `flush` ends what was written in a byte-aligned, non-final block and restarts the history, so everything
         /// written so far can be decoded (a full flush); it does not flush the output writer.
         writer: std.Io.Writer,
-        encoder: engine.Encoder,
+        encoder: encode.Encoder,
         check: Check,
         state: State,
 
@@ -34,7 +35,7 @@ pub fn Deflate(comptime Format: type) type {
 
         /// Starts a stream into `output` and writes its header. Resets everything, including after errors.
         /// The workspace must stay at this address while `writer` is used: the writer's buffer is inside it.
-        pub fn init(self: *Self, output: *std.Io.Writer, options: engine.CompressOptions) std.Io.Writer.Error!void {
+        pub fn init(self: *Self, output: *std.Io.Writer, options: encode.CompressOptions) std.Io.Writer.Error!void {
             self.state = .closed;
             self.writer = .failing;
             self.encoder.begin(output, options.level, false);

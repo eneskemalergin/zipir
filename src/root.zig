@@ -1,7 +1,7 @@
 //! Public library root for zipir.
 
 const std = @import("std");
-const gzip_container = @import("container/gzip.zig");
+const gzip_container = @import("format/gzip.zig");
 
 // The gzip container also serves BGZF its header and trailer helpers; only its public API is re-exported.
 pub const gzip = struct {
@@ -12,9 +12,9 @@ pub const gzip = struct {
     pub const CompressOptions = gzip_container.CompressOptions;
     pub const Compressor = gzip_container.Compressor;
 };
-pub const zlib = @import("container/zlib.zig");
-pub const deflate = @import("container/deflate.zig");
-pub const bgzf = @import("container/bgzf.zig");
+pub const zlib = @import("format/zlib.zig");
+pub const deflate = @import("format/deflate.zig");
+pub const bgzf = @import("format/bgzf.zig");
 pub const tar = @import("archive/tar.zig");
 pub const Format = enum { gzip, zlib, deflate };
 

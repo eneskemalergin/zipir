@@ -1,13 +1,14 @@
 //! Raw DEFLATE (RFC 1951) streams with no header, trailer, or checksum.
 
 const std = @import("std");
-const engine = @import("../deflate/deflate.zig");
-const inflate = @import("inflate.zig");
-const compress = @import("compress.zig");
+const decode = @import("../engine/decode.zig");
+const encode = @import("../engine/encode.zig");
+const inflate = @import("../stream/reader.zig");
+const compress = @import("../stream/writer.zig");
 
-pub const Error = engine.Error || error{ InputBufferTooSmall, TrailingData };
+pub const Error = decode.Error || error{ InputBufferTooSmall, TrailingData };
 
-pub const Options = engine.DecompressOptions;
+pub const Options = decode.DecompressOptions;
 
 /// Decodes one raw DEFLATE stream. No integrity check: corruption is detected only when it breaks the DEFLATE
 /// structure. `init(input, options)` starts it in place; `reader` gives the decoded bytes and `err` the reason
@@ -27,7 +28,7 @@ const Stream = struct {
         return .{ .options = options };
     }
 
-    pub fn begin(self: *Stream, br: *engine.BitReader) raw.Error!bool {
+    pub fn begin(self: *Stream, br: *decode.BitReader) raw.Error!bool {
         if (!self.started) {
             self.started = true;
             return true;
@@ -36,14 +37,14 @@ const Stream = struct {
         return false;
     }
 
-    pub fn end(_: *Stream, _: *engine.BitReader, _: *Check, _: u64) raw.Error!void {}
+    pub fn end(_: *Stream, _: *decode.BitReader, _: *Check, _: u64) raw.Error!void {}
 };
 
 const raw = @This();
 
-pub const CompressError = engine.EncodeError;
+pub const CompressError = encode.EncodeError;
 
-pub const CompressOptions = engine.CompressOptions;
+pub const CompressOptions = encode.CompressOptions;
 
 /// Writes one raw DEFLATE stream, with no integrity check: a reader detects corruption only when it breaks the
 /// DEFLATE structure. `init(output, options)` starts it in place, plain bytes go to `writer`, and `finish` writes
@@ -51,7 +52,7 @@ pub const CompressOptions = engine.CompressOptions;
 pub const Compressor = compress.Deflate(struct {
     pub const Check = NoCheck;
 
-    pub fn header(_: *std.Io.Writer, _: engine.Level) std.Io.Writer.Error!void {}
+    pub fn header(_: *std.Io.Writer, _: encode.Level) std.Io.Writer.Error!void {}
 
     pub fn trailer(_: *std.Io.Writer, _: *Check, _: u64) std.Io.Writer.Error!void {}
 });

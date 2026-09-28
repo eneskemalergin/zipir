@@ -1,12 +1,13 @@
 //! Bounded gzip compression and decompression through caller-owned readers and writers.
 
 const std = @import("std");
-const engine = @import("../deflate/deflate.zig");
+const decode = @import("../engine/decode.zig");
+const encode = @import("../engine/encode.zig");
 const crc = @import("../kernel/crc32.zig");
-const inflate = @import("inflate.zig");
-const compress = @import("compress.zig");
+const inflate = @import("../stream/reader.zig");
+const compress = @import("../stream/writer.zig");
 
-pub const Error = engine.Error || error{
+pub const Error = decode.Error || error{
     InputBufferTooSmall,
     BadHeader,
     UnsupportedMethod,
@@ -20,7 +21,7 @@ pub const Error = engine.Error || error{
 
 pub const Options = struct {
     max_output_bytes: u64 = std.math.maxInt(u64),
-    trailing_data: engine.TrailingData = .reject,
+    trailing_data: decode.TrailingData = .reject,
     /// Header bytes after the fixed ten (extra field, name, comment, header CRC) allowed in each member;
     /// more is `HeaderTooLong`. Bounds the work a header can cause before any output.
     max_header_bytes: u64 = 1 << 20,
@@ -44,7 +45,7 @@ const Member = struct {
         return .{ .options = options };
     }
 
-    pub fn begin(self: *Member, br: *engine.BitReader) gzip.Error!bool {
+    pub fn begin(self: *Member, br: *decode.BitReader) gzip.Error!bool {
         _ = try br.window(2);
         if (br.src.len == 0 and self.members != 0) return false;
         if (br.src.len < 2 or br.src[0] != 0x1f or br.src[1] != 0x8b) {
@@ -60,23 +61,23 @@ const Member = struct {
         return true;
     }
 
-    pub fn end(_: *Member, br: *engine.BitReader, check: *Check, size: u64) gzip.Error!void {
+    pub fn end(_: *Member, br: *decode.BitReader, check: *Check, size: u64) gzip.Error!void {
         try readTrailer(br, check.final(), size);
     }
 };
 
 const gzip = @This();
 
-pub const CompressError = engine.EncodeError;
+pub const CompressError = encode.EncodeError;
 
-pub const CompressOptions = engine.CompressOptions;
+pub const CompressOptions = encode.CompressOptions;
 
 /// Writes one gzip member: `init(output, options)` writes the header and starts it in place, plain bytes go to
 /// `writer`, and `finish` writes the last block and the trailer. No allocation occurs.
 pub const Compressor = compress.Deflate(struct {
     pub const Check = crc.Crc32;
 
-    pub fn header(output: *std.Io.Writer, _: engine.Level) std.Io.Writer.Error!void {
+    pub fn header(output: *std.Io.Writer, _: encode.Level) std.Io.Writer.Error!void {
         return writeHeader(output, "");
     }
 
@@ -96,7 +97,7 @@ comptime {
 // `subfield(*Visitor, id: [2]u8, len: u16, offset: u16, bytes: []const u8) !void`, called as extra subfield
 // bytes stream by; a subfield that overruns XLEN is `BadHeader`.
 /// `limit` bounds the bytes after the fixed ten.
-pub fn parseHeader(br: *engine.BitReader, comptime Visitor: type, visitor: if (Visitor == void) void else *Visitor, limit: u64) !void {
+pub fn parseHeader(br: *decode.BitReader, comptime Visitor: type, visitor: if (Visitor == void) void else *Visitor, limit: u64) !void {
     const header = try br.getBytes(10);
     if (header[0] != 0x1f or header[1] != 0x8b) return error.BadHeader;
     if (header[2] != 8) return error.UnsupportedMethod;
@@ -144,7 +145,7 @@ pub fn parseHeader(br: *engine.BitReader, comptime Visitor: type, visitor: if (V
     }
 }
 
-fn readSubfields(br: *engine.BitReader, checksum: *crc.Crc32, size: u16, comptime Visitor: type, visitor: *Visitor) !void {
+fn readSubfields(br: *decode.BitReader, checksum: *crc.Crc32, size: u16, comptime Visitor: type, visitor: *Visitor) !void {
     var left: usize = size;
     while (left != 0) {
         if (left < 4) return error.BadHeader;
@@ -180,7 +181,7 @@ pub fn writeHeader(writer: *std.Io.Writer, extra: []const u8) std.Io.Writer.Erro
 }
 
 // Shared with BGZF: ISIZE is compared before CRC-32, the gzip error precedence.
-pub fn readTrailer(br: *engine.BitReader, crc_value: u32, size: u64) Error!void {
+pub fn readTrailer(br: *decode.BitReader, crc_value: u32, size: u64) Error!void {
     const footer = try br.getBytes(8);
     if (std.mem.readInt(u32, footer[4..8], .little) != @as(u32, @truncate(size))) return error.IsizeMismatch;
     if (std.mem.readInt(u32, footer[0..4], .little) != crc_value) return error.CrcMismatch;

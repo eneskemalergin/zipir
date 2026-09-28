@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const options = @import("kernel_options");
-const cpu = @import("../cpu.zig");
+const cpu = @import("cpu.zig");
 const avx2 = if (options.adler32_x86_avx2 == .direct) @import("adler32_x86_avx2.zig") else struct {};
 
 const MODULUS: u32 = 65_521;

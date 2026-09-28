@@ -2,12 +2,13 @@
 //! from the workspace's own buffer, which keeps 32 KiB of history and decodes up to 128 KiB ahead.
 
 const std = @import("std");
-const engine = @import("../deflate/deflate.zig");
+const decode = @import("../engine/decode.zig");
+const codes = @import("../engine/codes.zig");
 
 /// `Format` is a container's framing around DEFLATE streams. It declares `Check` (with `init() Check`), `Error`
-/// (a superset of `engine.Error`), `Options` (with `max_output_bytes`), `min_input_buffer`, `init(Options)`,
-/// `begin(*Format, *engine.BitReader) Error!bool` (reads what precedes a stream: true when one follows, false
-/// when the input has ended as the container allows), and `end(*Format, *engine.BitReader, *Check, size: u64)
+/// (a superset of `decode.Error`), `Options` (with `max_output_bytes`), `min_input_buffer`, `init(Options)`,
+/// `begin(*Format, *decode.BitReader) Error!bool` (reads what precedes a stream: true when one follows, false
+/// when the input has ended as the container allows), and `end(*Format, *decode.BitReader, *Check, size: u64)
 /// Error!void` (reads and checks what follows a stream).
 ///
 /// A format with `stream_limit` has small streams (BGZF blocks): each is capped at that many bytes, decoded
@@ -20,7 +21,7 @@ pub fn Inflate(comptime Format: type) type {
         const Check = Format.Check;
         const whole = @hasDecl(Format, "stream_limit");
         // Room needed to start decoding: a whole stream, or enough that reads taking a little do not move history.
-        const min_room = if (whole) Format.stream_limit else engine.RING;
+        const min_room = if (whole) Format.stream_limit else codes.RING;
         pub const Options = Format.Options;
         pub const Error = Format.Error;
 
@@ -30,9 +31,9 @@ pub fn Inflate(comptime Format: type) type {
         err: ?Format.Error,
         /// The container's state, such as what it has read so far.
         container: Format,
-        decoder: engine.Decoder,
-        session: engine.Session(Check),
-        br: engine.BitReader,
+        decoder: decode.Decoder,
+        session: decode.Session(Check),
+        br: decode.BitReader,
         check: Check,
         state: State,
         // An error met after this call had delivered bytes; reported on the next call.
