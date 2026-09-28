@@ -1053,7 +1053,7 @@ const FIXED_DIST: EncodeTree = blk: {
     break :blk tree;
 };
 
-pub const Level = enum(u4) { fast = 1, balanced = 5, dense = 9 };
+pub const Level = enum(u4) { fast = 1, even = 5, dense = 9 };
 
 // Self-contained tokens (after igzip's ICF): bits 0-9 hold the first symbol (a literal 0-255, or 254 + the
 // length of a match), bits 10-18 the second (a distance code 0-29, ICF_NONE, or ICF_LITERAL + a literal),
@@ -1073,7 +1073,7 @@ fn fastHash(v: u32) usize {
 pub const EncodeError = error{ ReadFailed, WriteFailed };
 
 pub const CompressOptions = struct {
-    level: Level = .balanced,
+    level: Level = .even,
 };
 
 pub const Encoder = struct {
@@ -1102,7 +1102,7 @@ pub const Encoder = struct {
         var carried: usize = 0;
         var skip_search = false;
         // Windows go in pairs: the first is parsed and kept; after the slide it is the history half, so the pair's
-        // bytes are window[0..end]. fast makes one block per pair; balanced and dense make one block or two,
+        // bytes are window[0..end]. fast makes one block per pair; even and dense make one block or two,
         // whichever codes smaller (`emitPair`).
         var pending = false;
         var first_lit: [286]u32 = undefined;
@@ -1124,7 +1124,7 @@ pub const Encoder = struct {
                     while (p < history and p + 4 <= end) : (p += 1) self.head[fastHash(std.mem.readInt(u32, self.window[p..][0..4], .little))] = @intCast(p);
                 } else {
                     var p = history - 2;
-                    while (p < history and p + 3 <= end) : (p += 1) self.insert(p, if (level == .balanced) self.hash(p, end, 5) else self.hash(p, end, 4));
+                    while (p < history and p + 3 <= end) : (p += 1) self.insert(p, if (level == .even) self.hash(p, end, 5) else self.hash(p, end, 4));
                 }
             }
             if (level == .fast) {
@@ -1136,7 +1136,7 @@ pub const Encoder = struct {
                     pending = false;
                 }
             } else {
-                if (level == .balanced) self.parse(history, end, level, skip_search, !pending, 5) else self.parse(history, end, level, skip_search, !pending, 4);
+                if (level == .even) self.parse(history, end, level, skip_search, !pending, 5) else self.parse(history, end, level, skip_search, !pending, 4);
                 // A stored block turns the search off until `hasEarlyMatch` sees a match near a block start.
                 if (!last and !pending) {
                     // The first window of a pair: its counts price it as a block of its own later.
@@ -1163,10 +1163,10 @@ pub const Encoder = struct {
         return size;
     }
 
-    /// The chain hash of the `key` bytes at `p` (4 for dense, 5 for balanced; zero-padded at the tail).
+    /// The chain hash of the `key` bytes at `p` (4 for dense, 5 for even; zero-padded at the tail).
     fn hash(self: *const Encoder, p: usize, end: usize, comptime key: u4) usize {
         if (key == 5) {
-            // Five-byte keys: DNA has 256 four-byte keys but 1024 five-byte ones, so balanced's short chain walk
+            // Five-byte keys: DNA has 256 four-byte keys but 1024 five-byte ones, so even's short chain walk
             // reaches four times further back (and raised its ratio 0.3% at equal speed).
             const v = if (p + 8 <= end) std.mem.readInt(u64, self.window[p..][0..8], .little) & 0xff_ffff_ffff else blk: {
                 var bytes: [8]u8 = @splat(0);
@@ -1326,7 +1326,7 @@ pub const Encoder = struct {
         return n + count / 2;
     }
 
-    /// balanced and dense: chain search with lazy evaluation at `p + 1` (`parseFast` handles fast).
+    /// even and dense: chain search with lazy evaluation at `p + 1` (`parseFast` handles fast).
     fn parse(self: *Encoder, start: usize, end: usize, level: Level, skip_search: bool, fresh: bool, comptime key: u4) void {
         if (fresh) {
             @memset(&self.lit_freq, 0);
@@ -1962,7 +1962,7 @@ test "[edge] - [deflate decoder]: streams whose last code ends at the end of inp
     var plain_reader = std.Io.Reader.fixed(&plain);
     var dynamic_writer = std.Io.Writer.fixed(&dynamic);
     var encode_check: TestCheck = .{};
-    _ = try encoder.encodeStream(TestCheck, &plain_reader, &dynamic_writer, &encode_check, .balanced);
+    _ = try encoder.encodeStream(TestCheck, &plain_reader, &dynamic_writer, &encode_check, .even);
     const cases = .{ .{ "\x73\x04\x00", "A" }, .{ dynamic_writer.buffered(), &plain } };
     var output: [3000]u8 = undefined;
     inline for (cases) |case| {
@@ -2144,7 +2144,7 @@ test "[property] - [deflate encoder]: output does not depend on stale chain entr
     const NoCheck = struct {
         fn update(_: *@This(), _: []const u8) void {}
     };
-    for ([_]Level{ .fast, .balanced, .dense }) |level| {
+    for ([_]Level{ .fast, .even, .dense }) |level| {
         @memset(&clean.head, 0);
         @memset(&clean.previous, 0);
         for (&stale.head, 0..) |*slot, i| slot.* = @truncate(i *% 2654435761 +% 99);

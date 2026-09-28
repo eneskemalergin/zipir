@@ -5,16 +5,17 @@ const std = @import("std");
 const zipir = @import("zipir");
 
 const USAGE =
-    \\Usage: zipir compress [--format gzip|zlib|deflate|bgzf] [--binary] [--level 1|5|9] [--] [FILE|-]
+    \\Usage: zipir compress [--format gzip|zlib|deflate|bgzf] [--binary] [--fast|--even|--dense] [--] [FILE|-]
     \\       zipir decompress [--format auto|gzip|zlib|deflate] [--max-output-bytes N] [--] [FILE|-]
     \\       zipir test [--format auto|gzip|zlib|deflate] [--max-output-bytes N] [--] [FILE|-]
     \\       zipir bgzf index [--] FILE
     \\       zipir tar list|test [--format auto|gzip|zlib|bgzf|none] [--] [FILE|-]
-    \\       zipir tar create [--format gzip|zlib|bgzf|none] [--level 1|5|9] [--] PATH...
+    \\       zipir tar create [--format gzip|zlib|bgzf|none] [--fast|--even|--dense] [--] PATH...
     \\       zipir --version
     \\       zipir --help
     \\
-    \\compress writes gzip to stdout unless --format says otherwise; default level is 5.
+    \\compress writes gzip to stdout unless --format says otherwise; --even is the default preset,
+    \\--fast trades size for speed, and --dense speed for size.
     \\BGZF blocks end at text lines, as bgzip's do, unless the input has NUL bytes or --binary is given.
     \\decompress writes to stdout; test verifies and discards output.
     \\--format auto, the default for decompress and test, detects gzip, BGZF, and zlib;
@@ -104,6 +105,13 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
             has_limit = true;
             continue;
         }
+        if (!literal and presetFlag(arg) != null) {
+            if (!compress or has_level) return usage(io);
+            compress_options.level = presetFlag(arg).?;
+            has_level = true;
+            continue;
+        }
+        // --level 1|5|9 is the hidden alias of --fast, --even, and --dense (0.1.2's numeric levels).
         if (!literal and std.mem.eql(u8, arg, "--level")) {
             if (!compress or has_level or i + 1 == args.len) return usage(io);
             i += 1;
@@ -289,7 +297,7 @@ fn tarCommand(io: std.Io, allocator: std.mem.Allocator, args: []const [:0]const 
     const verify = std.mem.eql(u8, args[0], "test");
     if (!create and !verify and !std.mem.eql(u8, args[0], "list")) return usage(io);
     var input: ?Input = null;
-    var level: @FieldType(zipir.gzip.CompressOptions, "level") = .balanced;
+    var level: @FieldType(zipir.gzip.CompressOptions, "level") = .even;
     var has_format = false;
     var has_level = false;
     var literal = false;
@@ -307,6 +315,12 @@ fn tarCommand(io: std.Io, allocator: std.mem.Allocator, args: []const [:0]const 
             i += 1;
             input = if (std.mem.eql(u8, args[i], "none")) .plain else if (std.mem.eql(u8, args[i], "bgzf")) .bgzf else if (std.mem.eql(u8, args[i], "gzip")) .{ .codec = .gzip } else if (std.mem.eql(u8, args[i], "zlib")) .{ .codec = .zlib } else if (!create and std.mem.eql(u8, args[i], "auto")) null else return usage(io);
             has_format = true;
+            continue;
+        }
+        if (!literal and presetFlag(arg) != null) {
+            if (!create or has_level) return usage(io);
+            level = presetFlag(arg).?;
+            has_level = true;
             continue;
         }
         if (!literal and std.mem.eql(u8, arg, "--level")) {
@@ -446,6 +460,12 @@ fn civil(seconds: i64) Civil {
         .minute = @intCast(rest / 60 % 60),
         .second = @intCast(rest % 60),
     };
+}
+
+/// The preset a `--fast`, `--even`, or `--dense` flag names, or null.
+fn presetFlag(arg: []const u8) ?@FieldType(zipir.gzip.CompressOptions, "level") {
+    if (!std.mem.startsWith(u8, arg, "--")) return null;
+    return std.meta.stringToEnum(@FieldType(zipir.gzip.CompressOptions, "level"), arg[2..]);
 }
 
 fn createArchive(io: std.Io, allocator: std.mem.Allocator, paths: []const []const u8, output: Input, level: @FieldType(zipir.gzip.CompressOptions, "level"), stdout: *std.Io.Writer) !void {

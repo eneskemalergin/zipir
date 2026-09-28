@@ -387,7 +387,7 @@ test "[property] - [bgzf writer]: splitter plus block encoder writes exactly wha
         var at: usize = 0;
         var len: usize = 0;
         while (splitter.next(plain[at..], true)) |n| : (at += n) {
-            const size = encoder.compressBlock(plain[at..][0..n], &encoded, .balanced);
+            const size = encoder.compressBlock(plain[at..][0..n], &encoded, .even);
             @memcpy(parallel[len..][0..size], encoded[0..size]);
             len += size;
         }

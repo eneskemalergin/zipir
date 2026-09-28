@@ -349,7 +349,7 @@ comptime {
 }
 
 pub const WriterOptions = struct {
-    level: engine.Level = .balanced,
+    level: engine.Level = .even,
     split: Split = .fill,
     index: ?*IndexBuilder = null,
 };
@@ -367,7 +367,7 @@ pub const Writer = struct {
     block: [MAX_BLOCK]u8 = undefined,
     staged: usize = 0,
     splitter: BlockSplitter = .init(.fill),
-    level: engine.Level = .balanced,
+    level: engine.Level = .even,
     index: ?*IndexBuilder = null,
     out: *std.Io.Writer = undefined,
     compressed: u64 = 0,

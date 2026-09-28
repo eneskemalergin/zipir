@@ -26,6 +26,9 @@ test "[cli] - [gzip]: command status and byte streams preserve source files" {
         .{ &.{ executable, "compress", "--level", "1", "--", "-plain with spaces" }, @as(u8, 0), compressed, "" },
         .{ &.{ executable, "compress", "--level", "5", "--", "-plain with spaces" }, @as(u8, 0), compressed, "" },
         .{ &.{ executable, "compress", "--level", "9", "--", "-plain with spaces" }, @as(u8, 0), compressed, "" },
+        .{ &.{ executable, "compress", "--fast", "--", "-plain with spaces" }, @as(u8, 0), compressed, "" },
+        .{ &.{ executable, "compress", "--even", "--", "-plain with spaces" }, @as(u8, 0), compressed, "" },
+        .{ &.{ executable, "compress", "--dense", "--", "-plain with spaces" }, @as(u8, 0), compressed, "" },
         .{ &.{ executable, "compress", "missing.plain" }, @as(u8, 1), "", "zipir: FileNotFound\n" },
     };
     inline for (cases) |case| {
@@ -41,7 +44,7 @@ test "[cli] - [gzip]: command status and byte streams preserve source files" {
     defer allocator.free(help.stderr);
     try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, help.term);
     try std.testing.expectEqualStrings("", help.stderr);
-    inline for (.{ &.{"unknown"}, &.{ "decompress", "--max-output-bytes" }, &.{ "test", "--max-output-bytes", "-1" }, &.{ "test", "one", "two" }, &.{ "decompress", "--unknown" }, &.{ "compress", "--level" }, &.{ "compress", "--level", "0" }, &.{ "compress", "--level", "2" }, &.{ "compress", "--level", "6" }, &.{ "compress", "--level", "10" }, &.{ "compress", "--level", "256" }, &.{ "compress", "--level", "-1" }, &.{ "compress", "--level", "1", "--level", "9" }, &.{ "compress", "--max-output-bytes", "1" }, &.{ "decompress", "--level", "5" }, &.{ "compress", "one", "two" } }) |args| {
+    inline for (.{ &.{"unknown"}, &.{ "decompress", "--max-output-bytes" }, &.{ "test", "--max-output-bytes", "-1" }, &.{ "test", "one", "two" }, &.{ "decompress", "--unknown" }, &.{ "compress", "--level" }, &.{ "compress", "--level", "0" }, &.{ "compress", "--level", "2" }, &.{ "compress", "--level", "6" }, &.{ "compress", "--level", "10" }, &.{ "compress", "--level", "256" }, &.{ "compress", "--level", "-1" }, &.{ "compress", "--level", "1", "--level", "9" }, &.{ "compress", "--fast", "--dense" }, &.{ "compress", "--even", "--level", "5" }, &.{ "compress", "--level", "1", "--fast" }, &.{ "decompress", "--fast" }, &.{ "test", "--dense" }, &.{ "compress", "--balanced" }, &.{ "compress", "--max-output-bytes", "1" }, &.{ "decompress", "--level", "5" }, &.{ "compress", "one", "two" } }) |args| {
         var argv: [args.len + 1][]const u8 = undefined;
         argv[0] = executable;
         inline for (args, 0..) |arg, i| argv[i + 1] = arg;
@@ -249,7 +252,7 @@ test "[cli] - [tar]: create, list, and test agree in every format, with the end-
     var plain: ?[]u8 = null;
     defer if (plain) |bytes| allocator.free(bytes);
     inline for (.{ "gzip", "zlib", "bgzf", "none" }) |format| {
-        const created = try Run.run(&.{ executable, "tar", "create", "--format", format, "--level", "1", "d" }, tmp.dir);
+        const created = try Run.run(&.{ executable, "tar", "create", "--format", format, "--fast", "d" }, tmp.dir);
         defer allocator.free(created.stderr);
         try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, created.term);
         try std.testing.expectEqualStrings("", created.stderr);
@@ -290,7 +293,7 @@ test "[cli] - [tar]: create, list, and test agree in every format, with the end-
     const help = try std.process.run(allocator, io, .{ .argv = &.{ executable, "--help" } });
     defer allocator.free(help.stdout);
     defer allocator.free(help.stderr);
-    inline for (.{ &.{"tar"}, &.{ "tar", "frob" }, &.{ "tar", "list", "a", "b" }, &.{ "tar", "create" }, &.{ "tar", "list", "--level", "5" }, &.{ "tar", "create", "--format", "auto", "d" }, &.{ "tar", "list", "--format", "deflate" }, &.{ "tar", "create", "--level", "2", "d" }, &.{ "tar", "list", "--format", "none", "--format", "none" }, &.{ "tar", "list", "-x" } }) |args| {
+    inline for (.{ &.{"tar"}, &.{ "tar", "frob" }, &.{ "tar", "list", "a", "b" }, &.{ "tar", "create" }, &.{ "tar", "list", "--level", "5" }, &.{ "tar", "list", "--dense" }, &.{ "tar", "create", "--fast", "--even", "d" }, &.{ "tar", "create", "--format", "auto", "d" }, &.{ "tar", "list", "--format", "deflate" }, &.{ "tar", "create", "--level", "2", "d" }, &.{ "tar", "list", "--format", "none", "--format", "none" }, &.{ "tar", "list", "-x" } }) |args| {
         var argv: [args.len + 1][]const u8 = undefined;
         argv[0] = executable;
         inline for (args, 0..) |arg, i| argv[i + 1] = arg;

@@ -67,7 +67,7 @@ Requires Zig 0.16.0.
 
 ```sh
 zig build -Doptimize=ReleaseFast
-./zig-out/bin/zipir compress --level 5 input > output.gz
+./zig-out/bin/zipir compress --even input > output.gz
 ./zig-out/bin/zipir decompress input.gz > output
 cat input.gz | ./zig-out/bin/zipir test > /dev/null
 ```

@@ -62,7 +62,7 @@ comptime {
 fn headerFor(level: engine.Level) [2]u8 {
     return switch (level) {
         .fast => .{ 0x78, 0x01 },
-        .balanced => .{ 0x78, 0x5e },
+        .even => .{ 0x78, 0x5e },
         .dense => .{ 0x78, 0xda },
     };
 }
