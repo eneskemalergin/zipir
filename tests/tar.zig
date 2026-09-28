@@ -165,7 +165,7 @@ test "[edge] - [tar reader]: the archive ends at its first zero block, and the e
     header(lone[body.len + 512 ..][0..512], "ghost.txt", '0', "00000000000");
     const result = try transcribe(&lone, 7, &storage);
     try std.testing.expectEqual(tar.Summary{ .entries = 3, .end_marker = false }, result.summary);
-    try std.testing.expect(std.mem.indexOf(u8, result.transcript, "ghost") == null);
+    try std.testing.expect(std.mem.find(u8, result.transcript, "ghost") == null);
     try std.testing.expectEqual(tar.Summary{ .entries = 0, .end_marker = false }, (try transcribe("", 1, &storage)).summary);
 }
 
@@ -456,7 +456,7 @@ test "[edge] - [tar writer]: the output depends only on the entries and the mtim
     var storage: [256]u8 = undefined;
     try std.testing.expectEqualStrings("file 6 644 -86400 d/a.txt|hello\n;", (try transcribe(dated, 512, &storage)).transcript);
     // 12345 in each entry does not reach the archive.
-    try std.testing.expect(std.mem.indexOf(u8, zero, "30071") == null);
+    try std.testing.expect(std.mem.find(u8, zero, "30071") == null);
 }
 
 test "[edge] - [tar writer]: a size of 8 GiB or more is written base-256 and read back" {

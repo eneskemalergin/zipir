@@ -2,8 +2,8 @@
 
 const std = @import("std");
 const zipir = @import("zipir");
-const Decoder = zipir.Decompressor(.gzip);
 const support = @import("support.zig");
+const Decoder = zipir.Decompressor(.gzip);
 
 test "[integration] - [gzip decompressor]: bounded refills and partial drains preserve members and long headers" {
     const cases = .{

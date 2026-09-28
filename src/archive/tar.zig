@@ -41,7 +41,7 @@ pub fn Reader(comptime Visitor: type) type {
         visitor: *Visitor,
         names: Names,
         failure: ?ReadError = null,
-        state: State = .header,
+        section: Section = .header,
         block: [BLOCK]u8 = undefined,
         block_len: usize = 0,
         remaining: u64 = 0,
@@ -63,7 +63,7 @@ pub fn Reader(comptime Visitor: type) type {
 
         pub fn finish(self: *Self) ReadError!Summary {
             if (self.failure) |err| return err;
-            switch (self.state) {
+            switch (self.section) {
                 .header => if (self.block_len != 0 or self.pending) return error.Truncated,
                 .end, .after_end => {},
                 else => return error.Truncated,
@@ -90,7 +90,7 @@ pub fn Reader(comptime Visitor: type) type {
         fn feed(self: *Self, input: []const u8) ReadError!void {
             var bytes = input;
             while (bytes.len != 0) {
-                switch (self.state) {
+                switch (self.section) {
                     .header, .end => {
                         const n = @min(BLOCK - self.block_len, bytes.len);
                         @memcpy(self.block[self.block_len..][0..n], bytes[0..n]);
@@ -98,9 +98,9 @@ pub fn Reader(comptime Visitor: type) type {
                         bytes = bytes[n..];
                         if (self.block_len < BLOCK) continue;
                         self.block_len = 0;
-                        if (self.state == .end) {
+                        if (self.section == .end) {
                             self.end_marker = byteSum(&self.block) == 0;
-                            self.state = .after_end;
+                            self.section = .after_end;
                         } else try self.header();
                     },
                     .after_end => return,
@@ -116,11 +116,15 @@ pub fn Reader(comptime Visitor: type) type {
                     },
                     .long_name, .long_link => {
                         const n = take(&self.remaining, bytes.len);
-                        const out = if (self.state == .long_name) self.names.name else self.names.link;
+                        const out = if (self.section == .long_name) self.names.name else self.names.link;
                         try self.meta.longName(out, bytes[0..n]);
                         bytes = bytes[n..];
                         if (self.remaining == 0) {
-                            if (self.state == .long_name) self.long_name = self.meta.len else self.long_link = self.meta.len;
+                            if (self.section == .long_name) {
+                                self.long_name = self.meta.len;
+                            } else {
+                                self.long_link = self.meta.len;
+                            }
                             self.startPadding();
                         }
                     },
@@ -141,7 +145,7 @@ pub fn Reader(comptime Visitor: type) type {
             const h = &self.block;
             const sum = byteSum(h);
             if (sum == 0) {
-                self.state = .end;
+                self.section = .end;
                 return;
             }
             try checkChecksum(h, sum);
@@ -164,10 +168,10 @@ pub fn Reader(comptime Visitor: type) type {
             }
         }
 
-        fn beginMeta(self: *Self, state: State, size: u64) void {
+        fn beginMeta(self: *Self, section: Section, size: u64) void {
             self.remaining = size;
             self.padding = pad(size);
-            self.state = state;
+            self.section = section;
             if (size == 0) self.startPadding();
         }
 
@@ -205,7 +209,7 @@ pub fn Reader(comptime Visitor: type) type {
             self.action = try self.visitor.entry(entry);
             self.remaining = size;
             self.padding = pad(size);
-            self.state = .data;
+            self.section = .data;
             if (size == 0) try self.endEntry();
         }
 
@@ -217,7 +221,7 @@ pub fn Reader(comptime Visitor: type) type {
         fn startPadding(self: *Self) void {
             self.remaining = self.padding;
             self.padding = 0;
-            self.state = if (self.remaining == 0) .header else .skip;
+            self.section = if (self.remaining == 0) .header else .skip;
         }
 
         // One byte of a pax extended header: records are `LENGTH KEY=VALUE\n`, LENGTH counting the whole
@@ -441,7 +445,7 @@ const HEADER_ROOM = 3 * BLOCK + 2 * (MAX_NAME + 1);
 
 const ZEROS = [_]u8{0} ** (2 * BLOCK);
 
-const State = enum { header, data, skip, long_name, long_link, pax, end, after_end };
+const Section = enum { header, data, skip, long_name, long_link, pax, end, after_end };
 
 // Parse state of one GNU long-name or pax extended header.
 const Meta = struct {

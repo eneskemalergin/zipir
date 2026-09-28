@@ -122,62 +122,6 @@ pub const Scanner = struct {
 /// occurs.
 pub const Decompressor = stream_reader.Decompressor(DecompressFraming);
 
-const DecompressFraming = struct {
-    pub const Check = crc.Crc32;
-    pub const DecompressOptions = format.DecompressOptions;
-    pub const DecompressError = format.DecompressError;
-    pub const min_input_buffer = EOF_MARKER.len;
-    pub const max_stream_bytes = MAX_BLOCK;
-
-    options: format.DecompressOptions,
-    /// Blocks read so far.
-    blocks: u64 = 0,
-    /// Whether the last block read is the 28-byte EOF marker.
-    eof_marker: bool = false,
-    // After a seek, a first block that is not one is `BadVirtualOffset`.
-    seeking: bool = false,
-    first_size: u64 = 0,
-    current: BlockHeader = undefined,
-
-    pub fn init(options: format.DecompressOptions) DecompressFraming {
-        return .{ .options = options };
-    }
-
-    pub fn header(self: *DecompressFraming, br: *decode.BitReader) format.DecompressError!bool {
-        _ = try br.refill(2);
-        if (br.src.len < 2 or br.src[0] != 0x1f or br.src[1] != 0x8b) {
-            if (self.blocks == 0) {
-                if (self.seeking) return error.BadVirtualOffset;
-                if (br.src.len < 2) return error.Truncated;
-                return error.NotBgzf;
-            }
-            if (br.src.len != 0 and self.options.trailing_data == .reject) return error.TrailingData;
-            if (self.options.require_eof_marker and !self.eof_marker) return error.MissingEofMarker;
-            return false;
-        }
-        self.current = readBlockHeader(br) catch |err| {
-            if (self.seeking and self.blocks == 0 and isHeaderError(err)) return error.BadVirtualOffset;
-            return err;
-        };
-        return true;
-    }
-
-    pub fn trailer(self: *DecompressFraming, br: *decode.BitReader, check: *Check, size: u64) format.DecompressError!void {
-        try readBlockTrailer(br, self.current, check.final(), size);
-        if (self.blocks == 0) self.first_size = size;
-        self.blocks += 1;
-        self.eof_marker = self.current.marker;
-    }
-
-    // A block that outgrows 65536 bytes is `BlockTooLarge` unless the caller's output limit is what stopped it.
-    pub fn streamError(self: *const DecompressFraming, err: format.DecompressError, start: u64) format.DecompressError {
-        if (err == error.OutputLimitExceeded and self.options.max_output_bytes - start > MAX_BLOCK) return error.BlockTooLarge;
-        return err;
-    }
-};
-
-const format = @This();
-
 /// Reusable without initialization, including after errors. No allocation occurs during decode.
 pub const BlockDecoder = struct {
     decoder: decode.Decoder = .{},
@@ -205,24 +149,10 @@ comptime {
     std.debug.assert(@sizeOf(BlockDecoder) == 196608);
 }
 
-pub const Split = enum { fill, lines };
-
 /// `.fill` makes blocks of 65280 bytes; `.lines` gives exactly the uncompressed
 /// boundaries of `bgzip` 1.24 on text: blocks end after the last newline of each read window, leading `#`
 /// or `@` header lines get their own blocks, and a line longer than a block continues in the next one.
-/// The index of the last '\n' in `bytes`, 32 bytes at a time from the end (`std.mem.lastIndexOfScalar` compares
-/// one byte per step, which cost a text block with no newline more than compressing it).
-fn lastNewline(bytes: []const u8) ?usize {
-    const V = @Vector(32, u8);
-    var end = bytes.len;
-    while (end >= 32) {
-        const chunk: V = bytes[end - 32 ..][0..32].*;
-        const mask: u32 = @bitCast(chunk == @as(V, @splat('\n')));
-        if (mask != 0) return end - 32 + (31 - @clz(mask));
-        end -= 32;
-    }
-    return std.mem.lastIndexOfScalar(u8, bytes[0..end], '\n');
-}
+pub const Split = enum { fill, lines };
 
 pub const BlockSplitter = struct {
     split: Split,
@@ -283,7 +213,7 @@ pub const BlockSplitter = struct {
             if (self.in_header and (self.long_line or window[0] == '@' or window[0] == '#')) {
                 var last_start: usize = 0;
                 var i: usize = 0;
-                while (std.mem.indexOfScalarPos(u8, window, i, '\n')) |newline| {
+                while (std.mem.findScalarPos(u8, window, i, '\n')) |newline| {
                     i = newline + 1;
                     last_start = i;
                     if (i < window.len and window[i] != '@' and window[i] != '#') {
@@ -542,6 +472,76 @@ pub const IndexReader = struct {
         return entry;
     }
 };
+
+const format = @This();
+
+const DecompressFraming = struct {
+    pub const Check = crc.Crc32;
+    pub const DecompressOptions = format.DecompressOptions;
+    pub const DecompressError = format.DecompressError;
+    pub const min_input_buffer = EOF_MARKER.len;
+    pub const max_stream_bytes = MAX_BLOCK;
+
+    options: format.DecompressOptions,
+    /// Blocks read so far.
+    blocks: u64 = 0,
+    /// Whether the last block read is the 28-byte EOF marker.
+    eof_marker: bool = false,
+    // After a seek, a first block that is not one is `BadVirtualOffset`.
+    seeking: bool = false,
+    first_size: u64 = 0,
+    current: BlockHeader = undefined,
+
+    pub fn init(options: format.DecompressOptions) DecompressFraming {
+        return .{ .options = options };
+    }
+
+    pub fn header(self: *DecompressFraming, br: *decode.BitReader) format.DecompressError!bool {
+        _ = try br.refill(2);
+        if (br.src.len < 2 or br.src[0] != 0x1f or br.src[1] != 0x8b) {
+            if (self.blocks == 0) {
+                if (self.seeking) return error.BadVirtualOffset;
+                if (br.src.len < 2) return error.Truncated;
+                return error.NotBgzf;
+            }
+            if (br.src.len != 0 and self.options.trailing_data == .reject) return error.TrailingData;
+            if (self.options.require_eof_marker and !self.eof_marker) return error.MissingEofMarker;
+            return false;
+        }
+        self.current = readBlockHeader(br) catch |err| {
+            if (self.seeking and self.blocks == 0 and isHeaderError(err)) return error.BadVirtualOffset;
+            return err;
+        };
+        return true;
+    }
+
+    pub fn trailer(self: *DecompressFraming, br: *decode.BitReader, check: *Check, size: u64) format.DecompressError!void {
+        try readBlockTrailer(br, self.current, check.final(), size);
+        if (self.blocks == 0) self.first_size = size;
+        self.blocks += 1;
+        self.eof_marker = self.current.marker;
+    }
+
+    // A block that outgrows 65536 bytes is `BlockTooLarge` unless the caller's output limit is what stopped it.
+    pub fn streamError(self: *const DecompressFraming, err: format.DecompressError, start: u64) format.DecompressError {
+        if (err == error.OutputLimitExceeded and self.options.max_output_bytes - start > MAX_BLOCK) return error.BlockTooLarge;
+        return err;
+    }
+};
+
+/// The index of the last '\n' in `bytes`, 32 bytes at a time from the end (`std.mem.findScalarLast` compares
+/// one byte per step, which cost a text block with no newline more than compressing it).
+fn lastNewline(bytes: []const u8) ?usize {
+    const V = @Vector(32, u8);
+    var end = bytes.len;
+    while (end >= 32) {
+        const chunk: V = bytes[end - 32 ..][0..32].*;
+        const mask: u32 = @bitCast(chunk == @as(V, @splat('\n')));
+        if (mask != 0) return end - 32 + (31 - @clz(mask));
+        end -= 32;
+    }
+    return std.mem.findScalarLast(u8, bytes[0..end], '\n');
+}
 
 const HEADER_LEN = 18;
 

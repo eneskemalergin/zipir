@@ -113,7 +113,7 @@ fn compressBgzf(io: Io, paths: adapter.Paths) !void {
         error.EndOfStream => in_reader.interface.buffered(),
         error.ReadFailed => return err,
     };
-    const split: zipir.bgzf.Split = if (std.mem.indexOfScalar(u8, head, 0) != null) .fill else .lines;
+    const split: zipir.bgzf.Split = if (std.mem.findScalar(u8, head, 0) != null) .fill else .lines;
 
     const out_file = try adapter.openOut(io, paths.out_path);
     defer adapter.closeIfOwned(io, out_file, paths.out_path);

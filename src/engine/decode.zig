@@ -152,7 +152,7 @@ pub const BitReader = struct {
         self.nbits -= drop;
     }
 
-    pub fn putBack(self: *BitReader) void {
+    fn putBack(self: *BitReader) void {
         const extra: usize = self.nbits / 8;
         std.debug.assert(extra <= self.i);
         self.i -= extra;
@@ -452,7 +452,7 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []cons
         if (symbols != 0 and !(symbols == 1 and count[1] == 1)) return error.BadHuffman;
         @memset(table, invalid);
         if (symbols == 1) {
-            const symbol = std.mem.indexOfScalar(u4, lens, 1).?;
+            const symbol = std.mem.findScalar(u4, lens, 1).?;
             const entry = makeEntry(symbol, 1, kind_of, payload_of, predecoded);
             var i: usize = 0;
             while (i < table.len) : (i += 2) table[i] = entry;

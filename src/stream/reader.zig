@@ -52,11 +52,11 @@ pub fn Decompressor(comptime Framing: type) type {
         session: decode.Session(Check),
         br: decode.BitReader,
         check: Check,
-        state: State,
+        phase: Phase,
         // An error met after this call had delivered bytes; reported on the next call.
         deferred: ?DecompressError,
 
-        const State = enum { header, body, done, failed };
+        const Phase = enum { header, body, done, failed };
 
         const vtable: std.Io.Reader.VTable = .{
             .stream = stream,
@@ -76,7 +76,7 @@ pub fn Decompressor(comptime Framing: type) type {
             if (whole_streams) self.session.max_stream_bytes = Framing.max_stream_bytes;
             self.br = .{ .reader = input };
             self.framing = Framing.init(options);
-            self.state = .header;
+            self.phase = .header;
         }
 
         /// Moves to a BGZF virtual offset: `offset.coffset` must be the start of a BGZF block in `source`, which
@@ -132,7 +132,7 @@ pub fn Decompressor(comptime Framing: type) type {
                 self.deferred = null;
                 return self.fail(e);
             }
-            switch (self.state) {
+            switch (self.phase) {
                 .done => return error.EndOfStream,
                 .failed => return error.ReadFailed,
                 .header, .body => {},
@@ -143,18 +143,18 @@ pub fn Decompressor(comptime Framing: type) type {
             }
             const start = r.end;
             while (true) {
-                switch (self.state) {
+                switch (self.phase) {
                     .header => {
                         if (r.buffer.len - self.session.out_pos < (if (whole_streams) min_room else 1)) break;
                         const more = self.framing.header(&self.br) catch |e| return self.fault(e, start);
                         if (!more) {
-                            self.state = .done;
+                            self.phase = .done;
                             self.br.release();
                             break;
                         }
                         self.check = Check.init();
                         self.session.begin(&self.br, &self.check);
-                        self.state = .body;
+                        self.phase = .body;
                     },
                     .body => {
                         const stop = self.session.run() catch |e| {
@@ -173,19 +173,19 @@ pub fn Decompressor(comptime Framing: type) type {
                             return self.fault(e, start);
                         };
                         r.end = self.session.out_pos;
-                        self.state = .header;
+                        self.phase = .header;
                     },
                     .done, .failed => unreachable,
                 }
             }
-            if (r.end == start) return if (self.state == .done) error.EndOfStream else self.fail(error.PeekTooLarge);
+            if (r.end == start) return if (self.phase == .done) error.EndOfStream else self.fail(error.PeekTooLarge);
         }
 
         // Bytes delivered in this call come first; the error waits for the next call.
         fn fault(self: *Self, e: DecompressError, start: usize) std.Io.Reader.Error!void {
             self.br.release();
             if (self.reader.end > start) {
-                self.state = .failed;
+                self.phase = .failed;
                 self.deferred = e;
                 return;
             }
@@ -193,7 +193,7 @@ pub fn Decompressor(comptime Framing: type) type {
         }
 
         fn fail(self: *Self, e: DecompressError) error{ReadFailed} {
-            self.state = .failed;
+            self.phase = .failed;
             self.err = e;
             return error.ReadFailed;
         }
@@ -228,7 +228,7 @@ pub fn Decompressor(comptime Framing: type) type {
             const self = parent(r);
             r.seek -= self.session.rebase(r.seek);
             r.end = self.session.out_pos;
-            if (r.buffer.len - r.seek < capacity and self.state != .done) return self.fail(error.PeekTooLarge);
+            if (r.buffer.len - r.seek < capacity and self.phase != .done) return self.fail(error.PeekTooLarge);
         }
     };
 }

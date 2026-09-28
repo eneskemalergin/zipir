@@ -6,8 +6,8 @@ const zipir = @import("zipir");
 const support = @import("support.zig");
 
 const Format = zipir.Format;
-const formats = [_]Format{ .gzip, .zlib, .deflate };
-const presets = [_]zipir.Preset{ .fast, .even, .dense };
+const FORMATS = [_]Format{ .gzip, .zlib, .deflate };
+const PRESETS = [_]zipir.Preset{ .fast, .even, .dense };
 
 fn makePlain(allocator: std.mem.Allocator, len: usize) ![]u8 {
     const plain = try allocator.alloc(u8, len);
@@ -62,10 +62,10 @@ test "[property] - [writer]: output depends only on the bytes, whatever the writ
     const allocator = std.testing.allocator;
     const plain = try makePlain(allocator, 230_000);
     defer allocator.free(plain);
-    inline for (formats) |format| {
+    inline for (FORMATS) |format| {
         const encoder = try allocator.create(zipir.Compressor(format));
         defer allocator.destroy(encoder);
-        for (presets) |preset| {
+        for (PRESETS) |preset| {
             const whole = try write(allocator, encoder, plain, preset, .{ .sizes = plain.len });
             defer allocator.free(whole);
             const decoded = try decode(allocator, format, whole);
@@ -121,7 +121,7 @@ test "[integration] - [writer]: flush makes everything written so far decodable"
     const allocator = std.testing.allocator;
     const plain = try makePlain(allocator, 150_000);
     defer allocator.free(plain);
-    inline for (formats) |format| {
+    inline for (FORMATS) |format| {
         const encoder = try allocator.create(zipir.Compressor(format));
         defer allocator.destroy(encoder);
         var out: std.Io.Writer.Allocating = .init(allocator);

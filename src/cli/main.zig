@@ -250,7 +250,7 @@ fn compressBgzf(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, out
         error.EndOfStream => reader.interface.buffered(),
         error.ReadFailed => return err,
     };
-    const split: zipir.bgzf.Split = if (binary or std.mem.indexOfScalar(u8, head, 0) != null) .fill else .lines;
+    const split: zipir.bgzf.Split = if (binary or std.mem.findScalar(u8, head, 0) != null) .fill else .lines;
     const encoder = try allocator.create(zipir.bgzf.Compressor);
     defer allocator.destroy(encoder);
     try encoder.init(out, .{ .preset = preset, .split = split });

@@ -2,7 +2,9 @@
 
 const std = @import("std");
 const support = @import("support.zig");
-const zlib = @import("zipir").zlib;
+const zipir = @import("zipir");
+const zlib = zipir.zlib;
+const Compressor = zipir.Compressor(.zlib);
 
 // Only the first gzip member is rewrapped: copy-boundaries repeats one member and
 // final-stored-concat ends with the short6 member.
@@ -302,8 +304,6 @@ test "[failure] - [zlib decompressor]: rejects undersized input buffers and pres
 
 // --- Compression ---
 
-const Compressor = @import("zipir").Compressor(.zlib);
-
 fn encodeRoundtrip(encoder: *Compressor, plain: []const u8, options: zlib.CompressOptions, chunk: usize, capacity: usize, encoded: []u8) ![]const u8 {
     const stream = try support.encodeRoundtrip(zlib, encoder, .zlib, plain, options, chunk, capacity, encoded);
     try std.testing.expectEqual(@as(u16, 0), (@as(u16, stream[0]) << 8 | stream[1]) % 31);
@@ -333,7 +333,7 @@ test "[edge] - [zlib compressor]: empty input writes the preset's header, an emp
 test "[property] - [zlib compressor]: payload equals the gzip payload across block and window boundaries" {
     const encoder = try std.testing.allocator.create(Compressor);
     defer std.testing.allocator.destroy(encoder);
-    const gzip_encoder = try std.testing.allocator.create(@import("zipir").Compressor(.gzip));
+    const gzip_encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(gzip_encoder);
     const decoder = try std.testing.allocator.create(zlib.Decompressor);
     defer std.testing.allocator.destroy(decoder);

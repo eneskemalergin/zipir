@@ -336,7 +336,7 @@ fn fastHash(v: u32) usize {
     return (v *% 0x1e35a7bd) >> 17;
 }
 
-pub const EncodeError = std.Io.Writer.Error;
+const EncodeError = std.Io.Writer.Error;
 
 pub const Encoder = struct {
     // A window of input is parsed once more than a window is buffered (which also proves it is not the last);

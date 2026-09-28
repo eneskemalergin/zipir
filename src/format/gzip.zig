@@ -131,7 +131,7 @@ pub fn readHeader(br: *decode.BitReader, comptime Visitor: type, visitor: if (Vi
         while (true) {
             if (br.i == br.src.len and !try br.refill(1)) return error.Truncated;
             const remaining = br.src[br.i..];
-            const zero = std.mem.indexOfScalar(u8, remaining, 0);
+            const zero = std.mem.findScalar(u8, remaining, 0);
             const n = if (zero) |end| end + 1 else remaining.len;
             optional += n;
             if (optional > limit) return error.HeaderTooLong;

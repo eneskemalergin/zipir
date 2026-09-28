@@ -6,7 +6,7 @@ const zipir = @import("zipir");
 const support = @import("support.zig");
 
 const Format = zipir.Format;
-const formats = [_]Format{ .gzip, .zlib, .deflate };
+const FORMATS = [_]Format{ .gzip, .zlib, .deflate };
 
 // Lines of text, a long run, and a random stretch (stored blocks), about 700 KB with a final newline.
 fn makePlain(allocator: std.mem.Allocator) ![]u8 {
@@ -88,7 +88,7 @@ test "[integration] - [reader]: every read pattern returns the decoded stream in
     const allocator = std.testing.allocator;
     const plain = try makePlain(allocator);
     defer allocator.free(plain);
-    inline for (formats) |format| {
+    inline for (FORMATS) |format| {
         const stream = try compress(allocator, format, plain);
         defer allocator.free(stream);
         const decoder = try allocator.create(zipir.Decompressor(format));
@@ -196,7 +196,7 @@ test "[integration] - [reader]: a workspace restarts after an end, an error, and
     const allocator = std.testing.allocator;
     const plain = try makePlain(allocator);
     defer allocator.free(plain);
-    inline for (formats) |format| {
+    inline for (FORMATS) |format| {
         const stream = try compress(allocator, format, plain);
         defer allocator.free(stream);
         const decoder = try allocator.create(zipir.Decompressor(format));
@@ -218,7 +218,7 @@ test "[integration] - [reader]: a workspace restarts after an end, an error, and
 test "[edge] - [reader]: the input stands after the stream when trailing data is left" {
     const allocator = std.testing.allocator;
     const plain = "trailing data is kept\n";
-    inline for (formats) |format| {
+    inline for (FORMATS) |format| {
         const stream = try compress(allocator, format, plain);
         defer allocator.free(stream);
         const joined = try std.mem.concat(allocator, u8, &.{ stream, "XYZ" });

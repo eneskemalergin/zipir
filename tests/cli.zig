@@ -1,11 +1,12 @@
 //! Checks command output, failures, format selection, and file preservation.
 
 const std = @import("std");
+const options = @import("options");
 
 test "[cli] - [gzip]: command status and byte streams preserve source files" {
     const io = std.testing.io;
     const allocator = std.testing.allocator;
-    const executable = try std.Io.Dir.cwd().realPathFileAlloc(io, @import("options").executable, allocator);
+    const executable = try std.Io.Dir.cwd().realPathFileAlloc(io, options.executable, allocator);
     defer allocator.free(executable);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -72,7 +73,7 @@ test "[cli] - [gzip]: command status and byte streams preserve source files" {
 test "[cli] - [format]: --format selects the codec and auto detects gzip and zlib only" {
     const io = std.testing.io;
     const allocator = std.testing.allocator;
-    const executable = try std.Io.Dir.cwd().realPathFileAlloc(io, @import("options").executable, allocator);
+    const executable = try std.Io.Dir.cwd().realPathFileAlloc(io, options.executable, allocator);
     defer allocator.free(executable);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -141,7 +142,7 @@ fn bgzfBlockSizes(stream: []const u8, sizes: []u32) []u32 {
 test "[cli] - [bgzf]: compress, EOF policy, and index follow bgzip's behavior" {
     const io = std.testing.io;
     const allocator = std.testing.allocator;
-    const executable = try std.Io.Dir.cwd().realPathFileAlloc(io, @import("options").executable, allocator);
+    const executable = try std.Io.Dir.cwd().realPathFileAlloc(io, options.executable, allocator);
     defer allocator.free(executable);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -220,7 +221,7 @@ test "[cli] - [bgzf]: compress, EOF policy, and index follow bgzip's behavior" {
 test "[cli] - [tar]: create, list, and test agree in every format, with the end-block policy and path checks" {
     const io = std.testing.io;
     const allocator = std.testing.allocator;
-    const executable = try std.Io.Dir.cwd().realPathFileAlloc(io, @import("options").executable, allocator);
+    const executable = try std.Io.Dir.cwd().realPathFileAlloc(io, options.executable, allocator);
     defer allocator.free(executable);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

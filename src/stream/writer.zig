@@ -30,9 +30,9 @@ pub fn Compressor(comptime Framing: type) type {
         writer: std.Io.Writer,
         encoder: encode.Encoder,
         check: Check,
-        state: State,
+        phase: Phase,
 
-        const State = enum { open, closed };
+        const Phase = enum { open, closed };
 
         const vtable: std.Io.Writer.VTable = .{
             .drain = drain,
@@ -43,19 +43,19 @@ pub fn Compressor(comptime Framing: type) type {
         /// Starts a stream into `output` and writes its header; resets everything, including after errors.
         /// The workspace must stay at this address while `writer` is used: the writer's buffer is inside it.
         pub fn init(self: *Self, output: *std.Io.Writer, options: CompressOptions) CompressError!void {
-            self.state = .closed;
+            self.phase = .closed;
             self.writer = .failing;
             self.encoder.begin(output, options.preset, false);
             self.check = Check.init();
             try Framing.header(output, options.preset);
             self.writer = .{ .vtable = &vtable, .buffer = self.encoder.windowSpace(), .end = 0 };
-            self.state = .open;
+            self.phase = .open;
         }
 
         /// Codes what is buffered as the final DEFLATE block and writes the trailer; the result is the number of
         /// plain bytes. The writer then fails until `init`. The caller flushes the output writer.
         pub fn finish(self: *Self) CompressError!u64 {
-            if (self.state != .open) return error.WriteFailed;
+            if (self.phase != .open) return error.WriteFailed;
             errdefer self.close();
             const w = &self.writer;
             if (w.end > WINDOW) try self.codeWindow();
@@ -67,7 +67,7 @@ pub fn Compressor(comptime Framing: type) type {
         }
 
         fn close(self: *Self) void {
-            self.state = .closed;
+            self.phase = .closed;
             self.writer = .failing;
         }
 
@@ -87,7 +87,7 @@ pub fn Compressor(comptime Framing: type) type {
 
         fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) CompressError!usize {
             const self = parent(w);
-            if (self.state != .open) return error.WriteFailed;
+            if (self.phase != .open) return error.WriteFailed;
             errdefer self.close();
             var consumed: usize = 0;
             copy: {
@@ -116,7 +116,7 @@ pub fn Compressor(comptime Framing: type) type {
 
         fn rebase(w: *std.Io.Writer, preserve: usize, capacity: usize) CompressError!void {
             const self = parent(w);
-            if (self.state != .open) return error.WriteFailed;
+            if (self.phase != .open) return error.WriteFailed;
             if (w.buffer.len - w.end >= capacity) return;
             // Coding a window frees a window's room; the preserved bytes must lie after it.
             if (w.end <= WINDOW or w.end - WINDOW < preserve) return error.WriteFailed;
@@ -127,7 +127,7 @@ pub fn Compressor(comptime Framing: type) type {
 
         fn flush(w: *std.Io.Writer) CompressError!void {
             const self = parent(w);
-            if (self.state != .open) return error.WriteFailed;
+            if (self.phase != .open) return error.WriteFailed;
             errdefer self.close();
             if (w.end > WINDOW) try self.codeWindow();
             try self.encoder.codeWindow(Check, &self.check, w.end, 0, true, false, false);
