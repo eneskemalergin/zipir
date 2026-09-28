@@ -313,12 +313,11 @@ pub const BlockEncoder = struct {
     /// Asserts `input.len <= 65280`; the result is the block's length in `out`.
     pub fn compressBlock(self: *BlockEncoder, input: []const u8, out: *[MAX_BLOCK]u8, level: engine.Level) usize {
         std.debug.assert(input.len <= BLOCK_INPUT);
-        var reader = std.Io.Reader.fixed(input);
         var body = std.Io.Writer.fixed(out[HEADER_LEN .. MAX_BLOCK - 8]);
         var check: crc.Crc32 = .init();
         // 65280 input bytes compress to at most 65291 (two stored blocks at worst), which fits `body`,
-        // and fixed readers and writers of that size cannot fail.
-        _ = self.encoder.encodeBlock(crc.Crc32, &reader, &body, &check, level) catch unreachable;
+        // and a fixed writer of that size cannot fail.
+        self.encoder.encodeBlock(crc.Crc32, input, &body, &check, level) catch unreachable;
         const size = HEADER_LEN + body.end + 8;
         var subfield = [6]u8{ 'B', 'C', 2, 0, 0, 0 };
         std.mem.writeInt(u16, subfield[4..6], @intCast(size - 1), .little);
@@ -331,7 +330,7 @@ pub const BlockEncoder = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BlockEncoder) == 394504);
+    std.debug.assert(@sizeOf(BlockEncoder) == 428584);
 }
 
 pub const WriterOptions = struct {

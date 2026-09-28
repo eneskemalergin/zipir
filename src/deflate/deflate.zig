@@ -1106,7 +1106,9 @@ pub const CompressOptions = struct {
 };
 
 pub const Encoder = struct {
-    window: [2 * RING]u8 = undefined,
+    // A window of input is parsed once more than a window is buffered (which also proves it is not the last);
+    // the third 32 KiB is room for that surplus, so a writer can always offer 32 KiB of contiguous space.
+    window: [3 * RING]u8 = undefined,
     head: [ENCODE_HASH]u16 = undefined,
     previous: [RING]u16 = undefined,
     lit_freq: [286]u32 = undefined,
@@ -1114,111 +1116,167 @@ pub const Encoder = struct {
     // fast: self-contained tokens (see `parseFast`), one block per two windows.
     icf: [ICF_CAP]u32 = undefined,
     icf_count: usize = undefined,
+    // The stream: its output, bits not yet written, and the window pairing carried between windows.
+    out: *std.Io.Writer = undefined,
+    bit_value: u64 = 0,
+    bit_count: u32 = 0,
+    level: Level = .even,
+    history: usize = 0,
+    size: u64 = 0,
+    skip_search: bool = false,
+    pending: bool = false,
+    first_lit: [286]u32 = undefined,
+    first_dist: [30]u32 = undefined,
+    first_tokens: usize = 0,
 
+    /// A whole stream read from `reader`.
     pub fn encodeStream(self: *Encoder, comptime Check: type, reader: *std.Io.Reader, writer: *std.Io.Writer, check: *Check, level: Level) EncodeError!u64 {
-        return self.encode(Check, reader, writer, check, level, false);
+        self.begin(writer, level, false);
+        var carried: usize = 0;
+        while (true) {
+            // A window plus one byte: the extra byte proves the window is not the last.
+            const n = carried + try reader.readSliceShort(self.space()[carried .. RING + 1]);
+            const last = n <= RING;
+            try self.step(Check, check, if (last) n else RING, if (last) 0 else n - RING, last, false);
+            if (last) break;
+            carried = n - RING;
+        }
+        try self.finish();
+        return self.size;
     }
 
     /// One BGZF block (at most 65280 bytes): the same presets with settings for a cold 64 KiB block
     /// (PHASE2.md): fast keeps two candidates per hash bucket and even searches deeper.
-    pub fn encodeBlock(self: *Encoder, comptime Check: type, reader: *std.Io.Reader, writer: *std.Io.Writer, check: *Check, level: Level) EncodeError!u64 {
-        return self.encode(Check, reader, writer, check, level, true);
+    pub fn encodeBlock(self: *Encoder, comptime Check: type, input: []const u8, writer: *std.Io.Writer, check: *Check, level: Level) EncodeError!void {
+        std.debug.assert(input.len <= 2 * RING);
+        self.begin(writer, level, true);
+        var at: usize = 0;
+        while (true) {
+            const n = @min(input.len - at, RING + 1);
+            @memcpy(self.window[self.history..][0..n], input[at..][0..n]);
+            const last = n <= RING;
+            try self.step(Check, check, if (last) n else RING, if (last) 0 else 1, last, true);
+            if (last) break;
+            at += RING;
+        }
+        try self.finish();
     }
 
-    fn encode(self: *Encoder, comptime Check: type, reader: *std.Io.Reader, writer: *std.Io.Writer, check: *Check, level: Level, comptime block: bool) EncodeError!u64 {
+    /// Starts a stream written to `writer`. `block` selects the BGZF block settings.
+    pub fn begin(self: *Encoder, writer: *std.Io.Writer, level: Level, comptime block: bool) void {
         // `previous` is never cleared: with `head` clear, every position a chain reaches was inserted in this
         // stream, which wrote its `previous` slot; a slot reused by a later position is behind `lower` and
         // rejected before it is read. BGZF pays this once per 64 KiB block.
         // 64 or 128 KiB: `@memset` here would call compiler_rt's byte-per-iteration `memset` (see `copy.zero`).
-        const heads = if (level == .fast) self.head[0..FAST_HASH] else self.head[0..];
-        copy.zero(std.mem.sliceAsBytes(heads));
+        copy.zero(std.mem.sliceAsBytes(self.headsFor(level)));
         // Block fast keeps each bucket's older candidate in `previous`, which must start clean too.
         if (block and level == .fast) copy.zero(std.mem.asBytes(self.previous[0..FAST_HASH]));
-        var bits: BitWriter = .{ .writer = writer };
-        var history: usize = 0;
-        var size: u64 = 0;
-        var lookahead: [1]u8 = undefined;
-        var carried: usize = 0;
+        self.out = writer;
+        self.bit_value = 0;
+        self.bit_count = 0;
+        self.level = level;
+        self.history = 0;
+        self.size = 0;
         // A BGZF block learns nothing from the block before it: its first window starts with the search provisionally
         // off, so `hasEarlyMatch` (on a clean table) and the entropy check decide from the block itself.
-        var skip_search = block;
+        self.skip_search = block;
+        self.pending = false;
+    }
+
+    /// Where the next window's bytes go: `space()[0..carried]` already holds the bytes carried from the last one.
+    pub fn space(self: *Encoder) []u8 {
+        return self.window[self.history..][0 .. 2 * RING];
+    }
+
+    /// Codes `space()[0..n]` as the next window: `n` is 32 KiB except in the last. The `carried` bytes after it
+    /// (at most 32 KiB) begin the next window.
+    pub fn step(self: *Encoder, comptime Check: type, check: *Check, n: usize, carried: usize, last: bool, comptime block: bool) EncodeError!void {
+        std.debug.assert(n <= RING and (last or n == RING) and carried <= RING);
+        var bits: BitWriter = .{ .writer = self.out, .value = self.bit_value, .count = self.bit_count };
+        defer {
+            self.bit_value = bits.value;
+            self.bit_count = bits.count;
+        }
+        const level = self.level;
+        const history = self.history;
+        const end = history + n;
+        check.update(self.window[history..end]);
+        self.size +%= n;
+        // Positions at the end of the previous window were not inserted: the last two lacked three-byte
+        // lookahead, and `parseFast` stops eight bytes before the end.
+        if (history != 0) {
+            if (level == .fast) {
+                var p = history - 8;
+                while (p < history and p + 4 <= end) : (p += 1) {
+                    const h = fastHash(std.mem.readInt(u32, self.window[p..][0..4], .little));
+                    if (block) self.previous[h] = self.head[h];
+                    self.head[h] = @intCast(p);
+                }
+            } else {
+                var p = history - 2;
+                while (p < history and p + 3 <= end) : (p += 1) self.insert(p, if (level == .even) self.hash(p, end, 5) else self.hash(p, end, 4));
+            }
+        }
         // Windows go in pairs: the first is parsed and kept; after the slide it is the history half, so the pair's
         // bytes are window[0..end]. fast makes one block per pair; even and dense make one block or two,
         // whichever codes smaller (`emitPair`).
-        var pending = false;
-        var first_lit: [286]u32 = undefined;
-        var first_dist: [30]u32 = undefined;
-        var first_tokens: usize = 0;
-        while (true) {
-            if (carried != 0) self.window[history] = lookahead[0];
-            const n = carried + try reader.readSliceShort(self.window[history + carried ..][0 .. RING - carried]);
-            carried = if (n == RING) try reader.readSliceShort(&lookahead) else 0;
-            const last = carried == 0;
-            const end = history + n;
-            check.update(self.window[history..end]);
-            size +%= n;
-            // Positions at the end of the previous window were not inserted: the last two lacked three-byte
-            // lookahead, and `parseFast` stops eight bytes before the end.
-            if (history != 0) {
-                if (level == .fast) {
-                    var p = history - 8;
-                    while (p < history and p + 4 <= end) : (p += 1) {
-                        const h = fastHash(std.mem.readInt(u32, self.window[p..][0..4], .little));
-                        if (block) self.previous[h] = self.head[h];
-                        self.head[h] = @intCast(p);
-                    }
-                } else {
-                    var p = history - 2;
-                    while (p < history and p + 3 <= end) : (p += 1) self.insert(p, if (level == .even) self.hash(p, end, 5) else self.hash(p, end, 4));
-                }
-            }
-            if (level == .fast and !block) {
-                self.parseFast(history, end, !pending);
-                if (!last and !pending) {
-                    pending = true;
-                } else {
-                    _ = try self.emit(&bits, self.window[if (pending) 0 else history..end], last);
-                    pending = false;
-                }
-            } else if (level == .fast) {
-                self.parseFastBlock(history, end, !pending);
-                if (!last and !pending) {
-                    first_lit = self.lit_freq;
-                    first_dist = self.dist_freq;
-                    first_tokens = self.icf_count;
-                    pending = true;
-                } else if (pending) {
-                    _ = try self.emitPair(&bits, end, last, &first_lit, &first_dist, first_tokens);
-                    pending = false;
-                } else {
-                    _ = try self.emit(&bits, self.window[history..end], last);
-                }
+        if (level == .fast and !block) {
+            self.parseFast(history, end, !self.pending);
+            if (!last and !self.pending) {
+                self.pending = true;
             } else {
-                if (level == .even) self.parse(history, end, level, skip_search, !pending, 5, block) else self.parse(history, end, level, skip_search, !pending, 4, block);
-                // A stored block turns the search off until `hasEarlyMatch` sees a match near a block start.
-                if (!last and !pending) {
-                    // The first window of a pair: its counts price it as a block of its own later.
-                    first_lit = self.lit_freq;
-                    first_dist = self.dist_freq;
-                    first_tokens = self.icf_count;
-                    pending = true;
-                } else if (pending) {
-                    skip_search = try self.emitPair(&bits, end, last, &first_lit, &first_dist, first_tokens);
-                    pending = false;
-                } else {
-                    skip_search = try self.emit(&bits, self.window[history..end], last);
-                }
+                _ = try self.emit(&bits, self.window[if (self.pending) 0 else history..end], last);
+                self.pending = false;
             }
-            if (last) break;
-            if (history != 0) {
-                @memcpy(self.window[0..RING], self.window[RING..][0..RING]);
-                rebase(heads);
-                if (level != .fast) rebase(&self.previous) else if (block) rebase(self.previous[0..FAST_HASH]);
+        } else if (level == .fast) {
+            self.parseFastBlock(history, end, !self.pending);
+            if (!last and !self.pending) {
+                self.first_lit = self.lit_freq;
+                self.first_dist = self.dist_freq;
+                self.first_tokens = self.icf_count;
+                self.pending = true;
+            } else if (self.pending) {
+                _ = try self.emitPair(&bits, end, last, &self.first_lit, &self.first_dist, self.first_tokens);
+                self.pending = false;
+            } else {
+                _ = try self.emit(&bits, self.window[history..end], last);
             }
-            history = RING;
+        } else {
+            if (level == .even) self.parse(history, end, level, self.skip_search, !self.pending, 5, block) else self.parse(history, end, level, self.skip_search, !self.pending, 4, block);
+            // A stored block turns the search off until `hasEarlyMatch` sees a match near a block start.
+            if (!last and !self.pending) {
+                // The first window of a pair: its counts price it as a block of its own later.
+                self.first_lit = self.lit_freq;
+                self.first_dist = self.dist_freq;
+                self.first_tokens = self.icf_count;
+                self.pending = true;
+            } else if (self.pending) {
+                self.skip_search = try self.emitPair(&bits, end, last, &self.first_lit, &self.first_dist, self.first_tokens);
+                self.pending = false;
+            } else {
+                self.skip_search = try self.emit(&bits, self.window[history..end], last);
+            }
         }
+        if (last) return;
+        if (history != 0) {
+            @memcpy(self.window[0..RING], self.window[RING..][0..RING]);
+            rebase(self.headsFor(level));
+            if (level != .fast) rebase(&self.previous) else if (block) rebase(self.previous[0..FAST_HASH]);
+            @memcpy(self.window[RING..][0..carried], self.window[2 * RING ..][0..carried]);
+        }
+        self.history = RING;
+    }
+
+    /// After the last window: pads the final block to a byte boundary and writes what is left.
+    pub fn finish(self: *Encoder) EncodeError!void {
+        var bits: BitWriter = .{ .writer = self.out, .value = self.bit_value, .count = self.bit_count };
         try bits.alignByte();
-        return size;
+        self.bit_value = 0;
+        self.bit_count = 0;
+    }
+
+    fn headsFor(self: *Encoder, level: Level) []u16 {
+        return if (level == .fast) self.head[0..FAST_HASH] else self.head[0..];
     }
 
     /// The chain hash of the `key` bytes at `p` (4 for dense, 5 for even; zero-padded at the tail).
@@ -1867,7 +1925,7 @@ pub const Encoder = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Encoder) == 394504);
+    std.debug.assert(@sizeOf(Encoder) == 428584);
 }
 
 const TestCheck = struct {
@@ -2317,14 +2375,12 @@ test "[property] - [deflate encoder]: BGZF block output does not depend on stale
         for (&stale.previous, 0..) |*slot, i| slot.* = @truncate(i *% 40503 +% 29);
         // Two blocks in a row on each workspace: the second starts with the first one's tables.
         for ([_]usize{ input.len, 20000 }) |len| {
-            var want_reader = std.Io.Reader.fixed(input[0..len]);
             var want_writer = std.Io.Writer.fixed(&expected);
             var want_check: NoCheck = .{};
-            _ = try clean.encodeBlock(NoCheck, &want_reader, &want_writer, &want_check, level);
-            var got_reader = std.Io.Reader.fixed(input[0..len]);
+            try clean.encodeBlock(NoCheck, input[0..len], &want_writer, &want_check, level);
             var got_writer = std.Io.Writer.fixed(&actual);
             var got_check: NoCheck = .{};
-            _ = try stale.encodeBlock(NoCheck, &got_reader, &got_writer, &got_check, level);
+            try stale.encodeBlock(NoCheck, input[0..len], &got_writer, &got_check, level);
             try std.testing.expectEqualSlices(u8, want_writer.buffered(), got_writer.buffered());
         }
     }

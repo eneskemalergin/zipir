@@ -59,7 +59,7 @@ pub const Compressor = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Compressor) == 394504);
+    std.debug.assert(@sizeOf(Compressor) == 428584);
 }
 
 const NoCheck = struct {
