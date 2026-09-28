@@ -230,6 +230,20 @@ pub const Split = enum { fill, lines };
 /// `.fill` makes blocks of 65280 bytes; `.lines` gives exactly the uncompressed
 /// boundaries of `bgzip` 1.24 on text: blocks end after the last newline of each read window, leading `#`
 /// or `@` header lines get their own blocks, and a line longer than a block continues in the next one.
+/// The index of the last '\n' in `bytes`, 32 bytes at a time from the end (`std.mem.lastIndexOfScalar` compares
+/// one byte per step, which cost a text block with no newline more than compressing it).
+fn lastNewline(bytes: []const u8) ?usize {
+    const V = @Vector(32, u8);
+    var end = bytes.len;
+    while (end >= 32) {
+        const chunk: V = bytes[end - 32 ..][0..32].*;
+        const mask: u32 = @bitCast(chunk == @as(V, @splat('\n')));
+        if (mask != 0) return end - 32 + (31 - @clz(mask));
+        end -= 32;
+    }
+    return std.mem.lastIndexOfScalar(u8, bytes[0..end], '\n');
+}
+
 pub const BlockSplitter = struct {
     split: Split,
     in_header: bool = true,
@@ -289,9 +303,8 @@ pub const BlockSplitter = struct {
             if (self.in_header and (self.long_line or window[0] == '@' or window[0] == '#')) {
                 var last_start: usize = 0;
                 var i: usize = 0;
-                while (i < window.len) {
-                    i += 1;
-                    if (window[i - 1] != '\n') continue;
+                while (std.mem.indexOfScalarPos(u8, window, i, '\n')) |newline| {
+                    i = newline + 1;
                     last_start = i;
                     if (i < window.len and window[i] != '@' and window[i] != '#') {
                         self.in_header = false;
@@ -301,7 +314,7 @@ pub const BlockSplitter = struct {
                 self.long_line = last_start == 0;
                 n = if (last_start == 0) window.len else last_start;
                 flush = last_start != 0;
-            } else if (std.mem.lastIndexOfScalar(u8, window, '\n')) |last| {
+            } else if (lastNewline(window)) |last| {
                 n = last + 1;
                 flush = true;
             } else n = window.len;
