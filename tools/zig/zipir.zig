@@ -54,8 +54,8 @@ fn usage() error{InvalidArguments} {
 }
 
 fn compressPath(comptime codec_format: zipir.Format, io: Io, paths: adapter.Paths) !void {
-    const Options = @field(zipir, @tagName(codec_format)).CompressOptions;
-    const level = std.enums.fromInt(@FieldType(Options, "level"), paths.level) orelse
+    // The adapters' shared `--level N` names a zipir preset by the zlib level it is compared with.
+    const preset = std.enums.fromInt(zipir.Preset, paths.level) orelse
         return error.InvalidArguments;
     const compressor = try std.heap.page_allocator.create(zipir.Compressor(codec_format));
     defer std.heap.page_allocator.destroy(compressor);
@@ -70,7 +70,7 @@ fn compressPath(comptime codec_format: zipir.Format, io: Io, paths: adapter.Path
     var out_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
     var out_writer = out_file.writerStreaming(io, &out_buf);
 
-    try compressor.init(&out_writer.interface, .{ .level = level });
+    try compressor.init(&out_writer.interface, .{ .preset = preset });
     _ = try in_reader.interface.streamRemaining(&compressor.writer);
     _ = try compressor.finish();
     try out_writer.interface.flush();
@@ -100,7 +100,7 @@ fn decompressPath(comptime codec_format: zipir.Format, io: Io, paths: adapter.Pa
 
 // The CLI's split rule: whole blocks for binary input, blocks ending at line breaks for text (bgzip's default).
 fn compressBgzf(io: Io, paths: adapter.Paths) !void {
-    const level = std.enums.fromInt(@FieldType(zipir.bgzf.CompressOptions, "level"), paths.level) orelse
+    const preset = std.enums.fromInt(zipir.Preset, paths.level) orelse
         return error.InvalidArguments;
     const compressor = try std.heap.page_allocator.create(zipir.bgzf.Compressor);
     defer std.heap.page_allocator.destroy(compressor);
@@ -120,7 +120,7 @@ fn compressBgzf(io: Io, paths: adapter.Paths) !void {
     var out_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
     var out_writer = out_file.writerStreaming(io, &out_buf);
 
-    compressor.init(&out_writer.interface, .{ .level = level, .split = split });
+    try compressor.init(&out_writer.interface, .{ .preset = preset, .split = split });
     _ = in_reader.interface.streamRemaining(&compressor.writer) catch |err| return compressor.err orelse err;
     _ = compressor.finish() catch |err| return compressor.err orelse err;
     try out_writer.interface.flush();

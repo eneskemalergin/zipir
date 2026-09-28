@@ -76,7 +76,7 @@ test "[cli] - [format]: --format selects the codec and auto detects gzip and zli
     defer allocator.free(executable);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    // "A" at the default level: one fixed block (73 04 00) in each wrapper; Adler-32 of "A" is 0x00420042.
+    // "A" at the default preset: one fixed block (73 04 00) in each wrapper; Adler-32 of "A" is 0x00420042.
     const gzip = "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x73\x04\x00\x8b\x9e\xd9\xd3\x01\x00\x00\x00";
     const zlib = "\x78\x5e\x73\x04\x00\x00\x42\x00\x42";
     const raw = "\x73\x04\x00";

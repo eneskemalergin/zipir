@@ -78,7 +78,7 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     var binary = false;
     var has_format = false;
     var has_limit = false;
-    var has_level = false;
+    var has_preset = false;
     var i: usize = 2;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -106,18 +106,18 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
             continue;
         }
         if (!literal and presetFlag(arg) != null) {
-            if (!compress or has_level) return usage(io);
-            compress_options.level = presetFlag(arg).?;
-            has_level = true;
+            if (!compress or has_preset) return usage(io);
+            compress_options.preset = presetFlag(arg).?;
+            has_preset = true;
             continue;
         }
         // --level 1|5|9 is the hidden alias of --fast, --even, and --dense (0.1.2's numeric levels).
         if (!literal and std.mem.eql(u8, arg, "--level")) {
-            if (!compress or has_level or i + 1 == args.len) return usage(io);
+            if (!compress or has_preset or i + 1 == args.len) return usage(io);
             i += 1;
-            const level = std.fmt.parseInt(u8, args[i], 10) catch return usage(io);
-            compress_options.level = std.enums.fromInt(@FieldType(zipir.gzip.CompressOptions, "level"), level) orelse return usage(io);
-            has_level = true;
+            const number = std.fmt.parseInt(u8, args[i], 10) catch return usage(io);
+            compress_options.preset = std.enums.fromInt(zipir.Preset, number) orelse return usage(io);
+            has_preset = true;
             continue;
         }
         if (!literal and std.mem.eql(u8, arg, "--binary")) {
@@ -136,7 +136,7 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     var input_buffer: [32768]u8 = undefined;
     var reader = file.readerStreaming(io, &input_buffer);
     if (bgzf_output) {
-        try compressBgzf(io, allocator, file, &stdout.interface, compress_options.level, binary);
+        try compressBgzf(io, allocator, file, &stdout.interface, compress_options.preset, binary);
         try stdout.interface.flush();
         return 0;
     }
@@ -146,7 +146,7 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
                 const encoder = try allocator.create(zipir.Compressor(selected));
                 defer allocator.destroy(encoder);
                 try encoder.init(&stdout.interface, compress_options);
-                try squeeze(&reader.interface, &encoder.writer);
+                try compressAll(&reader.interface, &encoder.writer);
                 _ = try encoder.finish();
             },
         }
@@ -163,7 +163,7 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
             inline else => |known| {
                 const decoder = try allocator.create(zipir.Decompressor(known));
                 defer allocator.destroy(decoder);
-                try pump(decoder, &reader.interface, writer, .{ .max_output_bytes = max_output_bytes });
+                try decompressAll(decoder, &reader.interface, writer, .{ .max_output_bytes = max_output_bytes });
             },
         }
         try writer.flush();
@@ -174,7 +174,7 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
 }
 
 // Decodes all of `input` into `out`; a decode error is returned as itself rather than as `ReadFailed`.
-fn pump(decoder: anytype, input: *std.Io.Reader, out: *std.Io.Writer, options: std.meta.Child(@TypeOf(decoder)).Options) !void {
+fn decompressAll(decoder: anytype, input: *std.Io.Reader, out: *std.Io.Writer, options: std.meta.Child(@TypeOf(decoder)).DecompressOptions) !void {
     decoder.init(input, options);
     _ = decoder.reader.streamRemaining(out) catch |err| return switch (err) {
         error.ReadFailed => decoder.err.?,
@@ -183,7 +183,7 @@ fn pump(decoder: anytype, input: *std.Io.Reader, out: *std.Io.Writer, options: s
 }
 
 // Writes all of `input` into a compressor's writer.
-fn squeeze(input: *std.Io.Reader, writer: *std.Io.Writer) !void {
+fn compressAll(input: *std.Io.Reader, writer: *std.Io.Writer) !void {
     _ = try input.streamRemaining(writer);
 }
 
@@ -243,7 +243,7 @@ fn isBgzf(reader: *std.Io.Reader) !bool {
     return false;
 }
 
-fn compressBgzf(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, out: *std.Io.Writer, level: @FieldType(zipir.bgzf.CompressOptions, "level"), binary: bool) !void {
+fn compressBgzf(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, out: *std.Io.Writer, preset: zipir.Preset, binary: bool) !void {
     var buffer: [65536]u8 = undefined;
     var reader = file.readerStreaming(io, &buffer);
     const head = reader.interface.peekGreedy(buffer.len) catch |err| switch (err) {
@@ -253,8 +253,8 @@ fn compressBgzf(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, out
     const split: zipir.bgzf.Split = if (binary or std.mem.indexOfScalar(u8, head, 0) != null) .fill else .lines;
     const encoder = try allocator.create(zipir.bgzf.Compressor);
     defer allocator.destroy(encoder);
-    encoder.init(out, .{ .level = level, .split = split });
-    squeeze(&reader.interface, &encoder.writer) catch |err| return encoder.err orelse err;
+    try encoder.init(out, .{ .preset = preset, .split = split });
+    compressAll(&reader.interface, &encoder.writer) catch |err| return encoder.err orelse err;
     _ = encoder.finish() catch |err| return encoder.err orelse err;
 }
 
@@ -296,9 +296,9 @@ fn bgzfIndex(io: std.Io, allocator: std.mem.Allocator, args: []const [:0]const u
 fn decompressBgzf(io: std.Io, allocator: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io.Writer, max_output_bytes: u64, verify: bool) !void {
     const decoder = try allocator.create(zipir.bgzf.Decompressor);
     defer allocator.destroy(decoder);
-    try pump(decoder, reader, writer, .{ .max_output_bytes = max_output_bytes, .require_eof_marker = verify });
+    try decompressAll(decoder, reader, writer, .{ .max_output_bytes = max_output_bytes, .require_eof_marker = verify });
     try writer.flush();
-    if (decoder.container.eof_marker) return;
+    if (decoder.framing.eof_marker) return;
     var buffer: [128]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(io, &buffer);
     try stderr.interface.writeAll("zipir: warning: EOF marker is absent. The input may be truncated\n");
@@ -313,9 +313,9 @@ fn tarCommand(io: std.Io, allocator: std.mem.Allocator, args: []const [:0]const 
     const verify = std.mem.eql(u8, args[0], "test");
     if (!create and !verify and !std.mem.eql(u8, args[0], "list")) return usage(io);
     var input: ?Input = null;
-    var level: @FieldType(zipir.gzip.CompressOptions, "level") = .even;
+    var preset: zipir.Preset = .even;
     var has_format = false;
-    var has_level = false;
+    var has_preset = false;
     var literal = false;
     var paths: std.ArrayList([]const u8) = .empty;
     defer paths.deinit(allocator);
@@ -334,17 +334,17 @@ fn tarCommand(io: std.Io, allocator: std.mem.Allocator, args: []const [:0]const 
             continue;
         }
         if (!literal and presetFlag(arg) != null) {
-            if (!create or has_level) return usage(io);
-            level = presetFlag(arg).?;
-            has_level = true;
+            if (!create or has_preset) return usage(io);
+            preset = presetFlag(arg).?;
+            has_preset = true;
             continue;
         }
         if (!literal and std.mem.eql(u8, arg, "--level")) {
-            if (!create or has_level or i + 1 == args.len) return usage(io);
+            if (!create or has_preset or i + 1 == args.len) return usage(io);
             i += 1;
             const value = std.fmt.parseInt(u8, args[i], 10) catch return usage(io);
-            level = std.enums.fromInt(@TypeOf(level), value) orelse return usage(io);
-            has_level = true;
+            preset = std.enums.fromInt(@TypeOf(preset), value) orelse return usage(io);
+            has_preset = true;
             continue;
         }
         if (!literal and arg.len > 1 and arg[0] == '-') return usage(io);
@@ -352,7 +352,7 @@ fn tarCommand(io: std.Io, allocator: std.mem.Allocator, args: []const [:0]const 
     }
     if (create) {
         if (paths.items.len == 0) return usage(io);
-        try createArchive(io, allocator, paths.items, input orelse .{ .codec = .gzip }, level, stdout);
+        try createArchive(io, allocator, paths.items, input orelse .{ .codec = .gzip }, preset, stdout);
         try stdout.flush();
         return 0;
     }
@@ -389,7 +389,7 @@ fn readArchive(io: std.Io, allocator: std.mem.Allocator, reader: *std.Io.Reader,
             inline else => |known| {
                 const decoder = try allocator.create(zipir.Decompressor(known));
                 defer allocator.destroy(decoder);
-                try pump(decoder, reader, archive, .{});
+                try decompressAll(decoder, reader, archive, .{});
             },
         },
         .bgzf => try decompressBgzf(io, allocator, reader, archive, std.math.maxInt(u64), verify),
@@ -479,39 +479,39 @@ fn civil(seconds: i64) Civil {
 }
 
 /// The preset a `--fast`, `--even`, or `--dense` flag names, or null.
-fn presetFlag(arg: []const u8) ?@FieldType(zipir.gzip.CompressOptions, "level") {
+fn presetFlag(arg: []const u8) ?zipir.Preset {
     if (!std.mem.startsWith(u8, arg, "--")) return null;
-    return std.meta.stringToEnum(@FieldType(zipir.gzip.CompressOptions, "level"), arg[2..]);
+    return std.meta.stringToEnum(zipir.Preset, arg[2..]);
 }
 
-fn createArchive(io: std.Io, allocator: std.mem.Allocator, paths: []const []const u8, output: Input, level: @FieldType(zipir.gzip.CompressOptions, "level"), stdout: *std.Io.Writer) !void {
+fn createArchive(io: std.Io, allocator: std.mem.Allocator, paths: []const []const u8, output: Input, preset: zipir.Preset, stdout: *std.Io.Writer) !void {
     for (paths) |path| if (!safePath(path)) return error.UnsafePath;
     var tree: Tree = .{ .io = io, .allocator = allocator, .roots = paths };
     defer tree.deinit();
     var buffer: [65536]u8 = undefined;
     var archive: zipir.tar.Writer(Tree) = .init(&tree, &buffer, .{});
-    writeArchive(allocator, &archive.reader, output, level, stdout) catch |err| {
+    writeArchive(allocator, &archive.reader, output, preset, stdout) catch |err| {
         if (err == error.ReadFailed) _ = try archive.finish();
         return err;
     };
 }
 
-fn writeArchive(allocator: std.mem.Allocator, archive: *std.Io.Reader, output: Input, level: @FieldType(zipir.gzip.CompressOptions, "level"), stdout: *std.Io.Writer) !void {
+fn writeArchive(allocator: std.mem.Allocator, archive: *std.Io.Reader, output: Input, preset: zipir.Preset, stdout: *std.Io.Writer) !void {
     switch (output) {
         .codec => |codec| switch (codec) {
             inline else => |known| {
                 const encoder = try allocator.create(zipir.Compressor(known));
                 defer allocator.destroy(encoder);
-                try encoder.init(stdout, .{ .level = level });
-                try squeeze(archive, &encoder.writer);
+                try encoder.init(stdout, .{ .preset = preset });
+                try compressAll(archive, &encoder.writer);
                 _ = try encoder.finish();
             },
         },
         .bgzf => {
             const encoder = try allocator.create(zipir.bgzf.Compressor);
             defer allocator.destroy(encoder);
-            encoder.init(stdout, .{ .level = level });
-            squeeze(archive, &encoder.writer) catch |err| return encoder.err orelse err;
+            try encoder.init(stdout, .{ .preset = preset });
+            compressAll(archive, &encoder.writer) catch |err| return encoder.err orelse err;
             _ = encoder.finish() catch |err| return encoder.err orelse err;
         },
         .plain => _ = try archive.streamRemaining(stdout),

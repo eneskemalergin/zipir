@@ -72,9 +72,9 @@ pub const Sink = struct {
     }
 };
 
-/// A whole stream through a decompressor's reader, as the removed `decompress(reader, writer, options)` did:
-/// the decode error itself rather than `ReadFailed`, and the decoded length.
-pub fn decompress(decoder: anytype, reader: *std.Io.Reader, writer: *std.Io.Writer, options: std.meta.Child(@TypeOf(decoder)).Options) !u64 {
+/// A whole stream through a decompressor's reader: the decoded length, or the decompress error itself rather than
+/// `ReadFailed`.
+pub fn decompressAll(decoder: anytype, reader: *std.Io.Reader, writer: *std.Io.Writer, options: std.meta.Child(@TypeOf(decoder)).DecompressOptions) !u64 {
     decoder.init(reader, options);
     return decoder.reader.streamRemaining(writer) catch |err| switch (err) {
         error.ReadFailed => decoder.err.?,
@@ -82,9 +82,8 @@ pub fn decompress(decoder: anytype, reader: *std.Io.Reader, writer: *std.Io.Writ
     };
 }
 
-/// A whole stream through a compressor's writer, as the removed `compress(reader, writer, options)` did; the
-/// result is the number of plain bytes.
-pub fn compress(encoder: anytype, reader: *std.Io.Reader, writer: *std.Io.Writer, options: std.meta.Child(@TypeOf(encoder)).Options) !u64 {
+/// A whole stream through a compressor's writer; the result is the number of plain bytes.
+pub fn compressAll(encoder: anytype, reader: *std.Io.Reader, writer: *std.Io.Writer, options: std.meta.Child(@TypeOf(encoder)).CompressOptions) !u64 {
     try encoder.init(writer, options);
     _ = try reader.streamRemaining(&encoder.writer);
     return encoder.finish();
@@ -121,7 +120,7 @@ pub fn encodeRoundtripOut(
     var source = Source.init(plain, in_buffer[0..capacity], chunk);
     var out_buffer: [64]u8 = undefined;
     var output = Sink{ .output = out_buffer[0..out_capacity], .sink = encoded, .max_drain = max_drain };
-    try std.testing.expectEqual(@as(u64, plain.len), try compress(encoder, &source.reader, &output.writer, options));
+    try std.testing.expectEqual(@as(u64, plain.len), try compressAll(encoder, &source.reader, &output.writer, options));
     const stream = encoded[0..output.count];
     var compressed = std.Io.Reader.fixed(stream);
     var oracle = std.Io.Reader.fixed(plain);

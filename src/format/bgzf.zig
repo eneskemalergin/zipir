@@ -1,4 +1,5 @@
-//! BGZF (SAM specification 4.1): gzip members of at most 64 KiB whose `BC` extra subfield records their size.
+//! BGZF (SAM specification 4.1): BGZF blocks, gzip members of at most 64 KiB whose `BC` extra subfield records
+//! their size, ended by an empty 28-byte block (the EOF marker); `.gzi` indexes map uncompressed offsets to blocks.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
@@ -6,9 +7,9 @@ const encode = @import("../engine/encode.zig");
 const codes = @import("../engine/codes.zig");
 const crc = @import("../kernel/crc32.zig");
 const gzip = @import("gzip.zig");
-const inflate = @import("../stream/reader.zig");
+const stream_reader = @import("../stream/reader.zig");
 
-pub const Error = gzip.Error || error{ NotBgzf, BadBlockSize, BlockSizeMismatch, BlockTooLarge, MissingEofMarker, BadVirtualOffset, BadIndex };
+pub const DecompressError = gzip.DecompressError || error{ NotBgzf, BadBlockSize, BlockSizeMismatch, BlockTooLarge, MissingEofMarker, BadVirtualOffset, BadIndex };
 
 pub const MAX_BLOCK = 65536;
 
@@ -21,17 +22,20 @@ pub const VirtualOffset = packed struct(u64) { uoffset: u16, coffset: u48 };
 pub const Block = struct { coffset: u64, size: u32, data_size: u32 };
 
 pub const ScanOptions = struct {
-    trailing_data: decode.TrailingData = .reject,
+    trailing_data: stream_reader.TrailingData = .reject,
     require_eof_marker: bool = false,
 };
 
-pub const Options = struct {
+pub const DecompressOptions = struct {
+    /// More decoded output than this is `OutputLimitExceeded`.
     max_output_bytes: u64 = std.math.maxInt(u64),
-    trailing_data: decode.TrailingData = .reject,
+    trailing_data: stream_reader.TrailingData = .reject,
+    /// Input that does not end with the EOF marker is `MissingEofMarker`; either way `framing.eof_marker` tells.
     require_eof_marker: bool = false,
 };
 
-/// Reader capacity must be >=16; with a positional `std.Io.File.Reader`, block bodies are skipped by seeking.
+/// Reads BGZF block headers and trailers without decoding. Input reader capacity must be at least 16 bytes; with a
+/// positional `std.Io.File.Reader`, block bodies are skipped by seeking.
 pub fn scan(reader: *std.Io.Reader, options: ScanOptions) Scanner {
     return .{ .reader = reader, .options = options };
 }
@@ -45,7 +49,7 @@ pub const Scanner = struct {
     done: bool = false,
 
     /// Null after the last block; the input must end exactly at a block boundary.
-    pub fn next(self: *Scanner) Error!?Block {
+    pub fn next(self: *Scanner) DecompressError!?Block {
         if (self.done) return null;
         const r = self.reader;
         if (r.buffer.len < 16) return error.InputBufferTooSmall;
@@ -96,13 +100,13 @@ pub const Scanner = struct {
         return block;
     }
 
-    fn end(self: *Scanner, empty: bool) Error!?Block {
+    fn end(self: *Scanner, empty: bool) DecompressError!?Block {
         if (!empty) return if (self.coffset == 0) error.Truncated else if (self.options.trailing_data == .leave) self.finishScan() else error.TrailingData;
         if (self.coffset == 0) return error.Truncated;
         return self.finishScan();
     }
 
-    fn finishScan(self: *Scanner) Error!?Block {
+    fn finishScan(self: *Scanner) DecompressError!?Block {
         self.done = true;
         if (self.options.require_eof_marker and !self.eof_marker) return error.MissingEofMarker;
         return null;
@@ -112,19 +116,20 @@ pub const Scanner = struct {
 /// Decodes BGZF blocks; a block's bytes become readable only after its size fields, CRC-32, and ISIZE are
 /// checked, and every block's decoded size is capped at 65536 whatever its ISIZE claims. `init(input, options)`
 /// starts it in place; `reader` gives the decoded bytes and `err` the reason for a `ReadFailed`;
-/// `container.blocks` and `container.eof_marker` tell what was read. Over a `std.Io.File.Reader`, `seek` moves
+/// `framing.blocks` and `framing.eof_marker` tell what was read. Over a `std.Io.File.Reader`, `seek` moves
 /// to a virtual offset and `seekUncompressed` to an uncompressed one through `.gzi` entries. Input reader
-/// capacity must be >=28, the EOF marker's length. A peek of up to 64 KiB always fits. No allocation occurs.
-pub const Decompressor = inflate.Inflate(Blocks);
+/// capacity must be at least 28 bytes, the EOF marker's length. A peek of up to 64 KiB always fits. No allocation
+/// occurs.
+pub const Decompressor = stream_reader.Decompressor(DecompressFraming);
 
-const Blocks = struct {
+const DecompressFraming = struct {
     pub const Check = crc.Crc32;
-    pub const Error = bgzf.Error;
-    pub const Options = bgzf.Options;
+    pub const DecompressOptions = format.DecompressOptions;
+    pub const DecompressError = format.DecompressError;
     pub const min_input_buffer = EOF_MARKER.len;
-    pub const stream_limit = MAX_BLOCK;
+    pub const max_stream_bytes = MAX_BLOCK;
 
-    options: bgzf.Options,
+    options: format.DecompressOptions,
     /// Blocks read so far.
     blocks: u64 = 0,
     /// Whether the last block read is the 28-byte EOF marker.
@@ -132,14 +137,14 @@ const Blocks = struct {
     // After a seek, a first block that is not one is `BadVirtualOffset`.
     seeking: bool = false,
     first_size: u64 = 0,
-    head: Head = undefined,
+    current: BlockHeader = undefined,
 
-    pub fn init(options: bgzf.Options) Blocks {
+    pub fn init(options: format.DecompressOptions) DecompressFraming {
         return .{ .options = options };
     }
 
-    pub fn begin(self: *Blocks, br: *decode.BitReader) bgzf.Error!bool {
-        _ = try br.window(2);
+    pub fn header(self: *DecompressFraming, br: *decode.BitReader) format.DecompressError!bool {
+        _ = try br.refill(2);
         if (br.src.len < 2 or br.src[0] != 0x1f or br.src[1] != 0x8b) {
             if (self.blocks == 0) {
                 if (self.seeking) return error.BadVirtualOffset;
@@ -150,47 +155,47 @@ const Blocks = struct {
             if (self.options.require_eof_marker and !self.eof_marker) return error.MissingEofMarker;
             return false;
         }
-        self.head = blockHeader(br) catch |err| {
+        self.current = readBlockHeader(br) catch |err| {
             if (self.seeking and self.blocks == 0 and isHeaderError(err)) return error.BadVirtualOffset;
             return err;
         };
         return true;
     }
 
-    pub fn end(self: *Blocks, br: *decode.BitReader, check: *Check, size: u64) bgzf.Error!void {
-        try blockTrailer(br, self.head, check.final(), size);
+    pub fn trailer(self: *DecompressFraming, br: *decode.BitReader, check: *Check, size: u64) format.DecompressError!void {
+        try readBlockTrailer(br, self.current, check.final(), size);
         if (self.blocks == 0) self.first_size = size;
         self.blocks += 1;
-        self.eof_marker = self.head.marker;
+        self.eof_marker = self.current.marker;
     }
 
     // A block that outgrows 65536 bytes is `BlockTooLarge` unless the caller's output limit is what stopped it.
-    pub fn streamError(self: *const Blocks, err: bgzf.Error, start: u64) bgzf.Error {
+    pub fn streamError(self: *const DecompressFraming, err: format.DecompressError, start: u64) format.DecompressError {
         if (err == error.OutputLimitExceeded and self.options.max_output_bytes - start > MAX_BLOCK) return error.BlockTooLarge;
         return err;
     }
 };
 
-const bgzf = @This();
+const format = @This();
 
 /// Reusable without initialization, including after errors. No allocation occurs during decode.
 pub const BlockDecoder = struct {
     decoder: decode.Decoder = .{},
 
     /// `block` is one whole block; the result is its decoded length.
-    pub fn decodeBlock(self: *BlockDecoder, block: []const u8, out: *[MAX_BLOCK]u8) Error!usize {
+    pub fn decodeBlock(self: *BlockDecoder, block: []const u8, out: *[MAX_BLOCK]u8) DecompressError!usize {
         if (block.len < EOF_MARKER.len) return error.BadBlockSize;
         var reader = std.Io.Reader.fixed(block);
         var br: decode.BitReader = .{ .reader = &reader };
-        const head = try blockHeader(&br);
+        const header = try readBlockHeader(&br);
         var check: crc.Crc32 = .init();
-        var session: decode.Session(crc.Crc32) = .{ .decoder = &self.decoder, .max_output_bytes = std.math.maxInt(u64), .stream_limit = MAX_BLOCK };
+        var session: decode.Session(crc.Crc32) = .{ .decoder = &self.decoder, .max_output_bytes = std.math.maxInt(u64), .max_stream_bytes = MAX_BLOCK };
         session.begin(&br, &check);
         // The buffer holds more than a block, so the cap ends a block that is too large first.
         if (try mapBlockError(session.run()) != .end) unreachable;
         const size = session.out_pos;
-        try blockTrailer(&br, head, check.final(), size);
-        if (head.block_size != block.len) return error.BlockSizeMismatch;
+        try readBlockTrailer(&br, header, check.final(), size);
+        if (header.block_size != block.len) return error.BlockSizeMismatch;
         @memcpy(out[0..size], self.decoder.buffer[0..size]);
         return size;
     }
@@ -313,13 +318,13 @@ pub const BlockEncoder = struct {
     encoder: encode.Encoder = .{},
 
     /// Asserts `input.len <= 65280`; the result is the block's length in `out`.
-    pub fn compressBlock(self: *BlockEncoder, input: []const u8, out: *[MAX_BLOCK]u8, level: encode.Level) usize {
+    pub fn compressBlock(self: *BlockEncoder, input: []const u8, out: *[MAX_BLOCK]u8, preset: encode.Preset) usize {
         std.debug.assert(input.len <= BLOCK_INPUT);
         var body = std.Io.Writer.fixed(out[HEADER_LEN .. MAX_BLOCK - 8]);
         var check: crc.Crc32 = .init();
         // 65280 input bytes compress to at most 65291 (two stored blocks at worst), which fits `body`,
         // and a fixed writer of that size cannot fail.
-        self.encoder.encodeBlock(crc.Crc32, input, &body, &check, level) catch unreachable;
+        self.encoder.encodeBlock(crc.Crc32, input, &body, &check, preset) catch unreachable;
         const size = HEADER_LEN + body.end + 8;
         var subfield = [6]u8{ 'B', 'C', 2, 0, 0, 0 };
         std.mem.writeInt(u16, subfield[4..6], @intCast(size - 1), .little);
@@ -336,7 +341,7 @@ comptime {
 }
 
 pub const CompressOptions = struct {
-    level: encode.Level = .even,
+    preset: encode.Preset = .even,
     split: Split = .fill,
     index: ?*IndexBuilder = null,
 };
@@ -355,10 +360,10 @@ pub const Compressor = struct {
     writer: std.Io.Writer,
     err: ?CompressError,
     encoder: BlockEncoder,
-    staging: [BlockSplitter.LOOKAHEAD + codes.RING]u8,
+    staging: [BlockSplitter.LOOKAHEAD + codes.WINDOW]u8,
     block: [MAX_BLOCK]u8,
     splitter: BlockSplitter,
-    level: encode.Level,
+    preset: encode.Preset,
     index: ?*IndexBuilder,
     out: *std.Io.Writer,
     compressed: u64,
@@ -371,12 +376,13 @@ pub const Compressor = struct {
     };
 
     /// Starts a stream into `output`, resetting everything. The workspace must stay at this address while
-    /// `writer` is used: the writer's buffer is inside it.
-    pub fn init(self: *Compressor, output: *std.Io.Writer, options: CompressOptions) void {
+    /// `writer` is used: the writer's buffer is inside it. It cannot fail; the error union matches the other
+    /// formats' compressors.
+    pub fn init(self: *Compressor, output: *std.Io.Writer, options: CompressOptions) std.Io.Writer.Error!void {
         self.writer = .{ .vtable = &vtable, .buffer = &self.staging, .end = 0 };
         self.err = null;
         self.splitter = .init(options.split);
-        self.level = options.level;
+        self.preset = options.preset;
         self.index = options.index;
         self.out = output;
         self.compressed = 0;
@@ -410,7 +416,7 @@ pub const Compressor = struct {
         const w = &self.writer;
         while (at_end or w.end >= BlockSplitter.LOOKAHEAD) {
             const len = self.splitter.next(self.staging[0..w.end], at_end) orelse return;
-            const size = self.encoder.compressBlock(self.staging[0..len], &self.block, self.level);
+            const size = self.encoder.compressBlock(self.staging[0..len], &self.block, self.preset);
             self.out.writeAll(self.block[0..size]) catch return self.fail(error.WriteFailed);
             if (self.index) |index| index.add(self.compressed, @intCast(len)) catch |err| return self.fail(err);
             self.compressed += size;
@@ -514,13 +520,13 @@ pub const IndexReader = struct {
     remaining: u64,
     previous: IndexEntry = .{ .coffset = 0, .uoffset = 0 },
 
-    pub fn init(reader: *std.Io.Reader, file_size: u64) Error!IndexReader {
+    pub fn init(reader: *std.Io.Reader, file_size: u64) DecompressError!IndexReader {
         var count: [8]u8 = undefined;
         try readIndexBytes(reader, &count);
         return .{ .reader = reader, .file_size = file_size, .remaining = std.mem.readInt(u64, &count, .little) };
     }
 
-    pub fn next(self: *IndexReader) Error!?IndexEntry {
+    pub fn next(self: *IndexReader) DecompressError!?IndexEntry {
         if (self.remaining == 0) {
             var extra: [1]u8 = undefined;
             const n = self.reader.readSliceShort(&extra) catch return error.ReadFailed;
@@ -539,37 +545,38 @@ pub const IndexReader = struct {
 
 const HEADER_LEN = 18;
 
-fn readIndexBytes(r: *std.Io.Reader, out: []u8) Error!void {
+fn readIndexBytes(r: *std.Io.Reader, out: []u8) DecompressError!void {
     r.readSliceAll(out) catch |err| return switch (err) {
         error.EndOfStream => error.BadIndex,
         error.ReadFailed => error.ReadFailed,
     };
 }
 
-fn readAll(r: *std.Io.Reader, out: []u8) Error!void {
+fn readAll(r: *std.Io.Reader, out: []u8) DecompressError!void {
     r.readSliceAll(out) catch |err| return switch (err) {
         error.EndOfStream => error.Truncated,
         error.ReadFailed => error.ReadFailed,
     };
 }
 
-fn discardAll(r: *std.Io.Reader, n: usize) Error!void {
+fn discardAll(r: *std.Io.Reader, n: usize) DecompressError!void {
     r.discardAll(n) catch |err| return switch (err) {
         error.EndOfStream => error.Truncated,
         error.ReadFailed => error.ReadFailed,
     };
 }
 
-fn isHeaderError(err: Error) bool {
+fn isHeaderError(err: DecompressError) bool {
     return switch (err) {
         error.NotBgzf, error.BadHeader, error.UnsupportedMethod, error.ReservedFlag, error.HeaderCrcMismatch, error.BadBlockSize => true,
         else => false,
     };
 }
 
-const Head = struct { start: u64, block_size: u64, marker: bool };
+// Where a BGZF block starts in the input, its size from `BC`, and whether it is the EOF marker.
+const BlockHeader = struct { start: u64, block_size: u64, marker: bool };
 
-fn mapBlockError(result: decode.Error!decode.Stop) Error!decode.Stop {
+fn mapBlockError(result: decode.DecodeError!decode.Stop) DecompressError!decode.Stop {
     return result catch |err| if (err == error.OutputLimitExceeded) error.BlockTooLarge else err;
 }
 
@@ -584,22 +591,22 @@ const BlockVisitor = struct {
     }
 };
 
-// Reads a block's gzip header, which must carry the `BC` subfield giving the block's size.
-fn blockHeader(br: *decode.BitReader) Error!Head {
+// Reads a BGZF block's gzip header, which must carry the `BC` subfield giving the block's size.
+fn readBlockHeader(br: *decode.BitReader) DecompressError!BlockHeader {
     const start = br.consumed();
     const marker = blk: {
-        if (br.src.len - br.i < EOF_MARKER.len and !try br.window(EOF_MARKER.len)) break :blk false;
+        if (br.src.len - br.i < EOF_MARKER.len and !try br.refill(EOF_MARKER.len)) break :blk false;
         break :blk std.mem.eql(u8, br.src[br.i..][0..EOF_MARKER.len], &EOF_MARKER);
     };
     var visitor: BlockVisitor = .{};
-    try gzip.parseHeader(br, BlockVisitor, &visitor, std.math.maxInt(u64));
+    try gzip.readHeader(br, BlockVisitor, &visitor, std.math.maxInt(u64));
     const block_size = @as(u64, visitor.bsize orelse return error.NotBgzf) + 1;
     if (block_size < br.consumed() - start + 2 + 8) return error.BadBlockSize;
     return .{ .start = start, .block_size = block_size, .marker = marker };
 }
 
 // After the block's DEFLATE data: its end must be where `BC` said, then CRC-32 and ISIZE.
-fn blockTrailer(br: *decode.BitReader, head: Head, crc_value: u32, size: u64) Error!void {
-    if (br.consumed() - head.start + 8 != head.block_size) return error.BlockSizeMismatch;
+fn readBlockTrailer(br: *decode.BitReader, header: BlockHeader, crc_value: u32, size: u64) DecompressError!void {
+    if (br.consumed() - header.start + 8 != header.block_size) return error.BlockSizeMismatch;
     try gzip.readTrailer(br, crc_value, size);
 }

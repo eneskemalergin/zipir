@@ -8,27 +8,27 @@ const deflate = zipir.deflate;
 const Compressor = zipir.Compressor(.deflate);
 const Decompressor = zipir.Decompressor(.deflate);
 
-fn decode(decoder: *Decompressor, stream: []const u8, expected: []const u8, chunk: usize, options: deflate.Options) !void {
+fn decode(decoder: *Decompressor, stream: []const u8, expected: []const u8, chunk: usize, options: deflate.DecompressOptions) !void {
     var input_buffer: [17]u8 = undefined;
     var source = support.Source.init(stream, &input_buffer, chunk);
     var oracle = std.Io.Reader.fixed(expected);
     var scratch: [13]u8 = undefined;
     var sink = support.Sink{ .output = &scratch, .oracle = &oracle, .max_drain = 7 };
-    try std.testing.expectEqual(@as(u64, expected.len), try support.decompress(decoder, &source.reader, &sink.writer, options));
+    try std.testing.expectEqual(@as(u64, expected.len), try support.decompressAll(decoder, &source.reader, &sink.writer, options));
     try std.testing.expect(!sink.mismatch);
     try std.testing.expectEqual(expected.len, sink.count);
 }
 
-test "[edge] - [raw deflate]: empty input is one empty final fixed block at every level" {
+test "[edge] - [raw deflate]: empty input is one empty final fixed block at every preset" {
     const encoder = try std.testing.allocator.create(Compressor);
     defer std.testing.allocator.destroy(encoder);
     const decoder = try std.testing.allocator.create(Decompressor);
     defer std.testing.allocator.destroy(decoder);
-    for ([_]deflate.CompressOptions{ .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| {
+    for ([_]deflate.CompressOptions{ .{ .preset = .fast }, .{}, .{ .preset = .dense } }) |options| {
         var bytes: [2]u8 = undefined;
         var writer = std.Io.Writer.fixed(&bytes);
         var reader = std.Io.Reader.fixed("");
-        try std.testing.expectEqual(@as(u64, 0), try support.compress(encoder, &reader, &writer, options));
+        try std.testing.expectEqual(@as(u64, 0), try support.compressAll(encoder, &reader, &writer, options));
         try std.testing.expectEqualSlices(u8, "\x03\x00", writer.buffered());
     }
     try decode(decoder, "\x03\x00", "", 1, .{});
@@ -50,19 +50,19 @@ test "[property] - [raw deflate]: output equals the gzip payload and decodes wit
     defer std.testing.allocator.free(raw);
     const member = try std.testing.allocator.alloc(u8, plain.len + 64);
     defer std.testing.allocator.free(member);
-    for ([_]deflate.CompressOptions{ .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| {
+    for ([_]deflate.CompressOptions{ .{ .preset = .fast }, .{}, .{ .preset = .dense } }) |options| {
         for ([_]usize{ 1, 257, 32768, 32769, 65537, 131073 }) |n| {
             const stream = try support.encodeRoundtrip(deflate, encoder, .raw, plain[0..n], options, 997, 17, raw);
             var reader = std.Io.Reader.fixed(plain[0..n]);
             var gzip_writer = std.Io.Writer.fixed(member);
-            _ = try support.compress(gzip_encoder, &reader, &gzip_writer, options);
+            _ = try support.compressAll(gzip_encoder, &reader, &gzip_writer, options);
             try std.testing.expectEqualSlices(u8, gzip_writer.buffered()[10 .. gzip_writer.buffered().len - 8], stream);
             try decode(decoder, stream, plain[0..n], 257, .{});
         }
     }
 }
 
-test "[integration] - [raw deflate decoder]: streams from std's compressor decode through short I/O" {
+test "[integration] - [raw deflate decompressor]: streams from std's compressor decode through short I/O" {
     const decoder = try std.testing.allocator.create(Decompressor);
     defer std.testing.allocator.destroy(decoder);
     var plain: [70001]u8 = undefined;
@@ -83,7 +83,7 @@ test "[integration] - [raw deflate decoder]: streams from std's compressor decod
     }
 }
 
-test "[edge] - [raw deflate decoder]: bytes after the final block are rejected or left unread" {
+test "[edge] - [raw deflate decompressor]: bytes after the final block are rejected or left unread" {
     const decoder = try std.testing.allocator.create(Decompressor);
     defer std.testing.allocator.destroy(decoder);
     const stream = "\x03\x00" ++ "bytes after the stream";
@@ -91,13 +91,13 @@ test "[edge] - [raw deflate decoder]: bytes after the final block are rejected o
     var source = support.Source.init(stream, &buffer, 1);
     var scratch: [1]u8 = undefined;
     var sink = support.Sink{ .output = &scratch };
-    try std.testing.expectError(error.TrailingData, support.decompress(decoder, &source.reader, &sink.writer, .{}));
+    try std.testing.expectError(error.TrailingData, support.decompressAll(decoder, &source.reader, &sink.writer, .{}));
     var reader = std.Io.Reader.fixed(stream);
-    try std.testing.expectEqual(@as(u64, 0), try support.decompress(decoder, &reader, &sink.writer, .{ .trailing_data = .leave }));
+    try std.testing.expectEqual(@as(u64, 0), try support.decompressAll(decoder, &reader, &sink.writer, .{ .trailing_data = .leave }));
     try std.testing.expectEqualStrings("bytes after the stream", try reader.take(stream.len - 2));
 }
 
-test "[failure] - [raw deflate decoder]: every prefix is truncated, and limits and small buffers give documented errors" {
+test "[failure] - [raw deflate decompressor]: every prefix is truncated, and limits and small buffers give documented errors" {
     const decoder = try std.testing.allocator.create(Decompressor);
     defer std.testing.allocator.destroy(decoder);
     const encoder = try std.testing.allocator.create(Compressor);
@@ -107,25 +107,25 @@ test "[failure] - [raw deflate decoder]: every prefix is truncated, and limits a
     var raw: [6000]u8 = undefined;
     var writer = std.Io.Writer.fixed(&raw);
     var reader = std.Io.Reader.fixed(&plain);
-    _ = try support.compress(encoder, &reader, &writer, .{});
+    _ = try support.compressAll(encoder, &reader, &writer, .{});
     const stream = writer.buffered();
     var scratch: [64]u8 = undefined;
     var buffer: [17]u8 = undefined;
     for (0..stream.len) |n| {
         var source = support.Source.init(stream[0..n], &buffer, 5);
         var sink = support.Sink{ .output = &scratch };
-        try std.testing.expectError(error.Truncated, support.decompress(decoder, &source.reader, &sink.writer, .{}));
+        try std.testing.expectError(error.Truncated, support.decompressAll(decoder, &source.reader, &sink.writer, .{}));
     }
     var source = support.Source.init(stream, &buffer, 5);
     var sink = support.Sink{ .output = &scratch };
-    try std.testing.expectError(error.OutputLimitExceeded, support.decompress(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = plain.len - 1 }));
+    try std.testing.expectError(error.OutputLimitExceeded, support.decompressAll(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = plain.len - 1 }));
     var small: [15]u8 = undefined;
     source = support.Source.init(stream, &small, 5);
-    try std.testing.expectError(error.InputBufferTooSmall, support.decompress(decoder, &source.reader, &sink.writer, .{}));
+    try std.testing.expectError(error.InputBufferTooSmall, support.decompressAll(decoder, &source.reader, &sink.writer, .{}));
     try decode(decoder, stream, &plain, 5, .{ .max_output_bytes = plain.len });
 }
 
-test "[property] - [raw deflate decoder]: bounded bit flips end in success or a documented error within the limit" {
+test "[property] - [raw deflate decompressor]: bounded bit flips end in success or a documented error within the limit" {
     const decoder = try std.testing.allocator.create(Decompressor);
     defer std.testing.allocator.destroy(decoder);
     const seed = @embedFile("data/synthetic/copy-boundaries.gz");
@@ -141,7 +141,7 @@ test "[property] - [raw deflate decoder]: bounded bit flips end in success or a 
         var source = support.Source.init(mutated, &buffer, 7);
         var sink = support.Sink{ .output = &scratch };
         const limit = 1 << 20;
-        if (support.decompress(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = limit })) |n| {
+        if (support.decompressAll(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = limit })) |n| {
             try std.testing.expect(n <= limit);
         } else |err| switch (err) {
             error.Truncated, error.BadHuffman, error.BadSymbol, error.BadDistance, error.BadStored, error.BadBlock, error.OutputLimitExceeded, error.TrailingData => {},
@@ -151,6 +151,6 @@ test "[property] - [raw deflate decoder]: bounded bit flips end in success or a 
 }
 
 test "[unit] - [raw deflate]: the public error set names exactly the documented errors" {
-    const expected = [_][]const u8{ "BadBlock", "BadDistance", "BadHuffman", "BadStored", "BadSymbol", "InputBufferTooSmall", "OutputLimitExceeded", "PeekTooLarge", "ReadFailed", "TrailingData", "Truncated", "WriteFailed" };
-    try support.expectErrorNames(deflate.Error, &expected);
+    const expected = [_][]const u8{ "BadBlock", "BadDistance", "BadHuffman", "BadStored", "BadSymbol", "InputBufferTooSmall", "OutputLimitExceeded", "PeekTooLarge", "ReadFailed", "TrailingData", "Truncated" };
+    try support.expectErrorNames(deflate.DecompressError, &expected);
 }

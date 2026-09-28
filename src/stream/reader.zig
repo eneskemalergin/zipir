@@ -1,45 +1,62 @@
-//! The `std.Io.Reader` shared by the gzip, zlib, raw DEFLATE, and BGZF decompressors: decoded bytes are pulled
-//! from the workspace's own buffer, which keeps 32 KiB of history and decodes up to 128 KiB ahead.
+//! `Decompressor(Framing)`: the `std.Io.Reader` shared by every format's decompressor. Decoded bytes are read from
+//! the workspace's own buffer, which keeps a window of history and decodes up to 128 KiB ahead.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
 const codes = @import("../engine/codes.zig");
 
-/// `Format` is a container's framing around DEFLATE streams. It declares `Check` (with `init() Check`), `Error`
-/// (a superset of `decode.Error`), `Options` (with `max_output_bytes`), `min_input_buffer`, `init(Options)`,
-/// `begin(*Format, *decode.BitReader) Error!bool` (reads what precedes a stream: true when one follows, false
-/// when the input has ended as the container allows), and `end(*Format, *decode.BitReader, *Check, size: u64)
-/// Error!void` (reads and checks what follows a stream).
+/// What to do with bytes after the last stream a format accepts.
+pub const TrailingData = enum { reject, leave };
+
+/// The decompress options of zlib and raw DEFLATE (each format's `DecompressOptions`); gzip and BGZF extend them.
+pub const Options = struct {
+    /// More decoded output than this is `OutputLimitExceeded`.
+    max_output_bytes: u64 = std.math.maxInt(u64),
+    trailing_data: TrailingData = .reject,
+};
+
+/// Errors of the reader itself, beside the decoder's and the format's: an input reader buffer below the format's
+/// minimum, and a `peek` or `fill` larger than the buffer can hold after the history.
+pub const Error = error{ InputBufferTooSmall, PeekTooLarge };
+
+/// `Framing` is a format's framing around DEFLATE streams. It declares:
+/// - `Check` (with `init() Check`, `update`, `final`), `DecompressOptions` (with `max_output_bytes`),
+///   `DecompressError` (containing `decode.DecodeError` and `Error`), and `min_input_buffer`;
+/// - `init(DecompressOptions) Framing`;
+/// - `header(*Framing, *decode.BitReader) DecompressError!bool`: reads what precedes the next stream; true when a
+///   stream follows, false when the input has ended as the format allows;
+/// - `trailer(*Framing, *decode.BitReader, *Check, size: u64) DecompressError!void`: reads and checks what follows
+///   a stream of `size` decoded bytes.
 ///
-/// A format with `stream_limit` has small streams (BGZF blocks): each is capped at that many bytes, decoded
-/// whole, and readable only after `end` accepts it; it may declare `streamError(*const Format, Error, start: u64)
-/// Error` to rename an error of the stream that began at output position `start`, and `seeking: bool` to get
-/// `seek` and `seekUncompressed`.
-pub fn Inflate(comptime Format: type) type {
+/// A framing with `max_stream_bytes` has small streams (BGZF blocks): each decodes to at most that many bytes, is
+/// decoded whole, and becomes readable only after `trailer` accepts it. Such a framing may declare
+/// `streamError(*const Framing, DecompressError, start: u64) DecompressError` to rename an error of the stream that
+/// began at output position `start`, and a `seeking: bool` field to get `seek` and `seekUncompressed`.
+pub fn Decompressor(comptime Framing: type) type {
     return struct {
         const Self = @This();
-        const Check = Format.Check;
-        const whole = @hasDecl(Format, "stream_limit");
-        // Room needed to start decoding: a whole stream, or enough that reads taking a little do not move history.
-        const min_room = if (whole) Format.stream_limit else codes.RING;
-        pub const Options = Format.Options;
-        pub const Error = Format.Error;
+        const Check = Framing.Check;
+        const whole_streams = @hasDecl(Framing, "max_stream_bytes");
+        // Room needed to start decoding: a whole stream, or enough that small reads do not move the history each time.
+        const min_room = if (whole_streams) Framing.max_stream_bytes else codes.WINDOW;
+        pub const DecompressOptions = Framing.DecompressOptions;
+        pub const DecompressError = Framing.DecompressError;
 
         /// The decoded bytes. `ReadFailed` means `err` holds the reason.
         reader: std.Io.Reader,
-        /// Set when `reader` fails: a decode error, or `ReadFailed` from the input reader.
-        err: ?Format.Error,
-        /// The container's state, such as what it has read so far.
-        container: Format,
+        /// Set when `reader` fails: a decode or format error, or `ReadFailed` from the input reader.
+        err: ?DecompressError,
+        /// The format's state, such as what it has read so far.
+        framing: Framing,
         decoder: decode.Decoder,
         session: decode.Session(Check),
         br: decode.BitReader,
         check: Check,
         state: State,
         // An error met after this call had delivered bytes; reported on the next call.
-        held: ?Format.Error,
+        deferred: ?DecompressError,
 
-        const State = enum { start, body, done, failed };
+        const State = enum { header, body, done, failed };
 
         const vtable: std.Io.Reader.VTable = .{
             .stream = stream,
@@ -48,35 +65,35 @@ pub fn Inflate(comptime Format: type) type {
             .rebase = rebase,
         };
 
-        /// Starts decoding `input` from its current position. Resets everything, including after errors.
+        /// Starts decompressing `input` from its current position; resets everything, including after errors.
         /// The workspace must stay at this address while `reader` is used: the reader's buffer is inside it.
         /// After the end, `input` stands just after the compressed data; after an error its position is unspecified.
-        pub fn init(self: *Self, input: *std.Io.Reader, options: Format.Options) void {
+        pub fn init(self: *Self, input: *std.Io.Reader, options: DecompressOptions) void {
             self.reader = .{ .vtable = &vtable, .buffer = &self.decoder.buffer, .seek = 0, .end = 0 };
             self.err = null;
-            self.held = if (input.buffer.len < Format.min_input_buffer) error.InputBufferTooSmall else null;
+            self.deferred = if (input.buffer.len < Framing.min_input_buffer) error.InputBufferTooSmall else null;
             self.session = .{ .decoder = &self.decoder, .max_output_bytes = options.max_output_bytes };
-            if (whole) self.session.stream_limit = Format.stream_limit;
+            if (whole_streams) self.session.max_stream_bytes = Framing.max_stream_bytes;
             self.br = .{ .reader = input };
-            self.container = Format.init(options);
-            self.state = .start;
+            self.framing = Framing.init(options);
+            self.state = .header;
         }
 
-        /// Moves to a BGZF virtual offset: `offset.coffset` must be a block start in `source`, which must be the
-        /// reader `init` was given, and `offset.uoffset` bytes of that block are skipped. A block start that is not
-        /// one, or a skip past the block's end, is `BadVirtualOffset`.
-        pub const seek = if (@hasField(Format, "seeking")) seekVirtual else @compileError("only BGZF seeks");
+        /// Moves to a BGZF virtual offset: `offset.coffset` must be the start of a BGZF block in `source`, which
+        /// must be the file reader `init` was given, and `offset.uoffset` bytes of that block are skipped. An offset
+        /// that is not a block start, or a skip past the block's end, is `BadVirtualOffset`.
+        pub const seek = if (@hasField(Framing, "seeking")) seekVirtual else @compileError("only BGZF seeks");
 
         /// Moves to uncompressed offset `uoffset` of a BGZF file through `.gzi` entries (from `IndexReader`, which
-        /// checked them; sparse or empty is fine, the skip then spans blocks). `source` as for `seek`. An offset past
-        /// the end leaves the reader at the end.
-        pub const seekUncompressed = if (@hasField(Format, "seeking")) seekIndexed else @compileError("only BGZF seeks");
+        /// checked them; sparse or empty is fine, the skip then spans BGZF blocks). `source` as for `seek`. An offset
+        /// past the end leaves the reader at the end.
+        pub const seekUncompressed = if (@hasField(Framing, "seeking")) seekIndexed else @compileError("only BGZF seeks");
 
-        fn seekVirtual(self: *Self, source: *std.Io.File.Reader, offset: anytype) Format.Error!void {
+        fn seekVirtual(self: *Self, source: *std.Io.File.Reader, offset: anytype) DecompressError!void {
             return self.seekTo(source, offset.coffset, offset.uoffset, true);
         }
 
-        fn seekIndexed(self: *Self, source: *std.Io.File.Reader, entries: anytype, uoffset: u64) Format.Error!void {
+        fn seekIndexed(self: *Self, source: *std.Io.File.Reader, entries: anytype, uoffset: u64) DecompressError!void {
             var low: usize = 0;
             var high: usize = entries.len;
             while (low < high) {
@@ -88,37 +105,37 @@ pub fn Inflate(comptime Format: type) type {
             return self.seekTo(source, coffset, uoffset - from, false);
         }
 
-        // The first block is decoded here, so an offset that is not a block start fails now, not on a later read.
-        fn seekTo(self: *Self, source: *std.Io.File.Reader, coffset: u64, skip: u64, in_block: bool) Format.Error!void {
+        // The first BGZF block is decoded here, so an offset that is not a block start fails now, not on a later read.
+        fn seekTo(self: *Self, source: *std.Io.File.Reader, coffset: u64, skip: u64, in_block: bool) DecompressError!void {
             std.debug.assert(self.br.reader == &source.interface);
-            const options = self.container.options;
+            const options = self.framing.options;
             source.seekTo(coffset) catch return error.ReadFailed;
             self.init(&source.interface, options);
-            self.container.seeking = true;
+            self.framing.seeking = true;
             const r = &self.reader;
             const reached = if (skip == 0) r.fill(1) else r.discardAll64(skip);
             reached catch |e| switch (e) {
                 error.EndOfStream => if (in_block and skip != 0) return error.BadVirtualOffset,
                 error.ReadFailed => return self.err.?,
             };
-            if (in_block and self.container.first_size < skip) return error.BadVirtualOffset;
+            if (in_block and self.framing.first_size < skip) return error.BadVirtualOffset;
         }
 
         fn parent(r: *std.Io.Reader) *Self {
             return @alignCast(@fieldParentPtr("reader", r));
         }
 
-        // Decodes into the buffer until it is full or the input ends. EndOfStream only when nothing is left.
+        // Decodes into the buffer until it is full or the input ends; `EndOfStream` only when nothing is left.
         fn fill(self: *Self) std.Io.Reader.Error!void {
             const r = &self.reader;
-            if (self.held) |e| {
-                self.held = null;
+            if (self.deferred) |e| {
+                self.deferred = null;
                 return self.fail(e);
             }
             switch (self.state) {
                 .done => return error.EndOfStream,
                 .failed => return error.ReadFailed,
-                .start, .body => {},
+                .header, .body => {},
             }
             if (r.buffer.len - r.end < min_room) {
                 r.seek -= self.session.rebase(r.seek);
@@ -127,9 +144,9 @@ pub fn Inflate(comptime Format: type) type {
             const start = r.end;
             while (true) {
                 switch (self.state) {
-                    .start => {
-                        if (r.buffer.len - self.session.out_pos < (if (whole) min_room else 1)) break;
-                        const more = self.container.begin(&self.br) catch |e| return self.fault(e, start);
+                    .header => {
+                        if (r.buffer.len - self.session.out_pos < (if (whole_streams) min_room else 1)) break;
+                        const more = self.framing.header(&self.br) catch |e| return self.fault(e, start);
                         if (!more) {
                             self.state = .done;
                             self.br.release();
@@ -141,22 +158,22 @@ pub fn Inflate(comptime Format: type) type {
                     },
                     .body => {
                         const stop = self.session.run() catch |e| {
-                            if (!whole) r.end = self.session.out_pos;
-                            const renamed = if (@hasDecl(Format, "streamError")) self.container.streamError(e, self.session.stream_start) else e;
+                            if (!whole_streams) r.end = self.session.out_pos;
+                            const renamed = if (@hasDecl(Framing, "streamError")) self.framing.streamError(e, self.session.stream_start) else e;
                             return self.fault(renamed, start);
                         };
                         if (stop == .full) {
                             // A whole stream always has room: its cap ends it first.
-                            std.debug.assert(!whole);
+                            std.debug.assert(!whole_streams);
                             r.end = self.session.out_pos;
                             break;
                         }
-                        self.container.end(&self.br, &self.check, self.session.position() - self.session.stream_start) catch |e| {
-                            if (!whole) r.end = self.session.out_pos;
+                        self.framing.trailer(&self.br, &self.check, self.session.position() - self.session.stream_start) catch |e| {
+                            if (!whole_streams) r.end = self.session.out_pos;
                             return self.fault(e, start);
                         };
                         r.end = self.session.out_pos;
-                        self.state = .start;
+                        self.state = .header;
                     },
                     .done, .failed => unreachable,
                 }
@@ -165,17 +182,17 @@ pub fn Inflate(comptime Format: type) type {
         }
 
         // Bytes delivered in this call come first; the error waits for the next call.
-        fn fault(self: *Self, e: Format.Error, start: usize) std.Io.Reader.Error!void {
+        fn fault(self: *Self, e: DecompressError, start: usize) std.Io.Reader.Error!void {
             self.br.release();
             if (self.reader.end > start) {
                 self.state = .failed;
-                self.held = e;
+                self.deferred = e;
                 return;
             }
             return self.fail(e);
         }
 
-        fn fail(self: *Self, e: Format.Error) error{ReadFailed} {
+        fn fail(self: *Self, e: DecompressError) error{ReadFailed} {
             self.state = .failed;
             self.err = e;
             return error.ReadFailed;
@@ -206,7 +223,7 @@ pub fn Inflate(comptime Format: type) type {
             return n;
         }
 
-        // Keeps the unread bytes and 32 KiB of history before them.
+        // Keeps the unread bytes and a window of history before them.
         fn rebase(r: *std.Io.Reader, capacity: usize) std.Io.Reader.RebaseError!void {
             const self = parent(r);
             r.seek -= self.session.rebase(r.seek);

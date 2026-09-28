@@ -7,7 +7,7 @@ const support = @import("support.zig");
 
 const Format = zipir.Format;
 const formats = [_]Format{ .gzip, .zlib, .deflate };
-const levels = [_]@FieldType(zipir.gzip.CompressOptions, "level"){ .fast, .even, .dense };
+const presets = [_]zipir.Preset{ .fast, .even, .dense };
 
 fn makePlain(allocator: std.mem.Allocator, len: usize) ![]u8 {
     const plain = try allocator.alloc(u8, len);
@@ -23,10 +23,10 @@ fn makePlain(allocator: std.mem.Allocator, len: usize) ![]u8 {
 const Pattern = union(enum) { sizes: usize, random, slices: usize, ints };
 
 // Writes `plain` through the compressor with one pattern and returns the whole output.
-fn write(allocator: std.mem.Allocator, encoder: anytype, plain: []const u8, level: anytype, pattern: Pattern) ![]u8 {
+fn write(allocator: std.mem.Allocator, encoder: anytype, plain: []const u8, preset: zipir.Preset, pattern: Pattern) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    try encoder.init(&out.writer, .{ .level = level });
+    try encoder.init(&out.writer, .{ .preset = preset });
     const w = &encoder.writer;
     var at: usize = 0;
     var random = std.Random.DefaultPrng.init(plain.len);
@@ -54,7 +54,7 @@ fn decode(allocator: std.mem.Allocator, comptime format: Format, stream: []const
     var input = std.Io.Reader.fixed(stream);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    _ = try support.decompress(decoder, &input, &out.writer, .{});
+    _ = try support.decompressAll(decoder, &input, &out.writer, .{});
     return out.toOwnedSlice();
 }
 
@@ -65,15 +65,15 @@ test "[property] - [writer]: output depends only on the bytes, whatever the writ
     inline for (formats) |format| {
         const encoder = try allocator.create(zipir.Compressor(format));
         defer allocator.destroy(encoder);
-        for (levels) |level| {
-            const whole = try write(allocator, encoder, plain, level, .{ .sizes = plain.len });
+        for (presets) |preset| {
+            const whole = try write(allocator, encoder, plain, preset, .{ .sizes = plain.len });
             defer allocator.free(whole);
             const decoded = try decode(allocator, format, whole);
             defer allocator.free(decoded);
             try std.testing.expectEqualSlices(u8, plain, decoded);
             const patterns = [_]Pattern{ .{ .sizes = 13 }, .{ .sizes = 32767 }, .{ .sizes = 32768 }, .{ .sizes = 32769 }, .{ .sizes = 65536 }, .random, .{ .slices = 32768 }, .{ .slices = 1000 }, .ints };
             for (patterns) |pattern| {
-                const got = try write(allocator, encoder, plain, level, pattern);
+                const got = try write(allocator, encoder, plain, preset, pattern);
                 defer allocator.free(got);
                 try std.testing.expectEqualSlices(u8, whole, got);
             }
@@ -180,13 +180,13 @@ test "[property] - [writer]: BGZF output depends only on the bytes, and its erro
     defer allocator.destroy(encoder);
     var whole: std.Io.Writer.Allocating = .init(allocator);
     defer whole.deinit();
-    encoder.init(&whole.writer, .{ .split = .lines, .level = .fast });
+    try encoder.init(&whole.writer, .{ .split = .lines, .preset = .fast });
     try encoder.writer.writeAll(plain);
     _ = try encoder.finish();
     for ([_]usize{ 1, 4099, 65536, 130561 }) |size| {
         var out: std.Io.Writer.Allocating = .init(allocator);
         defer out.deinit();
-        encoder.init(&out.writer, .{ .split = .lines, .level = .fast });
+        try encoder.init(&out.writer, .{ .split = .lines, .preset = .fast });
         var at: usize = 0;
         while (at < plain.len) : (at += size) try encoder.writer.writeAll(plain[at..@min(plain.len, at + size)]);
         _ = try encoder.finish();
@@ -196,7 +196,7 @@ test "[property] - [writer]: BGZF output depends only on the bytes, and its erro
     var none: [0]zipir.bgzf.IndexEntry = .{};
     var index: zipir.bgzf.IndexBuilder = .init(&none);
     var discard: std.Io.Writer.Discarding = .init(&.{});
-    encoder.init(&discard.writer, .{ .index = &index });
+    try encoder.init(&discard.writer, .{ .index = &index });
     try std.testing.expectError(error.WriteFailed, encoder.writer.writeAll(plain));
     try std.testing.expectEqual(@as(?zipir.bgzf.CompressError, error.IndexFull), encoder.err);
 }

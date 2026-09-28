@@ -124,7 +124,7 @@ test "[integration] - [tar reader]: an archive written through the gzip decoder 
     var compressed: [PAX.len]u8 = undefined;
     var plain = std.Io.Reader.fixed(PAX);
     var sink: std.Io.Writer = .fixed(&compressed);
-    _ = try support.compress(compressor, &plain, &sink, .{});
+    _ = try support.compressAll(compressor, &plain, &sink, .{});
     var storage: [8192]u8 = undefined;
     const direct = try transcribe(PAX, PAX.len, &storage);
     var name: [256]u8 = undefined;
@@ -134,7 +134,7 @@ test "[integration] - [tar reader]: an archive written through the gzip decoder 
     var reader: tar.Reader(Transcript) = .init(&visitor, .{ .name = &name, .link = &link });
     var buffer: [64]u8 = undefined;
     var source = support.Source.init(sink.buffered(), &buffer, 13);
-    _ = try support.decompress(decompressor, &source.reader, &reader.writer, .{});
+    _ = try support.decompressAll(decompressor, &source.reader, &reader.writer, .{});
     try std.testing.expectEqual(direct.summary, try reader.finish());
     try std.testing.expectEqualStrings(direct.transcript, visitor.out.buffered());
 }
@@ -296,14 +296,14 @@ test "[failure] - [tar reader]: a visitor's error stops the stream and is return
     var compressed: [GNU.len]u8 = undefined;
     var plain = std.Io.Reader.fixed(GNU);
     var sink: std.Io.Writer = .fixed(&compressed);
-    _ = try support.compress(compressor, &plain, &sink, .{});
+    _ = try support.compressAll(compressor, &plain, &sink, .{});
     var name: [256]u8 = undefined;
     var link: [256]u8 = undefined;
     var storage: [8192]u8 = undefined;
     var visitor: Transcript = .{ .out = .fixed(&storage), .fail_on = "d/fifo" };
     var reader: tar.Reader(Transcript) = .init(&visitor, .{ .name = &name, .link = &link });
     var source = std.Io.Reader.fixed(sink.buffered());
-    try std.testing.expectError(error.WriteFailed, support.decompress(decompressor, &source, &reader.writer, .{}));
+    try std.testing.expectError(error.WriteFailed, support.decompressAll(decompressor, &source, &reader.writer, .{}));
     try std.testing.expectError(error.Stop, reader.finish());
     try std.testing.expectError(error.WriteFailed, reader.writer.writeAll("more"));
 }
@@ -437,11 +437,11 @@ test "[integration] - [tar writer]: the gzip compressor reads an archive the gzi
     var writer: tar.Writer(Files) = .init(&source, &buffer, .{});
     var compressed: [16384]u8 = undefined;
     var sink: std.Io.Writer = .fixed(&compressed);
-    _ = try support.compress(compressor, &writer.reader, &sink, .{});
+    _ = try support.compressAll(compressor, &writer.reader, &sink, .{});
     var plain: [16384]u8 = undefined;
     var direct: std.Io.Writer = .fixed(&plain);
     var gz = std.Io.Reader.fixed(sink.buffered());
-    _ = try support.decompress(decompressor, &gz, &direct, .{});
+    _ = try support.decompressAll(decompressor, &gz, &direct, .{});
     var reference: [16384]u8 = undefined;
     try std.testing.expectEqualSlices(u8, try writeArchive(&files, &.{}, reference.len, .{}, &reference), direct.buffered());
 }
@@ -505,7 +505,7 @@ test "[failure] - [tar writer]: a short source, a long name, an unsupported kind
     var broken: Files = .{ .files = &files, .fail_at = 3 };
     var broken_writer: tar.Writer(Files) = .init(&broken, &.{}, .{});
     var sink: std.Io.Writer = .fixed(&out);
-    try std.testing.expectError(error.ReadFailed, support.compress(compressor, &broken_writer.reader, &sink, .{}));
+    try std.testing.expectError(error.ReadFailed, support.compressAll(compressor, &broken_writer.reader, &sink, .{}));
     try std.testing.expectError(error.SourceBroke, broken_writer.finish());
 }
 

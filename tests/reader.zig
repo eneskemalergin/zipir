@@ -28,7 +28,7 @@ fn compress(allocator: std.mem.Allocator, comptime format: Format, plain: []cons
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     var input = std.Io.Reader.fixed(plain);
-    _ = try support.compress(encoder, &input, &out.writer, .{});
+    _ = try support.compressAll(encoder, &input, &out.writer, .{});
     return out.toOwnedSlice();
 }
 
@@ -143,7 +143,7 @@ test "[edge] - [reader]: a peek of 128 KiB always fits and a larger one that can
     r.toss(r.bufferedLen() - 5);
     try std.testing.expectEqualSlices(u8, plain[at..][0..5], r.buffered());
     try std.testing.expectError(error.ReadFailed, r.peek(163840));
-    try std.testing.expectEqual(@as(?zipir.gzip.Error, error.PeekTooLarge), decoder.err);
+    try std.testing.expectEqual(@as(?zipir.gzip.DecompressError, error.PeekTooLarge), decoder.err);
 }
 
 test "[edge] - [reader]: a line longer than the buffer is StreamTooLong" {
@@ -179,7 +179,7 @@ test "[failure] - [reader]: bytes before a fault are delivered, then the fault, 
     var input = std.Io.Reader.fixed(joined);
     decoder.init(&input, .{});
     try std.testing.expectError(error.ReadFailed, decoder.reader.streamRemaining(&sink.writer));
-    try std.testing.expectEqual(@as(?zipir.gzip.Error, error.CrcMismatch), decoder.err);
+    try std.testing.expectEqual(@as(?zipir.gzip.DecompressError, error.CrcMismatch), decoder.err);
     try std.testing.expectEqualSlices(u8, plain, sink.written());
     try std.testing.expectError(error.ReadFailed, decoder.reader.peekGreedy(1));
     // Cut inside the second member: the first member and part of the second arrive, then Truncated.
@@ -187,7 +187,7 @@ test "[failure] - [reader]: bytes before a fault are delivered, then the fault, 
     input = std.Io.Reader.fixed(joined[0 .. one.len + two.len / 2]);
     decoder.init(&input, .{});
     try std.testing.expectError(error.ReadFailed, decoder.reader.streamRemaining(&sink.writer));
-    try std.testing.expectEqual(@as(?zipir.gzip.Error, error.Truncated), decoder.err);
+    try std.testing.expectEqual(@as(?zipir.gzip.DecompressError, error.Truncated), decoder.err);
     try std.testing.expect(sink.written().len >= 300_000);
     try std.testing.expectEqualSlices(u8, plain[0..sink.written().len], sink.written());
 }
@@ -249,9 +249,9 @@ test "[failure] - [reader]: max_header_bytes bounds the optional gzip header" {
     defer std.testing.allocator.destroy(decoder);
     var discard: std.Io.Writer.Discarding = .init(&.{});
     var input = std.Io.Reader.fixed(&member);
-    try std.testing.expectEqual(@as(u64, 0), try support.decompress(decoder, &input, &discard.writer, .{ .max_header_bytes = 100 }));
+    try std.testing.expectEqual(@as(u64, 0), try support.decompressAll(decoder, &input, &discard.writer, .{ .max_header_bytes = 100 }));
     input = std.Io.Reader.fixed(&member);
-    try std.testing.expectError(error.HeaderTooLong, support.decompress(decoder, &input, &discard.writer, .{ .max_header_bytes = 99 }));
+    try std.testing.expectError(error.HeaderTooLong, support.decompressAll(decoder, &input, &discard.writer, .{ .max_header_bytes = 99 }));
 }
 
 fn compressBgzf(allocator: std.mem.Allocator, plain: []const u8) ![]u8 {
@@ -260,7 +260,7 @@ fn compressBgzf(allocator: std.mem.Allocator, plain: []const u8) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     var input = std.Io.Reader.fixed(plain);
-    writer.init(&out.writer, .{ .split = .lines, .level = .fast });
+    try writer.init(&out.writer, .{ .split = .lines, .preset = .fast });
     _ = try input.streamRemaining(&writer.writer);
     _ = try writer.finish();
     return out.toOwnedSlice();
@@ -280,7 +280,7 @@ test "[integration] - [reader]: BGZF reads in every pattern, and peeks of 64 KiB
         var source = support.Source.init(stream, &input, 4096);
         decoder.init(&source.reader, .{ .require_eof_marker = true });
         try readAll(&decoder.reader, pattern, plain);
-        try std.testing.expect(decoder.container.eof_marker);
+        try std.testing.expect(decoder.framing.eof_marker);
     }
     var input = std.Io.Reader.fixed(stream);
     decoder.init(&input, .{});

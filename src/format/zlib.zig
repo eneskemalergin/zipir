@@ -1,14 +1,15 @@
-//! Bounded zlib compression and decompression through caller-owned readers and writers.
+//! zlib (RFC 1950): one DEFLATE stream between a two-byte header and a big-endian Adler-32.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
 const encode = @import("../engine/encode.zig");
 const adler32 = @import("../kernel/adler32.zig");
-const inflate = @import("../stream/reader.zig");
-const compress = @import("../stream/writer.zig");
+const stream_reader = @import("../stream/reader.zig");
+const stream_writer = @import("../stream/writer.zig");
 
-pub const Error = decode.Error || error{
-    InputBufferTooSmall,
+pub const DecompressOptions = stream_reader.Options;
+
+pub const DecompressError = decode.DecodeError || stream_reader.Error || error{
     BadHeader,
     UnsupportedMethod,
     WindowTooLarge,
@@ -17,54 +18,59 @@ pub const Error = decode.Error || error{
     TrailingData,
 };
 
-pub const Options = decode.DecompressOptions;
+/// Decompresses one zlib stream and checks its Adler-32. `init(input, options)` starts it in place; `reader` gives
+/// the decoded bytes and `err` the reason for a `ReadFailed`. Input reader capacity must be at least 16 bytes. No
+/// allocation occurs.
+pub const Decompressor = stream_reader.Decompressor(DecompressFraming);
 
-/// Decodes one zlib stream and checks its Adler-32. `init(input, options)` starts it in place; `reader` gives
-/// the decoded bytes and `err` the reason for a `ReadFailed`. Input reader capacity must be >=16. No allocation occurs.
-pub const Decompressor = inflate.Inflate(Stream);
+pub const CompressOptions = stream_writer.Options;
 
-const Stream = struct {
+pub const CompressError = std.Io.Writer.Error;
+
+/// Writes one zlib stream: `init(output, options)` writes the header and starts it in place, plain bytes go to
+/// `writer`, and `finish` writes the final DEFLATE block and the Adler-32. No allocation occurs.
+pub const Compressor = stream_writer.Compressor(CompressFraming);
+
+comptime {
+    std.debug.assert(@sizeOf(Compressor) == 428624);
+}
+
+const format = @This();
+
+const DecompressFraming = struct {
     pub const Check = adler32.Adler32;
-    pub const Error = zlib.Error;
-    pub const Options = zlib.Options;
+    pub const DecompressOptions = format.DecompressOptions;
+    pub const DecompressError = format.DecompressError;
     pub const min_input_buffer = 16;
 
-    options: zlib.Options,
+    options: format.DecompressOptions,
     started: bool = false,
 
-    pub fn init(options: zlib.Options) Stream {
+    pub fn init(options: format.DecompressOptions) DecompressFraming {
         return .{ .options = options };
     }
 
-    pub fn begin(self: *Stream, br: *decode.BitReader) zlib.Error!bool {
+    pub fn header(self: *DecompressFraming, br: *decode.BitReader) format.DecompressError!bool {
         if (!self.started) {
             self.started = true;
-            try parseHeader(br);
+            try readHeader(br);
             return true;
         }
-        if (try br.window(1) and self.options.trailing_data == .reject) return error.TrailingData;
+        if (try br.refill(1) and self.options.trailing_data == .reject) return error.TrailingData;
         return false;
     }
 
-    pub fn end(_: *Stream, br: *decode.BitReader, check: *Check, _: u64) zlib.Error!void {
-        const footer = try br.getBytes(4);
-        if (check.final() != std.mem.readInt(u32, footer[0..4], .big)) return error.BadAdler;
+    pub fn trailer(_: *DecompressFraming, br: *decode.BitReader, check: *Check, _: u64) format.DecompressError!void {
+        const bytes = try br.getBytes(4);
+        if (check.final() != std.mem.readInt(u32, bytes[0..4], .big)) return error.BadAdler;
     }
 };
 
-const zlib = @This();
-
-pub const CompressError = encode.EncodeError;
-
-pub const CompressOptions = encode.CompressOptions;
-
-/// Writes one zlib stream: `init(output, options)` writes the header and starts it in place, plain bytes go to
-/// `writer`, and `finish` writes the last block and the Adler-32. No allocation occurs.
-pub const Compressor = compress.Deflate(struct {
+const CompressFraming = struct {
     pub const Check = adler32.Adler32;
 
-    pub fn header(output: *std.Io.Writer, level: encode.Level) std.Io.Writer.Error!void {
-        return output.writeAll(&headerFor(level));
+    pub fn header(output: *std.Io.Writer, preset: encode.Preset) std.Io.Writer.Error!void {
+        return output.writeAll(&headerBytes(preset));
     }
 
     pub fn trailer(output: *std.Io.Writer, check: *Check, _: u64) std.Io.Writer.Error!void {
@@ -72,22 +78,19 @@ pub const Compressor = compress.Deflate(struct {
         std.mem.writeInt(u32, &bytes, check.final(), .big);
         return output.writeAll(&bytes);
     }
-});
+};
 
-comptime {
-    std.debug.assert(@sizeOf(Compressor) == 428624);
-}
-
-// CMF 0x78 is DEFLATE with a 32 KiB window; FLEVEL follows zlib's level convention (fastest, fast, default, maximum).
-fn headerFor(level: encode.Level) [2]u8 {
-    return switch (level) {
+// CMF 0x78 is DEFLATE with a 32 KiB window; FLEVEL follows zlib's level convention (fastest, fast, default,
+// maximum) for the level each preset is compared with.
+fn headerBytes(preset: encode.Preset) [2]u8 {
+    return switch (preset) {
         .fast => .{ 0x78, 0x01 },
         .even => .{ 0x78, 0x5e },
         .dense => .{ 0x78, 0xda },
     };
 }
 
-fn parseHeader(br: *decode.BitReader) !void {
+fn readHeader(br: *decode.BitReader) DecompressError!void {
     const header = try br.getBytes(2);
     const cmf = header[0];
     const flg = header[1];

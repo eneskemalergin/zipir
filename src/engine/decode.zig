@@ -12,21 +12,14 @@ const LEN_EXTRA = codes.LEN_EXTRA;
 const DIST_EXTRA = codes.DIST_EXTRA;
 const LEN_BASE = codes.LEN_BASE;
 const DIST_BASE = codes.DIST_BASE;
-const RING = codes.RING;
+const WINDOW = codes.WINDOW;
 const FIXED_LIT_LENS = codes.FIXED_LIT_LENS;
 const FIXED_DIST_LENS = codes.FIXED_DIST_LENS;
 const bitReverse = codes.bitReverse;
 const buildCodes = codes.buildCodes;
 
-/// `PeekTooLarge`: a reader was asked to hold more than its buffer allows (at most 128 KiB is always possible).
-pub const Error = error{ Truncated, BadHuffman, BadSymbol, BadDistance, BadStored, BadBlock, OutputLimitExceeded, ReadFailed, WriteFailed, PeekTooLarge };
-
-pub const TrailingData = enum { reject, leave };
-
-pub const DecompressOptions = struct {
-    max_output_bytes: u64 = std.math.maxInt(u64),
-    trailing_data: TrailingData = .reject,
-};
+/// What decoding a DEFLATE stream can fail with; `ReadFailed` comes from the input reader.
+pub const DecodeError = error{ Truncated, BadHuffman, BadSymbol, BadDistance, BadStored, BadBlock, OutputLimitExceeded, ReadFailed };
 
 const Kind = enum(u4) { invalid = 0, lit, eob, len, dist, long };
 
@@ -69,7 +62,7 @@ pub const BitReader = struct {
         return std.mem.readInt(u64, &tmp, .little);
     }
 
-    pub fn window(self: *BitReader, minimum: usize) !bool {
+    pub fn refill(self: *BitReader, minimum: usize) !bool {
         self.putBack();
         self.reader.toss(self.i);
         self.tossed += self.i;
@@ -104,7 +97,7 @@ pub const BitReader = struct {
     fn fill(self: *BitReader, n: u32) !void {
         while (self.nbits < n) {
             if (self.i >= self.src.len) {
-                _ = try self.window(8);
+                _ = try self.refill(8);
                 if (self.nbits + self.src.len * 8 < n) {
                     while (self.i < self.src.len) : (self.i += 1) {
                         self.bits |= @as(u64, self.src[self.i]) << @intCast(self.nbits);
@@ -171,7 +164,7 @@ pub const BitReader = struct {
     pub fn getBytes(self: *BitReader, n: usize) ![]const u8 {
         self.putBack();
         self.alignByte();
-        if (n > self.src.len - self.i and !try self.window(n)) return error.Truncated;
+        if (n > self.src.len - self.i and !try self.refill(n)) return error.Truncated;
         const s = self.src[self.i .. self.i + n];
         self.i += n;
         return s;
@@ -192,7 +185,7 @@ const Tables = struct {
 
 pub const Decoder = struct {
     tables: Tables = undefined,
-    buffer: [RING + BATCH]u8 = undefined,
+    buffer: [WINDOW + BATCH]u8 = undefined,
 };
 
 comptime {
@@ -222,7 +215,7 @@ pub fn Session(comptime Check: type) type {
         stream_start: u64 = 0,
         max_output_bytes: u64,
         // Output cap for each stream (a BGZF block holds at most 65536 bytes), applied with max_output_bytes.
-        stream_limit: u64 = std.math.maxInt(u64),
+        max_stream_bytes: u64 = std.math.maxInt(u64),
         block: Block = .end,
         final: bool = false,
         stored_left: usize = 0,
@@ -242,7 +235,7 @@ pub fn Session(comptime Check: type) type {
         }
 
         /// Decodes until the stream ends or the buffer is full; new bytes are in the check when it returns.
-        pub fn run(self: *Self) Error!Stop {
+        pub fn run(self: *Self) DecodeError!Stop {
             const stop = try self.decode();
             self.catchup();
             // A pause can come right after a 64-bit refill; the fast loop's refill needs fewer than 64 bits held.
@@ -253,7 +246,7 @@ pub fn Session(comptime Check: type) type {
         /// Frees room: keeps `buffer[keep_from..out_pos]` and at least 32 KiB of history before `out_pos`,
         /// moved to the front. Returns how far bytes moved, which the owner subtracts from its offsets.
         pub fn rebase(self: *Self, keep_from: usize) usize {
-            const from = @min(keep_from, self.out_pos -| RING);
+            const from = @min(keep_from, self.out_pos -| WINDOW);
             if (from != 0) {
                 const kept = self.out_pos - from;
                 @memmove(self.decoder.buffer[0..kept], self.decoder.buffer[from..self.out_pos]);
@@ -272,18 +265,18 @@ pub fn Session(comptime Check: type) type {
         // `out` ends where the output limits stop this stream, or at the end of the buffer.
         fn limit(self: *Self) void {
             const at = self.position();
-            const allowed = @min(self.max_output_bytes - at, (self.stream_start +| self.stream_limit) - at);
+            const allowed = @min(self.max_output_bytes - at, (self.stream_start +| self.max_stream_bytes) - at);
             const room = self.decoder.buffer.len - self.out_pos;
             self.out = self.decoder.buffer[0 .. self.out_pos + @as(usize, @intCast(@min(room, allowed)))];
         }
 
         // No room: a limit (not the buffer's end) is what stopped decoding.
-        fn full(self: *const Self) Error!Stop {
+        fn full(self: *const Self) DecodeError!Stop {
             if (self.out.len < self.decoder.buffer.len) return error.OutputLimitExceeded;
             return .full;
         }
 
-        fn decode(self: *Self) Error!Stop {
+        fn decode(self: *Self) DecodeError!Stop {
             const br = self.br;
             if (self.match_left != 0 and !self.copyMatch()) return self.full();
             while (true) switch (self.block) {
@@ -313,7 +306,7 @@ pub fn Session(comptime Check: type) type {
                 .stored => {
                     while (self.stored_left != 0) {
                         if (self.out_pos == self.out.len) return self.full();
-                        if (br.i == br.src.len and !try br.window(1)) return error.Truncated;
+                        if (br.i == br.src.len and !try br.refill(1)) return error.Truncated;
                         const n = @min(self.stored_left, br.src.len - br.i, self.out.len - self.out_pos);
                         self.put(try br.getBytes(n));
                         self.stored_left -= n;
@@ -332,7 +325,7 @@ pub fn Session(comptime Check: type) type {
             };
         }
 
-        fn readTables(self: *Self) Error!void {
+        fn readTables(self: *Self) DecodeError!void {
             const br = self.br;
             const hlit = try br.get(5) + 257;
             const hdist = try br.get(5) + 1;
@@ -377,8 +370,8 @@ pub fn Session(comptime Check: type) type {
             }
         }
 
-        fn startMatch(self: *Self, distance: usize, length: usize) Error!bool {
-            if (distance == 0 or distance > RING or distance > self.position() - self.stream_start) return error.BadDistance;
+        fn startMatch(self: *Self, distance: usize, length: usize) DecodeError!bool {
+            if (distance == 0 or distance > WINDOW or distance > self.position() - self.stream_start) return error.BadDistance;
             self.match_distance = distance;
             self.match_left = length;
             return self.copyMatch();
@@ -644,7 +637,7 @@ fn predecode(entry: Entry) Entry {
 }
 
 fn decodeFast(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) !bool {
-    if (ctx.position() - ctx.stream_start >= RING) return decodeFastImpl(Check, ctx, lit, dist, true);
+    if (ctx.position() - ctx.stream_start >= WINDOW) return decodeFastImpl(Check, ctx, lit, dist, true);
     return decodeFastImpl(Check, ctx, lit, dist, false);
 }
 
@@ -721,7 +714,7 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
 }
 
 // `.end` at the end-of-block code; `.full` before a literal or match finds no room, or with a match pending.
-fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) Error!Stop {
+fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) DecodeError!Stop {
     const br = ctx.br;
     while (true) {
         if (br.src.len - br.i < 8) {
@@ -732,7 +725,7 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
                     return .end;
                 }
             }
-            _ = try br.window(8);
+            _ = try br.refill(8);
         }
         if (try @call(.never_inline, decodeFast, .{ Check, ctx, lit, dist })) return .end;
         // A stream may end at the end of the input (raw DEFLATE has no trailer), so fewer than 15 bits
@@ -1024,12 +1017,12 @@ test "[property] - [deflate decoder]: paused decoding returns the stream at ever
     expected.update(plain);
     const compressed = try allocator.alloc(u8, plain.len + plain.len / 8 + 1024);
     defer allocator.free(compressed);
-    for ([_]encode.Level{ .fast, .even, .dense }) |level| {
+    for ([_]encode.Preset{ .fast, .even, .dense }) |preset| {
         var writer = std.Io.Writer.fixed(compressed);
         var encode_check: TestCheck = .{};
-        try encoder.encodeSlice(TestCheck, plain, &writer, &encode_check, level, false);
+        try encoder.encodeSlice(TestCheck, plain, &writer, &encode_check, preset, false);
         for ([_]usize{ 1, 7, 4093, 65536, 1 << 20 }) |size| {
-            if (size == 1 and level != .even) continue;
+            if (size == 1 and preset != .even) continue;
             var reader = std.Io.Reader.fixed(writer.buffered());
             var br: BitReader = .{ .reader = &reader };
             var check: SumCheck = .{};
@@ -1100,7 +1093,7 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
             ends[i + 1] = position;
         }
         for ([_]usize{ 0, 1, 2, 287, 288, 289, 290, 291, 320, 353 }) |room| {
-            @memset(decoder.buffer[RING..][0..384], 0xa5);
+            @memset(decoder.buffer[WINDOW..][0..384], 0xa5);
             var reader = std.Io.Reader.fixed(&input);
             var br: BitReader = .{ .reader = &reader, .src = &input };
             var check: TestCheck = .{};
@@ -1108,17 +1101,17 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
                 .br = &br,
                 .check = &check,
                 .decoder = decoder,
-                .out = decoder.buffer[0 .. RING + room],
-                .out_pos = RING,
+                .out = decoder.buffer[0 .. WINDOW + room],
+                .out_pos = WINDOW,
                 .max_output_bytes = std.math.maxInt(u64),
             };
             const ended = try decodeFastImpl(TestCheck, &ctx, &FIXED_TABLES.lit, &FIXED_TABLES.dist, false);
-            const written = ctx.out_pos - RING;
+            const written = ctx.out_pos - WINDOW;
             try std.testing.expect(written <= length and written <= room);
             if (ended) try std.testing.expectEqual(length, written);
             try std.testing.expectEqual(ends[if (ended) length + 1 else written], br.i * 8 - br.nbits);
-            try std.testing.expectEqualSlices(u8, plain[0..written], decoder.buffer[RING..][0..written]);
-            for (decoder.buffer[ctx.out_pos .. RING + 384]) |byte| try std.testing.expectEqual(@as(u8, 0xa5), byte);
+            try std.testing.expectEqualSlices(u8, plain[0..written], decoder.buffer[WINDOW..][0..written]);
+            for (decoder.buffer[ctx.out_pos .. WINDOW + 384]) |byte| try std.testing.expectEqual(@as(u8, 0xa5), byte);
         }
     }
 }
@@ -1136,7 +1129,7 @@ test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-
     decoder.tables.dist_first[0] = .{ .nbits = 9, .kind = .long, .extra = 6, .payload = 0 };
     decoder.tables.dist_spill[0] = .{ .nbits = 15, .kind = .dist, .extra = 13, .payload = 24577 };
     decoder.tables.lit_first[1] = .{ .nbits = 1, .kind = .eob, .payload = 0 };
-    for (decoder.buffer[0..RING], 0..) |*byte, i| byte.* = @truncate(i * 73 + i / 256);
+    for (decoder.buffer[0..WINDOW], 0..) |*byte, i| byte.* = @truncate(i * 73 + i / 256);
     for ([_]u4{ 10, 11 }) |literal_width| {
         const literal: Entry = .{ .nbits = literal_width, .kind = .lit, .payload = 'A' };
         decoder.tables.lit_first[512] = if (literal_width == 10) literal else .{ .nbits = 10, .kind = .long, .extra = 1, .payload = 32 };
@@ -1154,13 +1147,13 @@ test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-
             .check = &check,
             .decoder = decoder,
             .out = &decoder.buffer,
-            .out_pos = RING,
+            .out_pos = WINDOW,
             .max_output_bytes = std.math.maxInt(u64),
         };
         try std.testing.expect(try decodeFastImpl(TestCheck, &ctx, &decoder.tables.lit_first, &decoder.tables.dist_first, true));
-        try std.testing.expectEqual(RING + 259, ctx.out_pos);
+        try std.testing.expectEqual(WINDOW + 259, ctx.out_pos);
         try std.testing.expectEqual(consumed, br.i * 8 - br.nbits);
-        try std.testing.expectEqualSlices(u8, decoder.buffer[0..258], decoder.buffer[RING..][0..258]);
-        try std.testing.expectEqual(@as(u8, 'A'), decoder.buffer[RING + 258]);
+        try std.testing.expectEqualSlices(u8, decoder.buffer[0..258], decoder.buffer[WINDOW..][0..258]);
+        try std.testing.expectEqual(@as(u8, 'A'), decoder.buffer[WINDOW + 258]);
     }
 }
