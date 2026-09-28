@@ -18,17 +18,22 @@ pub const DecompressError = decode.DecodeError || stream_reader.Error || error{
     TrailingData,
 };
 
-/// Decompresses one zlib stream and checks its Adler-32. `init(input, options)` starts it in place; `reader` gives
-/// the decoded bytes and `err` the reason for a `ReadFailed`. Input reader capacity must be at least 16 bytes. No
-/// allocation occurs.
+/// Decompresses one zlib stream and checks its Adler-32. `init(input, options)` starts it in place and resets it, also
+/// after errors; it assumes the workspace stays at that address while `reader` is used (the reader's buffer is inside
+/// it) and requires an input reader capacity of at least 16 bytes (`InputBufferTooSmall`). `reader` gives the decoded
+/// bytes; on `ReadFailed`, `err` holds the reason. After the end, `input` stands just after the compressed data.
 pub const Decompressor = stream_reader.Decompressor(DecompressFraming);
 
 pub const CompressOptions = stream_writer.Options;
 
 pub const CompressError = std.Io.Writer.Error;
 
-/// Writes one zlib stream: `init(output, options)` writes the header and starts it in place, plain bytes go to
-/// `writer`, and `finish` writes the final DEFLATE block and the Adler-32. No allocation occurs.
+/// Writes one zlib stream. `init(output, options)` writes the header and starts it in place, also after errors; it
+/// assumes the workspace stays at that address while `writer` is used. The output depends only on the bytes written,
+/// never on the write sizes, and a contiguous request of up to 32 KiB always fits. `writer.flush()` is a full flush
+/// (everything so far decodes, and the history restarts); it does not flush `output`. `finish` writes the final DEFLATE
+/// block and the Adler-32 and returns the number of plain bytes; the writer then fails until `init`, and the caller
+/// flushes `output`.
 pub const Compressor = stream_writer.Compressor(CompressFraming);
 
 comptime {

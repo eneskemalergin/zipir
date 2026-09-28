@@ -72,8 +72,7 @@ pub const Sink = struct {
     }
 };
 
-/// A whole stream through a decompressor's reader: the decoded length, or the decompress error itself rather than
-/// `ReadFailed`.
+// Returns the decompress error itself rather than `ReadFailed`.
 pub fn decompressAll(decoder: anytype, reader: *std.Io.Reader, writer: *std.Io.Writer, options: std.meta.Child(@TypeOf(decoder)).DecompressOptions) !u64 {
     decoder.init(reader, options);
     return decoder.reader.streamRemaining(writer) catch |err| switch (err) {
@@ -82,7 +81,6 @@ pub fn decompressAll(decoder: anytype, reader: *std.Io.Reader, writer: *std.Io.W
     };
 }
 
-/// A whole stream through a compressor's writer; the result is the number of plain bytes.
 pub fn compressAll(encoder: anytype, reader: *std.Io.Reader, writer: *std.Io.Writer, options: std.meta.Child(@TypeOf(encoder)).CompressOptions) !u64 {
     try encoder.init(writer, options);
     _ = try reader.streamRemaining(&encoder.writer);
@@ -102,8 +100,8 @@ pub fn encodeRoundtrip(
     return encodeRoundtripOut(Codec, encoder, container, plain, options, chunk, capacity, 13, 7, encoded);
 }
 
-/// As `encodeRoundtrip`, with a writer buffer of `out_capacity` bytes (at most 64) that drains at most
-/// `max_drain` bytes per call.
+// As `encodeRoundtrip`, with a writer buffer of `out_capacity` bytes (at most 64) that drains at most
+// `max_drain` bytes per call.
 pub fn encodeRoundtripOut(
     comptime Codec: type,
     encoder: *Codec.Compressor,

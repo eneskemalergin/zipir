@@ -1,10 +1,9 @@
-//! Public library root for zipir: one namespace per format, the format-generic `Decompressor` and `Compressor`,
-//! the presets, and the tar archive.
+//! The zipir package root: the public API.
 
 const std = @import("std");
 const gzip_format = @import("format/gzip.zig");
 
-/// The gzip format also serves BGZF its header and trailer helpers; only its public API is re-exported.
+// The gzip format also serves BGZF its header and trailer helpers; only its public API is re-exported.
 pub const gzip = struct {
     pub const DecompressOptions = gzip_format.DecompressOptions;
     pub const DecompressError = gzip_format.DecompressError;
@@ -19,7 +18,6 @@ pub const bgzf = @import("format/bgzf.zig");
 pub const tar = @import("archive/tar.zig");
 pub const Format = enum { gzip, zlib, deflate };
 
-/// The compression presets, the same for every format: `fast`, `even` (the default), and `dense`.
 pub const Preset = @import("engine/encode.zig").Preset;
 
 pub fn Decompressor(comptime format: Format) type {

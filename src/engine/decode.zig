@@ -1,5 +1,4 @@
-//! DEFLATE decoding (RFC 1951): the bit reader, Huffman decode tables, and a session that decodes into a bounded
-//! buffer of history plus batch and pauses when the buffer is full.
+//! DEFLATE decoding (RFC 1951) into a bounded buffer that pauses when full.
 
 const std = @import("std");
 const copy = @import("../kernel/copy.zig");
@@ -18,7 +17,6 @@ const FIXED_DIST_LENS = codes.FIXED_DIST_LENS;
 const bitReverse = codes.bitReverse;
 const buildCodes = codes.buildCodes;
 
-/// What decoding a DEFLATE stream can fail with; `ReadFailed` comes from the input reader.
 pub const DecodeError = error{ Truncated, BadHuffman, BadSymbol, BadDistance, BadStored, BadBlock, OutputLimitExceeded, ReadFailed };
 
 const Kind = enum(u4) { invalid = 0, lit, eob, len, dist, long };
@@ -195,14 +193,13 @@ comptime {
     std.debug.assert(@sizeOf(Decoder) == 196608);
 }
 
-/// Why `Session.run` returned: the stream's final block ended, or the buffer has no room left.
 pub const Stop = enum { end, full };
 
 const Block = enum { header, stored, fixed, dynamic, end };
 
-/// Decodes DEFLATE streams into `Decoder.buffer`, pausing when the buffer is full. `buffer[0..out_pos]` is
-/// decoded output; the owner reads it, then `rebase` keeps what is unread plus 32 KiB of history and frees
-/// the rest. Bits, block state, and a match cut short by a full buffer carry over to the next `run`.
+// Decodes DEFLATE streams into `Decoder.buffer`, pausing when the buffer is full. `buffer[0..out_pos]` is
+// decoded output; the owner reads it, then `rebase` keeps what is unread plus 32 KiB of history and frees
+// the rest. Bits, block state, and a match cut short by a full buffer carry over to the next `run`.
 pub fn Session(comptime Check: type) type {
     return struct {
         const Self = @This();
@@ -225,7 +222,6 @@ pub fn Session(comptime Check: type) type {
         match_distance: usize = 0,
         match_left: usize = 0,
 
-        /// Starts a stream at the current position; `run` then decodes it.
         pub fn begin(self: *Self, br: *BitReader, check: *Check) void {
             self.br = br;
             self.check = check;
@@ -237,7 +233,7 @@ pub fn Session(comptime Check: type) type {
             self.limit();
         }
 
-        /// Decodes until the stream ends or the buffer is full; new bytes are in the check when it returns.
+        // New bytes are in the check when it returns.
         pub fn run(self: *Self) DecodeError!Stop {
             const stop = try self.decode();
             self.catchup();
@@ -246,8 +242,8 @@ pub fn Session(comptime Check: type) type {
             return stop;
         }
 
-        /// Frees room: keeps `buffer[keep_from..out_pos]` and at least 32 KiB of history before `out_pos`,
-        /// moved to the front. Returns how far bytes moved, which the owner subtracts from its offsets.
+        // Keeps `buffer[keep_from..out_pos]` and at least 32 KiB of history before `out_pos`, moved to the front,
+        // and returns how far bytes moved, which the owner subtracts from its offsets.
         pub fn rebase(self: *Self, keep_from: usize) usize {
             const from = @min(keep_from, self.out_pos -| WINDOW);
             if (from != 0) {
@@ -430,10 +426,10 @@ fn fillFirst(table: []Entry, width: u4, lens: []const u4, kind_of: *const fn (us
     }
 }
 
-/// Builds a root table of `1 << width` entries plus spill subtables for longer codes, in the order and with
-/// the method of libdeflate: symbols sorted by code length, each code written once at its bit-reversed
-/// position, and the root doubled by copying whenever the length grows. A complete code fills every entry,
-/// so nothing is cleared first. On error the root is all invalid.
+// A root table of `1 << width` entries plus spill subtables for longer codes, in the order and with the method
+// of libdeflate: symbols sorted by code length, each code written once at its bit-reversed position, and the root
+// doubled by copying whenever the length grows. A complete code fills every entry, so nothing is cleared first.
+// On error the root is all invalid.
 fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []const u4, comptime kind_of: fn (usize) Kind, comptime payload_of: fn (usize) u16, comptime predecoded: bool) !void {
     const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
     std.debug.assert(table.len == @as(usize, 1) << width);
@@ -651,8 +647,8 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
     if (output.len - ctx.out_pos < 289 or input.len - br.i < 8) return false;
     // The refill below shifts by the bit count, which must stay under 64 (a pause puts whole bytes back).
     std.debug.assert(br.nbits < 64);
-    // Moving pointers and stop pointers instead of bases, indexes, and lengths: two fewer live registers, so the
-    // table pointers stay in registers, and each bound is one compare.
+    // Input and output are walked by pointers checked against stop pointers: two fewer live registers keep the
+    // table pointers in registers, and each bound is one compare.
     var bits = br.bits;
     var count = br.nbits;
     var in: [*]const u8 = input.ptr + br.i;
@@ -986,7 +982,6 @@ const SumCheck = struct {
 };
 
 // Reads `size` bytes at a time from a paused session, rebasing after each read while bytes stay unread.
-
 fn pumpSession(session: *Session(SumCheck), size: usize, expected: []const u8) !void {
     var seek: usize = 0;
     var got: usize = 0;

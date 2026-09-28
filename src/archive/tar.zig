@@ -30,7 +30,7 @@ pub const Summary = struct { entries: u64, end_marker: bool };
 /// buffer. `Visitor` declares `pub fn entry(*Visitor, Entry) !Action`, `pub fn data(*Visitor, []const u8) !void`
 /// (the entry's bytes in order, when `entry` returned `.read`), and `pub fn entryEnd(*Visitor) !void`.
 /// A failed write is `WriteFailed`; `finish` then returns the cause. The archive ends at its first zero
-/// block, as in GNU tar; later bytes are ignored. No allocation occurs.
+/// block, as in GNU tar; later bytes are ignored.
 pub fn Reader(comptime Visitor: type) type {
     return struct {
         const Self = @This();
@@ -293,7 +293,6 @@ pub fn isHeader(block: *const [512]u8) bool {
     return true;
 }
 
-/// Every header gets `mtime`, so an archive of the same entries is the same bytes.
 pub const WriterOptions = struct { mtime: i64 = 0 };
 
 pub const WriteError = error{ NameTooLong, UnsupportedEntry, SourceTooShort };
@@ -301,13 +300,14 @@ pub const WriteError = error{ NameTooLong, UnsupportedEntry, SourceTooShort };
 /// The longest name or link target written, in bytes (Linux `PATH_MAX` less its NUL).
 pub const MAX_NAME = 4095;
 
-/// The tar stream is read from `reader`: `Compressor(format).compress(&writer.reader, ...)` makes a
-/// compressed archive in one call. `Source` declares `pub fn next(*Source) !?Entry` and
-/// `pub fn data(*Source) *std.Io.Reader`, the current file's bytes, of which exactly `Entry.size` are
-/// read; a source that ends sooner is `SourceTooShort`. Files, directories, symlinks, and hardlinks are
-/// written; `name` and `link_name` over `MAX_NAME` are `NameTooLong`. A name that does not fit ustar's
-/// fields gets a GNU long-name header, a size of 8 GiB or more a base-256 field. A failed read is
-/// `ReadFailed`; `finish` then returns the cause. No allocation occurs.
+/// The tar stream is read from `reader`: `reader.streamRemaining(&compressor.writer)`, then `compressor.finish()`,
+/// makes a compressed archive. `init(source, buffer, options)` takes the reader's buffer, of any size; every header
+/// gets `options.mtime`, so an archive of the same entries is the same bytes. `Source` declares
+/// `pub fn next(*Source) !?Entry` and `pub fn data(*Source) *std.Io.Reader`, the current file's bytes, of which exactly
+/// `Entry.size` are read; a source that ends sooner is `SourceTooShort`. Files, directories, symlinks, and hardlinks
+/// are written; `name` and `link_name` over `MAX_NAME` are `NameTooLong`. A name that does not fit ustar's fields gets
+/// a GNU long-name header, a size of 8 GiB or more a base-256 field. A failed read is `ReadFailed`; `finish` then
+/// returns the cause.
 pub fn Writer(comptime Source: type) type {
     return struct {
         const Self = @This();
@@ -326,7 +326,6 @@ pub fn Writer(comptime Source: type) type {
         header_len: usize = 0,
         header_at: usize = 0,
 
-        /// `buffer` is the reader's buffer, of any size.
         pub fn init(source: *Source, buffer: []u8, options: WriterOptions) Self {
             return .{
                 .reader = .{ .vtable = &.{ .stream = stream }, .buffer = buffer, .seek = 0, .end = 0 },
@@ -515,6 +514,7 @@ fn formatHeader(h: *[BLOCK]u8, f: HeaderFields) void {
     putNumber(h[337..345], 0);
     @memcpy(h[345..][0..f.prefix.len], f.prefix);
     @memset(h[148..156], ' ');
+    // A block's byte sum is at most 512 * 255 = 130560, six octal digits, so the seven bytes always fit.
     _ = std.fmt.bufPrint(h[148..155], "{o:0>6}\x00", .{byteSum(h)}) catch unreachable;
 }
 
@@ -580,8 +580,8 @@ fn pad(size: u64) u64 {
     return (BLOCK - size % BLOCK) % BLOCK;
 }
 
-// Zig 0.16 does not vectorize loops; as a scalar loop, this pass over every header block was 5% of the
-// instructions of listing the Linux tarball through the gzip decoder (`tmp/tar/20-reader/RECORD.md`).
+// Vectors by hand: Zig 0.16 does not vectorize the scalar loop, and this pass runs over every header block, where
+// the scalar loop costs about 5% of the instructions of listing the Linux tarball through the gzip decoder.
 fn byteSum(block: *const [BLOCK]u8) u32 {
     const Lanes = @Vector(64, u16);
     var lanes: Lanes = @splat(0);

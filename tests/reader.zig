@@ -1,5 +1,4 @@
-//! Checks the decompressors as `std.Io.Reader`s under the ways callers read: borrowed chunks, small copies,
-//! lines, skips, limited streams, large peeks, faults after good bytes, reuse, and the input left behind.
+//! Public contracts of the decompressors as `std.Io.Reader`s, under every way a caller reads.
 
 const std = @import("std");
 const zipir = @import("zipir");
@@ -34,7 +33,6 @@ fn compress(allocator: std.mem.Allocator, comptime format: Format, plain: []cons
 
 const Pattern = union(enum) { borrow, copy: usize, lines, skip: usize, limited: usize };
 
-// Reads the whole stream with one pattern and compares every byte.
 fn readAll(reader: *std.Io.Reader, pattern: Pattern, expected: []const u8) !void {
     var got: usize = 0;
     switch (pattern) {

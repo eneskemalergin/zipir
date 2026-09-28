@@ -1,5 +1,4 @@
-//! Public tar contracts: reading (entry kinds, names, pax and GNU extensions, end marker, failures) and
-//! writing (header formats, round trips through the reader and a compressor, failures).
+//! Public tar reading and writing contracts.
 
 const std = @import("std");
 const support = @import("support.zig");
@@ -91,6 +90,7 @@ fn header(block: *[512]u8, name: []const u8, typeflag: u8, size: []const u8) voi
     @memset(block[148..156], ' ');
     var sum: u32 = 0;
     for (block) |b| sum += b;
+    // At most 512 * 255 = 130560, six octal digits, so the seven bytes always fit.
     _ = std.fmt.bufPrint(block[148..155], "{o:0>6}\x00", .{sum}) catch unreachable;
 }
 

@@ -111,7 +111,7 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
             has_preset = true;
             continue;
         }
-        // --level 1|5|9 is the hidden alias of --fast, --even, and --dense (0.1.2's numeric levels).
+        // --level 1|5|9 is the hidden alias of --fast, --even, and --dense.
         if (!literal and std.mem.eql(u8, arg, "--level")) {
             if (!compress or has_preset or i + 1 == args.len) return usage(io);
             i += 1;
@@ -182,7 +182,6 @@ fn decompressAll(decoder: anytype, input: *std.Io.Reader, out: *std.Io.Writer, o
     };
 }
 
-// Writes all of `input` into a compressor's writer.
 fn compressAll(input: *std.Io.Reader, writer: *std.Io.Writer) !void {
     _ = try input.streamRemaining(writer);
 }
@@ -478,7 +477,6 @@ fn civil(seconds: i64) Civil {
     };
 }
 
-/// The preset a `--fast`, `--even`, or `--dense` flag names, or null.
 fn presetFlag(arg: []const u8) ?zipir.Preset {
     if (!std.mem.startsWith(u8, arg, "--")) return null;
     return std.meta.stringToEnum(zipir.Preset, arg[2..]);
@@ -628,8 +626,8 @@ const Tree = struct {
                 const file = try cwd.openFile(self.io, path, .{});
                 self.file = file;
                 self.file_reader = file.readerStreaming(self.io, &self.read_buffer);
-                // std's copy_file_range path costs about 49 us per file on btrfs; below 1 MiB buffered reads
-                // are faster (tar lab, 2026-09-24).
+                // std's copy_file_range path costs about 49 us per file on btrfs, so below 1 MiB buffered reads
+                // are faster.
                 if (stat.size < 1 << 20) self.file_reader.mode = .streaming_simple;
                 return .{ .name = path, .link_name = "", .kind = .file, .size = stat.size, .mode = mode, .mtime = 0 };
             },

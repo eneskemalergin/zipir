@@ -35,7 +35,7 @@ inline fn useAvx2() bool {
 }
 
 inline fn avx2Update(start: u32, bytes: []const u8) u32 {
-    // Measured 2026-09-24: inlining the AVX2 kernel into zlib decode cost 1.3% to 1.7% on sequencing medium.
+    // Not inlined: inlining the AVX2 kernel into zlib decode costs 1.3% to 1.7% on the sequencing medium files.
     if (comptime options.adler32_x86_avx2 == .direct) return @call(.never_inline, avx2.update, .{ start, bytes });
     return zipir_adler32_x86_avx2_update(start, bytes.ptr, bytes.len);
 }

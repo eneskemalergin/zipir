@@ -1,6 +1,4 @@
-//! `Compressor(Framing)`: the `std.Io.Writer` shared by the gzip, zlib, and raw DEFLATE compressors. Plain bytes are
-//! written straight into the encoder's window buffer, and a window is coded once more than a window is buffered.
-//! (BGZF's compressor, which cuts its input into BGZF blocks, is in `format/bgzf.zig`.)
+//! The `std.Io.Writer` the gzip, zlib, and raw DEFLATE compressors are.
 
 const std = @import("std");
 const encode = @import("../engine/encode.zig");
@@ -8,14 +6,13 @@ const codes = @import("../engine/codes.zig");
 
 const WINDOW = codes.WINDOW;
 
-/// The compress options of gzip, zlib, and raw DEFLATE (each format's `CompressOptions`); BGZF extends them.
 pub const Options = struct {
     preset: encode.Preset = .even,
 };
 
-/// `Framing` is a format's framing around one DEFLATE stream. It declares `Check` (with `init() Check`, `update`,
-/// `final`), `header(*std.Io.Writer, encode.Preset) std.Io.Writer.Error!void`, and
-/// `trailer(*std.Io.Writer, *Check, size: u64) std.Io.Writer.Error!void`.
+// `Framing` is a format's framing around one DEFLATE stream. It declares `Check` (with `init() Check`, `update`,
+// `final`), `header(*std.Io.Writer, encode.Preset) std.Io.Writer.Error!void`, and
+// `trailer(*std.Io.Writer, *Check, size: u64) std.Io.Writer.Error!void`.
 pub fn Compressor(comptime Framing: type) type {
     return struct {
         const Self = @This();
@@ -23,10 +20,6 @@ pub fn Compressor(comptime Framing: type) type {
         pub const CompressOptions = Options;
         pub const CompressError = std.Io.Writer.Error;
 
-        /// Plain bytes go here, in any sizes; the output depends only on the bytes, never on the write sizes. A
-        /// contiguous request (`writableSlice`, `writeInt`, `print`) of up to 32 KiB always fits. `flush` is a full
-        /// flush: what was written ends in a non-final DEFLATE block and an empty stored block, and the history
-        /// restarts, so everything so far can be decoded; it does not flush the output writer.
         writer: std.Io.Writer,
         encoder: encode.Encoder,
         check: Check,
@@ -40,8 +33,6 @@ pub fn Compressor(comptime Framing: type) type {
             .rebase = rebase,
         };
 
-        /// Starts a stream into `output` and writes its header; resets everything, including after errors.
-        /// The workspace must stay at this address while `writer` is used: the writer's buffer is inside it.
         pub fn init(self: *Self, output: *std.Io.Writer, options: CompressOptions) CompressError!void {
             self.phase = .closed;
             self.writer = .failing;
@@ -52,8 +43,6 @@ pub fn Compressor(comptime Framing: type) type {
             self.phase = .open;
         }
 
-        /// Codes what is buffered as the final DEFLATE block and writes the trailer; the result is the number of
-        /// plain bytes. The writer then fails until `init`. The caller flushes the output writer.
         pub fn finish(self: *Self) CompressError!u64 {
             if (self.phase != .open) return error.WriteFailed;
             errdefer self.close();
@@ -75,7 +64,6 @@ pub fn Compressor(comptime Framing: type) type {
             return @alignCast(@fieldParentPtr("writer", w));
         }
 
-        // Codes the first window of the buffer; the bytes after it begin the next window.
         fn codeWindow(self: *Self) CompressError!void {
             const w = &self.writer;
             std.debug.assert(w.end > WINDOW);

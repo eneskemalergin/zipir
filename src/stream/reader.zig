@@ -1,37 +1,31 @@
-//! `Decompressor(Framing)`: the `std.Io.Reader` shared by every format's decompressor. Decoded bytes are read from
-//! the workspace's own buffer, which keeps a window of history and decodes up to 128 KiB ahead.
+//! The `std.Io.Reader` every format's decompressor is: decoded bytes are read from the workspace's own buffer.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
 const codes = @import("../engine/codes.zig");
 
-/// What to do with bytes after the last stream a format accepts.
 pub const TrailingData = enum { reject, leave };
 
-/// The decompress options of zlib and raw DEFLATE (each format's `DecompressOptions`); gzip and BGZF extend them.
 pub const Options = struct {
-    /// More decoded output than this is `OutputLimitExceeded`.
     max_output_bytes: u64 = std.math.maxInt(u64),
     trailing_data: TrailingData = .reject,
 };
 
-/// Errors of the reader itself, beside the decoder's and the format's: an input reader buffer below the format's
-/// minimum, and a `peek` or `fill` larger than the buffer can hold after the history.
 pub const Error = error{ InputBufferTooSmall, PeekTooLarge };
 
-/// `Framing` is a format's framing around DEFLATE streams. It declares:
-/// - `Check` (with `init() Check`, `update`, `final`), `DecompressOptions` (with `max_output_bytes`),
-///   `DecompressError` (containing `decode.DecodeError` and `Error`), and `min_input_buffer`;
-/// - `init(DecompressOptions) Framing`;
-/// - `header(*Framing, *decode.BitReader) DecompressError!bool`: reads what precedes the next stream; true when a
-///   stream follows, false when the input has ended as the format allows;
-/// - `trailer(*Framing, *decode.BitReader, *Check, size: u64) DecompressError!void`: reads and checks what follows
-///   a stream of `size` decoded bytes.
-///
-/// A framing with `max_stream_bytes` has small streams (BGZF blocks): each decodes to at most that many bytes, is
-/// decoded whole, and becomes readable only after `trailer` accepts it. Such a framing may declare
-/// `streamError(*const Framing, DecompressError, start: u64) DecompressError` to rename an error of the stream that
-/// began at output position `start`, and a `seeking: bool` field to get `seek` and `seekUncompressed`.
+// `Framing` is a format's framing around DEFLATE streams. It declares:
+// - `Check` (with `init() Check`, `update`, `final`), `DecompressOptions` (with `max_output_bytes`),
+//   `DecompressError` (containing `decode.DecodeError` and `Error`), and `min_input_buffer`;
+// - `init(DecompressOptions) Framing`;
+// - `header(*Framing, *decode.BitReader) DecompressError!bool`: reads what precedes the next stream; true when a
+//   stream follows, false when the input has ended as the format allows;
+// - `trailer(*Framing, *decode.BitReader, *Check, size: u64) DecompressError!void`: reads and checks what follows
+//   a stream of `size` decoded bytes.
+//
+// A framing with `max_stream_bytes` has small streams (BGZF blocks): each decodes to at most that many bytes, is
+// decoded whole, and becomes readable only after `trailer` accepts it. Such a framing may declare
+// `streamError(*const Framing, DecompressError, start: u64) DecompressError` to rename an error of the stream that
+// began at output position `start`, and a `seeking: bool` field to get `seek` and `seekUncompressed`.
 pub fn Decompressor(comptime Framing: type) type {
     return struct {
         const Self = @This();
@@ -42,11 +36,8 @@ pub fn Decompressor(comptime Framing: type) type {
         pub const DecompressOptions = Framing.DecompressOptions;
         pub const DecompressError = Framing.DecompressError;
 
-        /// The decoded bytes. `ReadFailed` means `err` holds the reason.
         reader: std.Io.Reader,
-        /// Set when `reader` fails: a decode or format error, or `ReadFailed` from the input reader.
         err: ?DecompressError,
-        /// The format's state, such as what it has read so far.
         framing: Framing,
         decoder: decode.Decoder,
         session: decode.Session(Check),
@@ -65,9 +56,6 @@ pub fn Decompressor(comptime Framing: type) type {
             .rebase = rebase,
         };
 
-        /// Starts decompressing `input` from its current position; resets everything, including after errors.
-        /// The workspace must stay at this address while `reader` is used: the reader's buffer is inside it.
-        /// After the end, `input` stands just after the compressed data; after an error its position is unspecified.
         pub fn init(self: *Self, input: *std.Io.Reader, options: DecompressOptions) void {
             self.reader = .{ .vtable = &vtable, .buffer = &self.decoder.buffer, .seek = 0, .end = 0 };
             self.err = null;
@@ -79,8 +67,8 @@ pub fn Decompressor(comptime Framing: type) type {
             self.phase = .header;
         }
 
-        /// Moves to a BGZF virtual offset: `offset.coffset` must be the start of a BGZF block in `source`, which
-        /// must be the file reader `init` was given, and `offset.uoffset` bytes of that block are skipped. An offset
+        /// Moves to a BGZF virtual offset: `offset.coffset` must be the start of a BGZF block in `source`, the file
+        /// reader `init` was given, and `offset.uoffset` bytes of that block are skipped. An offset
         /// that is not a block start, or a skip past the block's end, is `BadVirtualOffset`.
         pub const seek = if (@hasField(Framing, "seeking")) seekVirtual else @compileError("only BGZF seeks");
 
@@ -175,6 +163,7 @@ pub fn Decompressor(comptime Framing: type) type {
                         r.end = self.session.out_pos;
                         self.phase = .header;
                     },
+                    // Unreached: `fill` returns early on `done` and `failed`, and the loop breaks where it sets `done`.
                     .done, .failed => unreachable,
                 }
             }
@@ -223,7 +212,6 @@ pub fn Decompressor(comptime Framing: type) type {
             return n;
         }
 
-        // Keeps the unread bytes and a window of history before them.
         fn rebase(r: *std.Io.Reader, capacity: usize) std.Io.Reader.RebaseError!void {
             const self = parent(r);
             r.seek -= self.session.rebase(r.seek);

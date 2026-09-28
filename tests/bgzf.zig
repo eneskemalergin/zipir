@@ -84,7 +84,7 @@ fn decode(reader: *bgzf.Decompressor, bytes: []const u8, chunk: usize, options: 
     return .{ .bytes = n, .blocks = reader.framing.blocks, .eof_marker = reader.framing.eof_marker };
 }
 
-// Up to `out.len` bytes from a virtual offset, as the removed `readAt` gave; `source` is the reader's input.
+// Up to `out.len` bytes from a virtual offset; `source` is the reader's input.
 fn readAt(reader: *bgzf.Decompressor, source: *std.Io.File.Reader, offset: bgzf.VirtualOffset, out: []u8) !usize {
     try reader.seek(source, offset);
     return reader.reader.readSliceShort(out) catch reader.err.?;

@@ -1,5 +1,4 @@
-//! DEFLATE encoding (RFC 1951): the bit writer, Huffman encode trees, the presets' parsers, and the encoder,
-//! which codes its input a window at a time.
+//! DEFLATE encoding (RFC 1951), a window at a time.
 
 const std = @import("std");
 const copy = @import("../kernel/copy.zig");
@@ -190,7 +189,7 @@ const EncodeTree = struct {
 
     // Ascending keys (frequency above the symbol). Many keys, as in a literal tree, are sorted by frequency with
     // three stable 6-bit counting passes: keys arrive in symbol order and are unique, so the order is exactly the
-    // comparison sort's, without its mispredicted compares (41% of tree building on MS, 2026-09-28).
+    // comparison sort's, without its mispredicted compares.
     fn sortKeys(keys: []u64) void {
         var top: u64 = 0;
         for (keys) |k| top |= k;
@@ -314,7 +313,8 @@ const ICF_NONE: u32 = 30;
 const ICF_LITERAL: u32 = 31;
 const ICF_CAP = WINDOW + 4;
 
-// fast hashes into the first FAST_HASH heads: 2^16 cost it 2% to 5% for 0.1% to 0.5% more ratio.
+// fast hashes into the first FAST_HASH heads only: all 2^16 cost fast 2% to 5% of its speed for 0.1% to 0.5% more
+// ratio.
 const FAST_HASH = 32768;
 
 const LOG2_FRACTION: [256]f64 = blk: {
@@ -324,7 +324,7 @@ const LOG2_FRACTION: [256]f64 = blk: {
     break :blk t;
 };
 
-/// log2 of a count to about 0.006: the exponent plus eight fraction bits (for estimates only).
+// log2 of a count to about 0.006: the exponent plus eight fraction bits (for estimates only).
 fn log2Table(x: u32) f64 {
     if (x == 0) return 0;
     const e = std.math.log2_int(u32, x);
@@ -362,14 +362,13 @@ pub const Encoder = struct {
     first_dist: [30]u32 = undefined,
     first_tokens: usize = 0,
 
-    /// One BGZF block (at most 65280 bytes): the same presets with settings for a cold 64 KiB block
-    /// (PHASE2.md): fast keeps two candidates per hash bucket and even searches deeper.
+    // One BGZF block (at most 65280 bytes): the same presets with settings for a cold 64 KiB block: fast keeps two
+    // candidates per hash bucket and even searches deeper.
     pub fn encodeBlock(self: *Encoder, comptime Check: type, input: []const u8, writer: *std.Io.Writer, check: *Check, preset: Preset) EncodeError!void {
         std.debug.assert(input.len <= 2 * WINDOW);
         return self.encodeSlice(Check, input, writer, check, preset, true);
     }
 
-    /// A whole stream of `input`, a window at a time.
     pub fn encodeSlice(self: *Encoder, comptime Check: type, input: []const u8, writer: *std.Io.Writer, check: *Check, preset: Preset, comptime block: bool) EncodeError!void {
         self.begin(writer, preset, block);
         var at: usize = 0;
@@ -384,7 +383,7 @@ pub const Encoder = struct {
         try self.finish();
     }
 
-    /// Starts a stream written to `writer`. `block` selects the BGZF block settings.
+    // `block` selects the BGZF block settings.
     pub fn begin(self: *Encoder, writer: *std.Io.Writer, preset: Preset, comptime block: bool) void {
         // `previous` is never cleared: with `head` clear, every position a chain reaches was inserted in this
         // stream, which wrote its `previous` slot; a slot reused by a later position is behind `lower` and
@@ -405,15 +404,15 @@ pub const Encoder = struct {
         self.pending = false;
     }
 
-    /// Where the next window's bytes go; `windowSpace()[0..carried]` already holds the bytes carried from the
-    /// previous window.
+    // Where the next window's bytes go; `windowSpace()[0..carried]` already holds the bytes carried from the
+    // previous window.
     pub fn windowSpace(self: *Encoder) []u8 {
         return self.window[self.history..][0 .. 2 * WINDOW];
     }
 
-    /// Codes `windowSpace()[0..n]` as the next window: `n` is 32 KiB except in the last. The `carried` bytes after it
-    /// (at most 32 KiB) begin the next window. `last` ends the run of windows (a pending pair is coded); `final`
-    /// marks its last block as the stream's last (false for a flush).
+    // Codes `windowSpace()[0..n]` as the next window: `n` is 32 KiB except in the last. The `carried` bytes after it
+    // (at most 32 KiB) begin the next window. `last` ends the run of windows (a pending pair is coded); `final`
+    // marks its last block as the stream's last (false for a flush).
     pub fn codeWindow(self: *Encoder, comptime Check: type, check: *Check, n: usize, carried: usize, last: bool, final: bool, comptime block: bool) EncodeError!void {
         std.debug.assert(n <= WINDOW and (last or n == WINDOW) and carried <= WINDOW and (last or !final));
         var bits: BitWriter = .{ .writer = self.out, .value = self.bit_value, .count = self.bit_count };
@@ -491,7 +490,7 @@ pub const Encoder = struct {
         self.history = WINDOW;
     }
 
-    /// After the last window: pads the final block to a byte boundary and writes what is left.
+    // After the last window: pads the final block to a byte boundary and writes what is left.
     pub fn finish(self: *Encoder) EncodeError!void {
         var bits: BitWriter = .{ .writer = self.out, .value = self.bit_value, .count = self.bit_count };
         try bits.alignByte();
@@ -499,8 +498,8 @@ pub const Encoder = struct {
         self.bit_count = 0;
     }
 
-    /// After a run ended by a non-final `codeWindow`: an empty stored block brings the output to a byte boundary, so
-    /// every byte so far can be decoded, and the next window starts a new history (a full flush).
+    // After a run ended by a non-final `codeWindow`: an empty stored block brings the output to a byte boundary, so
+    // every byte so far can be decoded, and the next window starts a new history (a full flush).
     pub fn fullFlush(self: *Encoder) EncodeError!void {
         var bits: BitWriter = .{ .writer = self.out, .value = self.bit_value, .count = self.bit_count };
         try bits.put(0, 3);
@@ -517,11 +516,11 @@ pub const Encoder = struct {
         return if (preset == .fast) self.head[0..FAST_HASH] else self.head[0..];
     }
 
-    /// The chain hash of the `key` bytes at `p` (4 for dense, 5 for even; zero-padded at the tail).
+    // The chain hash of the `key` bytes at `p` (4 for dense, 5 for even; zero-padded at the tail).
     fn hash(self: *const Encoder, p: usize, end: usize, comptime key: u4) usize {
         if (key == 5) {
             // Five-byte keys: DNA has 256 four-byte keys but 1024 five-byte ones, so even's short chain walk
-            // reaches four times further back (and raised its ratio 0.3% at equal speed).
+            // reaches four times further back, for 0.3% more ratio at equal speed.
             const v = if (p + 8 <= end) std.mem.readInt(u64, self.window[p..][0..8], .little) & 0xff_ffff_ffff else blk: {
                 var bytes: [8]u8 = @splat(0);
                 const n = @min(5, end - p);
@@ -576,7 +575,7 @@ pub const Encoder = struct {
         return best;
     }
 
-    /// Order-0 entropy in bits per byte of `n` bytes with byte counts `counts`.
+    // Order-0 entropy in bits per byte of `n` bytes with byte counts `counts`.
     fn entropyBits(counts: *const [256]u32, n: usize) f64 {
         if (n == 0) return 0;
         const total: f64 = @floatFromInt(n);
@@ -605,12 +604,12 @@ pub const Encoder = struct {
         return false;
     }
 
-    /// fast, after igzip's level 1 (tmp/simd/IGZIP.md): two positions per step, one table candidate each,
-    /// read without validity checks (every entry gives a distance in 1..32768; the bytes decide), length
-    /// from one 8-byte XOR, minimum match 4, table inserts only at the two positions after a match start.
-    /// From 32 missed pairs in a row, each further miss also passes `misses / 16` literals (rounded down to
-    /// even) unsearched.
-    /// Tokens are self-contained (`ICF_CAP`); a new block starts when `fresh`.
+    // fast, after igzip's level 1: two positions per step, one table candidate each,
+    // read without validity checks (every entry gives a distance in 1..32768; the bytes decide), length
+    // from one 8-byte XOR, minimum match 4, table inserts only at the two positions after a match start.
+    // From 32 missed pairs in a row, each further miss also passes `misses / 16` literals (rounded down to
+    // even) unsearched.
+    // Tokens are self-contained (`ICF_CAP`); a new block starts when `fresh`.
     fn parseFast(self: *Encoder, start: usize, end: usize, fresh: bool) void {
         if (fresh) {
             @memset(&self.lit_freq, 0);
@@ -680,10 +679,10 @@ pub const Encoder = struct {
         self.icf_count = n;
     }
 
-    /// fast on a BGZF block (PHASE2.md), after libdeflate's level 1: two candidates per hash bucket (`head` the
-    /// newest, `previous` the one before), both checked with an 8-byte XOR, the longer taken (both measured when
-    /// both match eight bytes); one position per step; the first 12 positions of each match inserted. On a
-    /// cold 64 KiB block this reaches libdeflate 1's ratio where `parseFast` is 6% short.
+    // fast on a BGZF block, after libdeflate's level 1: two candidates per hash bucket (`head` the
+    // newest, `previous` the one before), both checked with an 8-byte XOR, the longer taken (both measured when
+    // both match eight bytes); one position per step; the first 12 positions of each match inserted. On a
+    // cold 64 KiB block this reaches libdeflate 1's ratio where `parseFast` is 6% short.
     fn parseFastBlock(self: *Encoder, start: usize, end: usize, fresh: bool) void {
         if (fresh) {
             @memset(&self.lit_freq, 0);
@@ -785,7 +784,6 @@ pub const Encoder = struct {
         self.icf_count = n;
     }
 
-    /// `count` (even) literals from `p` as pair tokens.
     inline fn literalPairs(self: *Encoder, n: usize, p: usize, count: usize) usize {
         var k: usize = 0;
         while (k < count) : (k += 2) {
@@ -798,7 +796,7 @@ pub const Encoder = struct {
         return n + count / 2;
     }
 
-    /// even and dense: chain search with lazy evaluation at `p + 1` (`parseFast` handles fast).
+    // even and dense: chain search with lazy evaluation at `p + 1` (`parseFast` handles fast).
     fn parse(self: *Encoder, start: usize, end: usize, preset: Preset, skip_search: bool, fresh: bool, comptime key: u4, comptime block: bool) void {
         if (fresh) {
             @memset(&self.lit_freq, 0);
@@ -807,9 +805,9 @@ pub const Encoder = struct {
             self.icf_count = 0;
         }
         std.debug.assert(preset != .fast);
-        // dense (2026-09-27): a deeper walk, no early stop below the longest match, lazy evaluation up to 32 bytes
-        // with 64 candidates, and lazy2 (libdeflate's levels 8 and 9); ratio 3.595 to 3.622 at 37 MB/s.
-        // even on a BGZF block (PHASE2.md): budget 32, nice 258, lazy evaluation below 32 with 16 candidates.
+        // dense: a deeper walk, no early stop below the longest match, lazy evaluation up to 32 bytes with 64
+        // candidates, and lazy2 (libdeflate's levels 8 and 9).
+        // even on a BGZF block: budget 32, nice 258, lazy evaluation below 32 with 16 candidates.
         const budget: usize = if (preset == .dense) 160 else if (block) 32 else 12;
         const nice: usize = if (preset == .dense) 258 else if (block) 258 else 96;
         const lazy_below: usize = if (preset == .dense) 32 else if (block) 32 else 16;
@@ -940,7 +938,7 @@ pub const Encoder = struct {
         return n;
     }
 
-    /// A block's trees and its coded size, dynamic and fixed, in bits (header included, stored excluded).
+    // A block's trees and its coded size, dynamic and fixed, in bits (header included, stored excluded).
     const Plan = struct {
         lit: EncodeTree = .{},
         dist: EncodeTree = .{},
@@ -985,9 +983,9 @@ pub const Encoder = struct {
         return self.emitPlanned(bits, &plan, raw, self.icf[0..self.icf_count], last);
     }
 
-    /// A pair of windows (window[0..WINDOW] and window[WINDOW..end], tokens split at `first_tokens`) as one block or
-    /// two, whichever is smaller counting stored blocks: mixed data gains from separate trees, uniform data from
-    /// one header. Returns whether the last block written was stored.
+    // A pair of windows (window[0..WINDOW] and window[WINDOW..end], tokens split at `first_tokens`) as one block or
+    // two, whichever is smaller counting stored blocks: mixed data gains from separate trees, uniform data from
+    // one header. Returns whether the last block written was stored.
     fn emitPair(self: *const Encoder, bits: *BitWriter, end: usize, last: bool, first_lit: *const [286]u32, first_dist: *const [30]u32, first_tokens: usize) EncodeError!bool {
         var second_lit: [286]u32 = undefined;
         for (&second_lit, self.lit_freq, first_lit) |*d, all, first| d.* = all - first;
@@ -995,8 +993,8 @@ pub const Encoder = struct {
         var second_dist: [30]u32 = undefined;
         for (&second_dist, self.dist_freq, first_dist) |*d, all, first| d.* = all - first;
         const estimate = struct {
-            /// Coded bits under ideal codes plus extra bits, and a header allowance per used symbol (a stand-in
-            /// for building the trees: about 3% of the time on BGZF blocks); capped at the stored size.
+            // Coded bits under ideal codes plus extra bits, and a header allowance per used symbol (a stand-in
+            // for building the trees: about 3% of the time on BGZF blocks); capped at the stored size.
             fn of(lit_freq: *const [286]u32, dist_freq: *const [30]u32, len: usize) f64 {
                 var total: f64 = 0;
                 for (lit_freq) |f| total += @floatFromInt(f);
@@ -1031,8 +1029,8 @@ pub const Encoder = struct {
         return self.emitPlanned(bits, &second, self.window[WINDOW..end], self.icf[first_tokens..self.icf_count], last);
     }
 
-    /// Writes one block of `raw` as planned (or stored when smaller) from its `tokens`. Returns whether the block was
-    /// stored.
+    // Writes one block of `raw` as planned (or stored when smaller) from its `tokens`. Returns whether the block was
+    // stored.
     fn emitPlanned(self: *const Encoder, bits: *BitWriter, plan: *const Plan, raw: []const u8, tokens: []const u32, last: bool) EncodeError!bool {
         _ = self;
         const stored = 3 + ((8 - ((@as(usize, bits.count) + 3) & 7)) & 7) + 32 + raw.len * 8;
@@ -1151,7 +1149,7 @@ pub const Encoder = struct {
 
     const IcfCode = struct { bits: u64, len: u32 };
 
-    /// One token's bits: at most 48 (a 20-bit length code and extra, a 28-bit distance code and extra).
+    // One token's bits: at most 48 (a 20-bit length code and extra, a 28-bit distance code and extra).
     inline fn icfCode(t: u32, first: *const [513]u64, second: *const [ICF_LITERAL + 256]u64) IcfCode {
         const a = first[t & 0x3ff];
         const b = second[(t >> 10) & 0x1ff];

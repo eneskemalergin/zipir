@@ -1,5 +1,4 @@
-//! Checks the compressors as `std.Io.Writer`s: output that depends only on the bytes written, never on the
-//! write sizes; contiguous requests; flush; the end of a stream; and failure.
+//! Public contracts of the compressors as `std.Io.Writer`s.
 
 const std = @import("std");
 const zipir = @import("zipir");
@@ -22,7 +21,6 @@ fn makePlain(allocator: std.mem.Allocator, len: usize) ![]u8 {
 
 const Pattern = union(enum) { sizes: usize, random, slices: usize, ints };
 
-// Writes `plain` through the compressor with one pattern and returns the whole output.
 fn write(allocator: std.mem.Allocator, encoder: anytype, plain: []const u8, preset: zipir.Preset, pattern: Pattern) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();

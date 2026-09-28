@@ -6,7 +6,7 @@ const Io = std.Io;
 const adapter = @import("adapter");
 const zipir = @import("zipir");
 
-// BGZF is not a zipir.Format: it has its own Writer and Reader.
+// BGZF is not a zipir.Format: it has its own `Compressor` and `Decompressor`.
 const BGZF = std.mem.eql(u8, build_options.format, "bgzf");
 const FORMAT: zipir.Format = blk: {
     if (std.mem.eql(u8, build_options.format, "gzip") or BGZF) break :blk .gzip;

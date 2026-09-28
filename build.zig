@@ -5,7 +5,7 @@ const std = @import("std");
 const KernelBackend = enum { dispatch, portable };
 const Mode = enum { direct, object, absent };
 
-// Every CPU-specific kernel, wired only here (plan/design/dispatch.md).
+// Every CPU-specific kernel, wired only here.
 const BACKENDS = [_]struct { name: []const u8, features: []const std.Target.x86.Feature }{
     .{ .name = "crc32_x86_pclmul", .features = &.{ .pclmul, .sse4_1 } },
     .{ .name = "adler32_x86_avx2", .features = &.{.avx2} },

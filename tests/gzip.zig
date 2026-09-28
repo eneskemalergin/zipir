@@ -401,7 +401,7 @@ test "[property] - [gzip compressor]: long-distance matches survive small writer
 }
 
 test "[property] - [gzip compressor]: robustness shapes round-trip at every preset" {
-    // The shapes of tmp/levels/inputs.py at test size: incompressible bytes (stored blocks, and the search turned
+    // The compressor's hard input shapes at test size: incompressible bytes (stored blocks, and the search turned
     // off), long runs and short periods (self-overlapping matches), four-letter near-repeats (long chains), and
     // random bytes followed by text (the search has to turn back on).
     const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));

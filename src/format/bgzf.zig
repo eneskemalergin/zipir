@@ -1,5 +1,4 @@
-//! BGZF (SAM specification 4.1): BGZF blocks, gzip members of at most 64 KiB whose `BC` extra subfield records
-//! their size, ended by an empty 28-byte block (the EOF marker); `.gzi` indexes map uncompressed offsets to blocks.
+//! BGZF (SAM specification 4.1): blocked gzip with seeking, block-level coding, and `.gzi` indexes.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
@@ -27,10 +26,8 @@ pub const ScanOptions = struct {
 };
 
 pub const DecompressOptions = struct {
-    /// More decoded output than this is `OutputLimitExceeded`.
     max_output_bytes: u64 = std.math.maxInt(u64),
     trailing_data: stream_reader.TrailingData = .reject,
-    /// Input that does not end with the EOF marker is `MissingEofMarker`; either way `framing.eof_marker` tells.
     require_eof_marker: bool = false,
 };
 
@@ -113,20 +110,21 @@ pub const Scanner = struct {
     }
 };
 
-/// Decodes BGZF blocks; a block's bytes become readable only after its size fields, CRC-32, and ISIZE are
-/// checked, and every block's decoded size is capped at 65536 whatever its ISIZE claims. `init(input, options)`
-/// starts it in place; `reader` gives the decoded bytes and `err` the reason for a `ReadFailed`;
-/// `framing.blocks` and `framing.eof_marker` tell what was read. Over a `std.Io.File.Reader`, `seek` moves
-/// to a virtual offset and `seekUncompressed` to an uncompressed one through `.gzi` entries. Input reader
-/// capacity must be at least 28 bytes, the EOF marker's length. A peek of up to 64 KiB always fits. No allocation
-/// occurs.
+/// Decodes BGZF blocks; a block's bytes become readable only after its size fields, CRC-32, and ISIZE are checked, and
+/// every block's decoded size is capped at 65536 whatever its ISIZE claims. `init(input, options)` starts it in place
+/// and resets it, also after errors; it assumes the workspace stays at that address while `reader` is used and requires
+/// an input reader capacity of at least 28 bytes, the EOF marker's length (`InputBufferTooSmall`). `reader` gives the
+/// decoded bytes, and a peek of up to 64 KiB always fits; on `ReadFailed`, `err` holds the reason. `framing.blocks` and
+/// `framing.eof_marker` tell what was read; with `options.require_eof_marker`, input that does not end with the EOF
+/// marker is `MissingEofMarker`. Over a `std.Io.File.Reader`, `seek` moves to a virtual offset and `seekUncompressed`
+/// to an uncompressed one through `.gzi` entries.
 pub const Decompressor = stream_reader.Decompressor(DecompressFraming);
 
-/// Reusable without initialization, including after errors. No allocation occurs during decode.
+/// Reusable without initialization, including after errors.
 pub const BlockDecoder = struct {
     decoder: decode.Decoder = .{},
 
-    /// `block` is one whole block; the result is its decoded length.
+    /// `block` is one whole block.
     pub fn decodeBlock(self: *BlockDecoder, block: []const u8, out: *[MAX_BLOCK]u8) DecompressError!usize {
         if (block.len < EOF_MARKER.len) return error.BadBlockSize;
         var reader = std.Io.Reader.fixed(block);
@@ -243,7 +241,7 @@ pub const BlockSplitter = struct {
     }
 };
 
-/// Reusable without initialization. No allocation occurs during compression.
+/// Reusable without initialization.
 pub const BlockEncoder = struct {
     encoder: encode.Encoder = .{},
 
@@ -259,6 +257,7 @@ pub const BlockEncoder = struct {
         var subfield = [6]u8{ 'B', 'C', 2, 0, 0, 0 };
         std.mem.writeInt(u16, subfield[4..6], @intCast(size - 1), .little);
         var header = std.Io.Writer.fixed(out[0..HEADER_LEN]);
+        // The header with its 6-byte `BC` subfield is exactly `HEADER_LEN` bytes, so the fixed writer cannot fail.
         gzip.writeHeader(&header, &subfield) catch unreachable;
         std.mem.writeInt(u32, out[size - 8 ..][0..4], check.final(), .little);
         std.mem.writeInt(u32, out[size - 4 ..][0..4], @intCast(input.len), .little);
@@ -280,12 +279,13 @@ pub const CompressError = error{ WriteFailed, IndexFull };
 
 pub const Totals = struct { uncompressed: u64, compressed: u64 };
 
-/// Writes BGZF: `init(output, options)` starts it in place, plain bytes go to `writer` in any sizes (block
-/// boundaries depend only on the bytes), `flush` ends the open block so the next byte starts one (a record
-/// boundary; the output writer is not flushed), and `finish` writes the rest and the EOF marker. `err` tells why
-/// `writer` failed: `IndexFull`, or `WriteFailed` from the output writer. Input is staged in two blocks' worth
-/// of memory so that `.lines` sees as far ahead as `bgzip` does, plus 32 KiB so a contiguous request of up to
-/// 32 KiB always fits. No allocation occurs.
+/// Writes BGZF. `init(output, options)` starts it in place and resets it, also after errors; it assumes the workspace
+/// stays at that address while `writer` is used, and it cannot fail (the error union matches the other formats'
+/// compressors). Plain bytes go to `writer` in any sizes (block boundaries depend only on the bytes), `flush` ends the
+/// open block so the next byte starts one (a record boundary; the output writer is not flushed), and `finish` writes
+/// the rest and the EOF marker. `err` tells why `writer` failed: `IndexFull`, or `WriteFailed` from the output writer.
+/// Input is staged in two blocks' worth of memory so that `.lines` sees as far ahead as `bgzip` does, plus 32 KiB so a
+/// contiguous request of up to 32 KiB always fits.
 pub const Compressor = struct {
     writer: std.Io.Writer,
     err: ?CompressError,
@@ -305,9 +305,6 @@ pub const Compressor = struct {
         .rebase = rebase,
     };
 
-    /// Starts a stream into `output`, resetting everything. The workspace must stay at this address while
-    /// `writer` is used: the writer's buffer is inside it. It cannot fail; the error union matches the other
-    /// formats' compressors.
     pub fn init(self: *Compressor, output: *std.Io.Writer, options: CompressOptions) std.Io.Writer.Error!void {
         self.writer = .{ .vtable = &vtable, .buffer = &self.staging, .end = 0 };
         self.err = null;
@@ -406,7 +403,7 @@ pub const Compressor = struct {
 pub const IndexEntry = struct { coffset: u64, uoffset: u64 };
 
 /// Caller-owned storage for `.gzi` entries, filled as htslib does: one per block that holds data, except
-/// the first. Blocks are added in file order, from `Scanner.next` or through `WriterOptions.index`.
+/// the first. Blocks are added in file order, from `Scanner.next` or through `CompressOptions.index`.
 pub const IndexBuilder = struct {
     entries: []IndexEntry,
     len: usize = 0,
@@ -433,7 +430,6 @@ pub const IndexBuilder = struct {
     }
 };
 
-/// The `.gzi` layout: the entry count, then each entry, as little-endian u64s.
 pub fn writeIndex(writer: *std.Io.Writer, entries: []const IndexEntry) std.Io.Writer.Error!void {
     try writer.writeInt(u64, entries.len, .little);
     for (entries) |entry| {
@@ -483,9 +479,7 @@ const DecompressFraming = struct {
     pub const max_stream_bytes = MAX_BLOCK;
 
     options: format.DecompressOptions,
-    /// Blocks read so far.
     blocks: u64 = 0,
-    /// Whether the last block read is the 28-byte EOF marker.
     eof_marker: bool = false,
     // After a seek, a first block that is not one is `BadVirtualOffset`.
     seeking: bool = false,
@@ -529,8 +523,8 @@ const DecompressFraming = struct {
     }
 };
 
-/// The index of the last '\n' in `bytes`, 32 bytes at a time from the end (`std.mem.findScalarLast` compares
-/// one byte per step, which cost a text block with no newline more than compressing it).
+// The index of the last '\n' in `bytes`, 32 bytes at a time from the end: `std.mem.findScalarLast` compares one
+// byte per step, which costs a text block with no newline more than compressing it.
 fn lastNewline(bytes: []const u8) ?usize {
     const V = @Vector(32, u8);
     var end = bytes.len;
@@ -591,7 +585,6 @@ const BlockVisitor = struct {
     }
 };
 
-// Reads a BGZF block's gzip header, which must carry the `BC` subfield giving the block's size.
 fn readBlockHeader(br: *decode.BitReader) DecompressError!BlockHeader {
     const start = br.consumed();
     const marker = blk: {

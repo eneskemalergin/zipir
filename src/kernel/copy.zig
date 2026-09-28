@@ -2,9 +2,9 @@
 
 const std = @import("std");
 
-/// Zeroes `bytes` with 32-byte vector stores. `@memset` of a large buffer becomes a call to the runtime
-/// `memset`, which Zig 0.16's compiler_rt implements one byte per iteration; volatile stores keep LLVM
-/// from turning this loop back into that call.
+// Zeroes with 32-byte vector stores: `@memset` of a large buffer becomes a call to the runtime `memset`, which
+// Zig 0.16's compiler_rt implements one byte per iteration; volatile stores keep LLVM from turning this loop back
+// into that call.
 pub fn zero(bytes: []u8) void {
     if (@inComptime()) return @memset(bytes, 0);
     var i: usize = 0;
@@ -35,7 +35,7 @@ fn matchByte(buf: []u8, start: usize, dist: usize, len: usize) void {
     }
 }
 
-// Asserts distance 1..31, 32 valid history bytes, and 31 owned tail bytes; one vector is
+// Assumes distance 1..31, 32 valid history bytes, and 31 owned tail bytes; one vector is
 // reused at positions with the same phase in the history pattern.
 pub inline fn repeatSmall(buf: []u8, start: usize, distance: usize, length: usize) void {
     @setEvalBranchQuota(10000);
