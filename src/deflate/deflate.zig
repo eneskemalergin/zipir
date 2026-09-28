@@ -1222,6 +1222,19 @@ pub const Encoder = struct {
         return best;
     }
 
+    /// Order-0 entropy in bits per byte of `n` bytes with byte counts `counts`.
+    fn entropyBits(counts: *const [256]u32, n: usize) f64 {
+        if (n == 0) return 0;
+        const total: f64 = @floatFromInt(n);
+        var bits: f64 = 0;
+        for (counts) |c| {
+            if (c == 0) continue;
+            const f: f64 = @floatFromInt(c);
+            bits -= f * @log2(f / total);
+        }
+        return bits / total;
+    }
+
     fn hasEarlyMatch(self: *const Encoder, start: usize, end: usize, comptime key: u4) bool {
         const lower = start -| RING;
         const stop = @min(end, start + 1024);
@@ -1346,14 +1359,12 @@ pub const Encoder = struct {
         var pending_hash: usize = 0;
         var pending_pos: usize = 0;
         var literal_until: usize = 0;
-        const search_disabled = skip_search and !self.hasEarlyMatch(start, end, key);
-        if (search_disabled) {
-            // All literals: count them in four tables (no store-to-load chain on repeated bytes) and insert every
-            // fourth position, enough for `hasEarlyMatch` to find history again.
-            var q = start;
-            while (q + 3 <= end) : (q += 4) self.insert(q, self.hash(q, end, key));
+        if (skip_search and !self.hasEarlyMatch(start, end, key)) search_off: {
+            // Count the bytes in four tables (no store-to-load chain on repeated bytes). The search stays off only
+            // for near-random bytes (at least 7.9 bits per byte of order-0 entropy): `hasEarlyMatch` sees only a
+            // block's first 1 KiB, and compressible data can start later in the block.
             var counts: [4][256]u32 = @splat(@splat(0));
-            q = start;
+            var q = start;
             while (q + 4 <= end) : (q += 4) {
                 counts[0][self.window[q]] += 1;
                 counts[1][self.window[q + 1]] += 1;
@@ -1361,7 +1372,13 @@ pub const Encoder = struct {
                 counts[3][self.window[q + 3]] += 1;
             }
             while (q < end) : (q += 1) counts[0][self.window[q]] += 1;
-            for (0..256) |b| self.lit_freq[b] += counts[0][b] + counts[1][b] + counts[2][b] + counts[3][b];
+            var total: [256]u32 = undefined;
+            for (&total, 0..) |*t, b| t.* = counts[0][b] + counts[1][b] + counts[2][b] + counts[3][b];
+            if (entropyBits(&total, end - start) < 7.9) break :search_off;
+            // All literals: insert every fourth position, enough for `hasEarlyMatch` to find history again.
+            q = start;
+            while (q + 3 <= end) : (q += 4) self.insert(q, self.hash(q, end, key));
+            for (0..256) |b| self.lit_freq[b] += total[b];
             self.addLiterals(end - start);
             return;
         }
@@ -1371,7 +1388,7 @@ pub const Encoder = struct {
             if (pending.len >= 3 and pending_pos == p) {
                 m = pending;
                 m_hash = pending_hash;
-            } else if (search_disabled or p < literal_until) {
+            } else if (p < literal_until) {
                 if (p + 3 <= end) m_hash = self.hash(p, end, key) else m_hash = 0;
                 m = .{};
             } else if (p + 3 <= end) {

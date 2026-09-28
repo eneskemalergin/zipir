@@ -400,6 +400,68 @@ test "[property] - [gzip compressor]: long-distance matches survive small writer
     }
 }
 
+test "[property] - [gzip compressor]: robustness shapes round-trip at every preset" {
+    // The shapes of tmp/levels/inputs.py at test size: incompressible bytes (stored blocks, and the search turned
+    // off), long runs and short periods (self-overlapping matches), four-letter near-repeats (long chains), and
+    // random bytes followed by text (the search has to turn back on).
+    const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
+    defer std.testing.allocator.destroy(encoder);
+    const size = 200 * 1024 + 321;
+    const plain = try std.testing.allocator.alloc(u8, size);
+    defer std.testing.allocator.free(plain);
+    var rng = std.Random.DefaultPrng.init(0x5a1);
+    const random = rng.random();
+    for (0..5) |shape| {
+        switch (shape) {
+            0 => random.bytes(plain),
+            1 => {
+                var i: usize = 0;
+                while (i < size) {
+                    const n = @min(size - i, 1000 + random.uintLessThan(usize, 60000));
+                    @memset(plain[i..][0..n], random.int(u8));
+                    i += n;
+                }
+            },
+            2 => {
+                var i: usize = 0;
+                while (i < size) {
+                    var unit: [31]u8 = undefined;
+                    const period = 2 + random.uintLessThan(usize, 30);
+                    random.bytes(unit[0..period]);
+                    const n = @min(size - i, 4096 + random.uintLessThan(usize, 30000));
+                    for (plain[i..][0..n], 0..) |*byte, k| byte.* = unit[k % period];
+                    i += n;
+                }
+            },
+            3 => {
+                var base: [4096]u8 = undefined;
+                for (&base) |*byte| byte.* = "ACGT"[random.uintLessThan(usize, 4)];
+                var i: usize = 0;
+                while (i < size) : (i += base.len) {
+                    const n = @min(size - i, base.len);
+                    @memcpy(plain[i..][0..n], base[0..n]);
+                    for (0..8) |_| plain[i + random.uintLessThan(usize, n)] = "ACGT"[random.uintLessThan(usize, 4)];
+                }
+            },
+            else => {
+                random.bytes(plain[0 .. size / 2]);
+                for (plain[size / 2 ..], 0..) |*byte, k| byte.* = "the quick brown fox jumps over the lazy dog\n"[k % 44];
+            },
+        }
+        for ([_]zipir.gzip.CompressOptions{ .{ .level = .fast }, .{ .level = .even }, .{ .level = .dense } }) |options| {
+            const len = try encodeRoundtrip(encoder, plain, options, 8191, 17);
+            switch (shape) {
+                // Stored blocks: at most 0.1% over the input plus the gzip header and trailer.
+                0 => try std.testing.expect(len <= size + size / 1000 + 18),
+                1, 2 => try std.testing.expect(len * 50 < size),
+                // The text half compresses although the first half turned the search off.
+                4 => try std.testing.expect(len < size / 2 + size / 20),
+                else => {},
+            }
+        }
+    }
+}
+
 test "[failure] - [gzip compressor]: I/O errors propagate and workspace resets" {
     const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(encoder);
