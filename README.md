@@ -9,6 +9,7 @@
     <a href="https://ziglang.org/download/"><img src="https://img.shields.io/badge/Zig-0.16.0-F7A41D?style=flat-square&amp;logo=zig&amp;logoColor=white" alt="Zig 0.16.0"></a>
     <img src="https://img.shields.io/badge/status-development-4B9D6E?style=flat-square" alt="Status: development">
     <img src="https://img.shields.io/badge/dependencies-none-2D7D46?style=flat-square" alt="No external dependencies">
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-4B9D6E?style=flat-square" alt="MIT License"></a>
   </p>
 </div>
 
@@ -22,7 +23,6 @@
   <a href="bench/"><img height="18" src="https://img.shields.io/badge/benchmarks-reports-F59E0B?style=flat-square" alt="Benchmark reports"></a>
   <a href="CHANGELOG.md"><img height="18" src="https://img.shields.io/badge/changelog-history-7C3AED?style=flat-square" alt="Changelog"></a>
   <a href="docs/"><img height="18" src="https://img.shields.io/badge/docs-reference-0891B2?style=flat-square" alt="Documentation"></a>
-  <a href="LICENSE"><img height="18" src="https://img.shields.io/badge/license-MIT-4B9D6E?style=flat-square" alt="MIT License"></a>
 </p>
 -->
 
