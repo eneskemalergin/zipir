@@ -23,10 +23,13 @@ pub const DecodeError = error{ Truncated, BadHuffman, BadSymbol, BadDistance, Ba
 
 const Kind = enum(u4) { invalid = 0, lit, eob, len, dist, long };
 
+// `nbits` alone fills the low byte, so the fast loop shifts the bit buffer by the raw entry (x86 shifts use only the
+// count's low six bits) and subtracts the raw entry from its bit count, whose low byte stays exact: no mask on the
+// chain from one table load to the next (libdeflate's layout).
 const Entry = packed struct(u32) {
-    nbits: u4,
+    nbits: u8,
     kind: Kind,
-    extra: u8 = 0,
+    extra: u4 = 0,
     payload: u16,
 };
 
@@ -651,9 +654,10 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
     const history = ctx.position() - ctx.stream_start;
     const output = ctx.out;
     const input = br.src;
+    // Only the low byte of `count` is the bit count: whole raw entries are subtracted from it.
     defer {
         br.bits = bits;
-        br.nbits = count;
+        br.nbits = count & 0xff;
         br.i = index;
         ctx.out_pos = op;
     }
@@ -666,13 +670,14 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
     // Wild copies require 289 owned bytes; prefetched entries do not consume bits.
     while (output.len - op >= 289 and input.len - index >= 8) {
         const word = std.mem.readInt(u64, input[index..][0..8], .little);
-        bits |= word << @intCast(count);
-        index += 7 - (count >> 3);
+        bits |= word << @as(u6, @truncate(count));
+        index += 7 - (@as(u8, @truncate(count)) >> 3);
         count |= 56;
         if (e.kind == .long) e = lookupLong(e, &ctx.decoder.tables.lit_spill, bits, 10);
         if (e.kind == .invalid or e.kind == .dist) return error.BadSymbol;
-        bits >>= e.nbits;
-        count -= e.nbits;
+        const raw: u32 = @bitCast(e);
+        bits >>= @as(u6, @truncate(raw));
+        count -%= raw;
         if (e.kind == .eob) return true;
         if (e.kind == .lit) {
             output[op] = @truncate(e.payload);
@@ -684,16 +689,17 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
         const extra: u6 = @intCast(e.extra);
         const length: usize = e.payload + @as(usize, @intCast(bits & ((@as(u64, 1) << extra) - 1)));
         bits >>= extra;
-        count -= extra;
+        count -%= extra;
         var d = dist[@intCast(bits & ((1 << 9) - 1))];
         if (d.kind == .long) d = lookupLong(d, &ctx.decoder.tables.dist_spill, bits, 9);
         if (d.kind != .dist) return error.BadSymbol;
-        bits >>= d.nbits;
-        count -= d.nbits;
+        const draw: u32 = @bitCast(d);
+        bits >>= @as(u6, @truncate(draw));
+        count -%= draw;
         const dx: u6 = @intCast(d.extra);
         const distance: usize = d.payload + @as(usize, @intCast(bits & ((@as(u64, 1) << dx) - 1)));
         bits >>= dx;
-        count -= dx;
+        count -%= dx;
         const next = lit[@intCast(bits & ((1 << 10) - 1))];
         if (!full_history and distance > history + (op - initial_op)) return error.BadDistance;
         if (distance >= 32) {
@@ -775,7 +781,7 @@ test {
 
 test "[property] - [deflate tables]: rejected trees clear roots without changing adjacent entries" {
     const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
-    const sentinel: Entry = .{ .nbits = 15, .kind = .long, .extra = 0xa5, .payload = 0x5a5a };
+    const sentinel: Entry = .{ .nbits = 15, .kind = .long, .extra = 0xa, .payload = 0x5a5a };
     inline for (.{ @as(u4, 9), @as(u4, 10), @as(u4, 11) }) |width| {
         const count = 1 << width;
         var actual: [count + 16]Entry align(32) = undefined;
@@ -800,7 +806,7 @@ test "[property] - [deflate tables]: narrower roots preserve entries and bounded
     const Fill = struct {
         fn check(comptime width: u4, lens: []const u4, seen_heights: *u16, compare_widths: bool) !void {
             const capacity = if (width == 10) 1536 else 292;
-            const sentinel: Entry = .{ .nbits = 15, .kind = .long, .extra = 0xa5, .payload = 0x5a5a };
+            const sentinel: Entry = .{ .nbits = 15, .kind = .long, .extra = 0xa, .payload = 0x5a5a };
             var root: [1 << width]Entry = @splat(sentinel);
             var spill: [if (width == 10) 4608 else 2048]Entry = @splat(sentinel);
             const kind = if (width == 10) litKind else distKind;
