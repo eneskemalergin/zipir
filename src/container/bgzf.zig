@@ -332,7 +332,7 @@ pub const BlockEncoder = struct {
         var check: crc.Crc32 = .init();
         // 65280 input bytes compress to at most 65291 (two stored blocks at worst), which fits `body`,
         // and fixed readers and writers of that size cannot fail.
-        _ = self.encoder.encodeStream(crc.Crc32, &reader, &body, &check, level) catch unreachable;
+        _ = self.encoder.encodeBlock(crc.Crc32, &reader, &body, &check, level) catch unreachable;
         const size = HEADER_LEN + body.end + 8;
         var subfield = [6]u8{ 'B', 'C', 2, 0, 0, 0 };
         std.mem.writeInt(u16, subfield[4..6], @intCast(size - 1), .little);

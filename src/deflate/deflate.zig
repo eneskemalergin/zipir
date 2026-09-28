@@ -1082,12 +1082,24 @@ pub const Encoder = struct {
     icf_count: usize = undefined,
 
     pub fn encodeStream(self: *Encoder, comptime Check: type, reader: *std.Io.Reader, writer: *std.Io.Writer, check: *Check, level: Level) EncodeError!u64 {
+        return self.encode(Check, reader, writer, check, level, false);
+    }
+
+    /// One BGZF block (at most 65280 bytes): the same presets with settings for a cold 64 KiB block
+    /// (PHASE2.md): fast keeps two candidates per hash bucket and even searches deeper.
+    pub fn encodeBlock(self: *Encoder, comptime Check: type, reader: *std.Io.Reader, writer: *std.Io.Writer, check: *Check, level: Level) EncodeError!u64 {
+        return self.encode(Check, reader, writer, check, level, true);
+    }
+
+    fn encode(self: *Encoder, comptime Check: type, reader: *std.Io.Reader, writer: *std.Io.Writer, check: *Check, level: Level, comptime block: bool) EncodeError!u64 {
         // `previous` is never cleared: with `head` clear, every position a chain reaches was inserted in this
         // stream, which wrote its `previous` slot; a slot reused by a later position is behind `lower` and
         // rejected before it is read. BGZF pays this once per 64 KiB block.
         // 64 or 128 KiB: `@memset` here would call compiler_rt's byte-per-iteration `memset` (see `copy.zero`).
         const heads = if (level == .fast) self.head[0..FAST_HASH] else self.head[0..];
         copy.zero(std.mem.sliceAsBytes(heads));
+        // Block fast keeps each bucket's older candidate in `previous`, which must start clean too.
+        if (block and level == .fast) copy.zero(std.mem.asBytes(self.previous[0..FAST_HASH]));
         var bits: BitWriter = .{ .writer = writer };
         var history: usize = 0;
         var size: u64 = 0;
@@ -1114,13 +1126,17 @@ pub const Encoder = struct {
             if (history != 0) {
                 if (level == .fast) {
                     var p = history - 8;
-                    while (p < history and p + 4 <= end) : (p += 1) self.head[fastHash(std.mem.readInt(u32, self.window[p..][0..4], .little))] = @intCast(p);
+                    while (p < history and p + 4 <= end) : (p += 1) {
+                        const h = fastHash(std.mem.readInt(u32, self.window[p..][0..4], .little));
+                        if (block) self.previous[h] = self.head[h];
+                        self.head[h] = @intCast(p);
+                    }
                 } else {
                     var p = history - 2;
                     while (p < history and p + 3 <= end) : (p += 1) self.insert(p, if (level == .even) self.hash(p, end, 5) else self.hash(p, end, 4));
                 }
             }
-            if (level == .fast) {
+            if (level == .fast and !block) {
                 self.parseFast(history, end, !pending);
                 if (!last and !pending) {
                     pending = true;
@@ -1128,8 +1144,21 @@ pub const Encoder = struct {
                     _ = try self.emit(&bits, self.window[if (pending) 0 else history..end], last);
                     pending = false;
                 }
+            } else if (level == .fast) {
+                self.parseFastBlock(history, end, !pending);
+                if (!last and !pending) {
+                    first_lit = self.lit_freq;
+                    first_dist = self.dist_freq;
+                    first_tokens = self.icf_count;
+                    pending = true;
+                } else if (pending) {
+                    _ = try self.emitPair(&bits, end, last, &first_lit, &first_dist, first_tokens);
+                    pending = false;
+                } else {
+                    _ = try self.emit(&bits, self.window[history..end], last);
+                }
             } else {
-                if (level == .even) self.parse(history, end, level, skip_search, !pending, 5) else self.parse(history, end, level, skip_search, !pending, 4);
+                if (level == .even) self.parse(history, end, level, skip_search, !pending, 5, block) else self.parse(history, end, level, skip_search, !pending, 4, block);
                 // A stored block turns the search off until `hasEarlyMatch` sees a match near a block start.
                 if (!last and !pending) {
                     // The first window of a pair: its counts price it as a block of its own later.
@@ -1148,7 +1177,7 @@ pub const Encoder = struct {
             if (history != 0) {
                 @memcpy(self.window[0..RING], self.window[RING..][0..RING]);
                 rebase(heads);
-                if (level != .fast) rebase(&self.previous);
+                if (level != .fast) rebase(&self.previous) else if (block) rebase(self.previous[0..FAST_HASH]);
             }
             history = RING;
         }
@@ -1319,6 +1348,111 @@ pub const Encoder = struct {
         self.icf_count = n;
     }
 
+    /// fast on a BGZF block (PHASE2.md), after libdeflate's level 1: two candidates per hash bucket (`head` the
+    /// newest, `previous` the one before), both checked with an 8-byte XOR, the longer taken (both measured when
+    /// both match eight bytes); one position per step; the first 12 positions of each match inserted. On a
+    /// cold 64 KiB block this reaches libdeflate 1's ratio where `parseFast` is 6% short.
+    fn parseFastBlock(self: *Encoder, start: usize, end: usize, fresh: bool) void {
+        if (fresh) {
+            @memset(&self.lit_freq, 0);
+            @memset(&self.dist_freq, 0);
+            self.lit_freq[256] = 1;
+            self.icf_count = 0;
+        }
+        var n = self.icf_count;
+        var p = start;
+        var held: ?u8 = null;
+        var misses: usize = 0;
+        while (p + 8 <= end) {
+            const v = std.mem.readInt(u64, self.window[p..][0..8], .little);
+            const h = fastHash(@truncate(v));
+            const e0: usize = self.head[h];
+            const e1: usize = self.previous[h];
+            self.previous[h] = @intCast(e0);
+            self.head[h] = @intCast(p);
+            const d0 = ((p -% e0 -% 1) & (RING - 1)) + 1;
+            const d1 = ((p -% e1 -% 1) & (RING - 1)) + 1;
+            const x0 = v ^ std.mem.readInt(u64, self.window[p - @min(d0, p) ..][0..8], .little);
+            const x1 = v ^ std.mem.readInt(u64, self.window[p - @min(d1, p) ..][0..8], .little);
+            const l0: usize = if (d0 > p) 0 else @ctz(x0) / 8;
+            const l1: usize = if (d1 > p) 0 else @ctz(x1) / 8;
+            const use1 = l1 > l0;
+            const x = if (use1) x1 else x0;
+            var d = if (use1) d1 else d0;
+            const l = @max(l0, l1);
+            if (l < 4) {
+                const byte: u8 = @truncate(v);
+                self.lit_freq[byte] += 1;
+                if (held) |first| {
+                    self.icf[n] = @as(u32, first) | (ICF_LITERAL + @as(u32, byte)) << 10;
+                    n += 1;
+                    held = null;
+                } else held = byte;
+                misses += 1;
+                p += 1;
+                if (misses >= 64) {
+                    const extra = @min(misses >> 5, end - p);
+                    for (self.window[p..][0..extra]) |b| {
+                        self.lit_freq[b] += 1;
+                        if (held) |first| {
+                            self.icf[n] = @as(u32, first) | (ICF_LITERAL + @as(u32, b)) << 10;
+                            n += 1;
+                            held = null;
+                        } else held = b;
+                    }
+                    p += extra;
+                }
+                continue;
+            }
+            if (held) |first| {
+                self.icf[n] = @as(u32, first) | ICF_NONE << 10;
+                n += 1;
+                held = null;
+            }
+            const limit = @min(258, end - p);
+            var len: usize = l;
+            if (x == 0) {
+                len = 8 + matchLength(self.window[p + 8 ..][0 .. limit - 8], self.window[p - d + 8 ..][0 .. limit - 8]);
+                if (l0 == 8 and l1 == 8 and d1 != d and len < limit) {
+                    const other = 8 + matchLength(self.window[p + 8 ..][0 .. limit - 8], self.window[p - d1 + 8 ..][0 .. limit - 8]);
+                    if (other > len) {
+                        len = other;
+                        d = d1;
+                    }
+                }
+            }
+            const dc = distCode(d);
+            self.icf[n] = @as(u32, @intCast(254 + len)) | @as(u32, @intCast(dc)) << 10 | @as(u32, @intCast(d - DIST_BASE[dc])) << 19;
+            n += 1;
+            self.lit_freq[257 + @as(usize, LEN_CODE[len - 3])] += 1;
+            self.dist_freq[dc] += 1;
+            misses = 0;
+            var q = p + 1;
+            const insert_end = p + @min(len, 12);
+            while (q < insert_end and q + 4 <= end) : (q += 1) {
+                const hq = fastHash(std.mem.readInt(u32, self.window[q..][0..4], .little));
+                self.previous[hq] = self.head[hq];
+                self.head[hq] = @intCast(q);
+            }
+            p += len;
+        }
+        while (p < end) : (p += 1) {
+            const byte = self.window[p];
+            self.lit_freq[byte] += 1;
+            if (held) |first| {
+                self.icf[n] = @as(u32, first) | (ICF_LITERAL + @as(u32, byte)) << 10;
+                n += 1;
+                held = null;
+            } else held = byte;
+        }
+        if (held) |byte| {
+            self.icf[n] = @as(u32, byte) | ICF_NONE << 10;
+            n += 1;
+        }
+        std.debug.assert(n <= ICF_CAP);
+        self.icf_count = n;
+    }
+
     /// `count` (even) literals from `p` as pair tokens.
     inline fn literalPairs(self: *Encoder, n: usize, p: usize, count: usize) usize {
         var k: usize = 0;
@@ -1333,7 +1467,7 @@ pub const Encoder = struct {
     }
 
     /// even and dense: chain search with lazy evaluation at `p + 1` (`parseFast` handles fast).
-    fn parse(self: *Encoder, start: usize, end: usize, level: Level, skip_search: bool, fresh: bool, comptime key: u4) void {
+    fn parse(self: *Encoder, start: usize, end: usize, level: Level, skip_search: bool, fresh: bool, comptime key: u4, comptime block: bool) void {
         if (fresh) {
             @memset(&self.lit_freq, 0);
             @memset(&self.dist_freq, 0);
@@ -1343,9 +1477,10 @@ pub const Encoder = struct {
         std.debug.assert(level != .fast);
         // dense (2026-09-27): a deeper walk, no early stop below the longest match, lazy evaluation up to 32 bytes
         // with 64 candidates, and lazy2 (libdeflate's levels 8 and 9); ratio 3.595 to 3.622 at 37 MB/s.
-        const budget: usize = if (level == .dense) 160 else 12;
-        const nice: usize = if (level == .dense) 258 else 96;
-        const lazy_below: usize = if (level == .dense) 32 else 16;
+        // even on a BGZF block (PHASE2.md): budget 32, nice 258, lazy evaluation below 32 with 16 candidates.
+        const budget: usize = if (level == .dense) 160 else if (block) 32 else 12;
+        const nice: usize = if (level == .dense) 258 else if (block) 258 else 96;
+        const lazy_below: usize = if (level == .dense) 32 else if (block) 32 else 16;
         var p = start;
         var n = self.icf_count;
         // A literal waiting for a second one to share its token.
@@ -1406,7 +1541,7 @@ pub const Encoder = struct {
             if (p + 3 <= end) self.insert(p, m_hash);
             if (m.len >= 3 and m.len < lazy_below and p + 3 < end) {
                 pending_hash = self.hash(p + 1, end, key);
-                const next = self.find(p + 1, end, if (level == .dense) 64 else @min(budget, 8), nice, pending_hash);
+                const next = self.find(p + 1, end, if (level == .dense) 64 else if (block) 16 else @min(budget, 8), nice, pending_hash);
                 if (next.len > m.len) {
                     pending = next;
                     pending_pos = p + 1;
@@ -2062,6 +2197,45 @@ test "[edge] - [deflate encoder]: over-depth encoding trees are shortened to com
     try std.testing.expect(tree.build(&freq, 15));
     try std.testing.expectEqual(@as(u4, 1), tree.lens[9]);
     try std.testing.expectEqual(@as(u16, 0), tree.codes[9]);
+}
+
+test "[property] - [deflate encoder]: BGZF block output does not depend on stale table entries" {
+    // A BGZF-sized block on a workspace full of stale entries writes the same bytes as on a clean one, at every
+    // preset. (A stale second slot of fast would change output only when a bucket is first used late in a block
+    // and its stale position holds matching bytes, which no small input guarantees; the clear is by construction.)
+    var input: [65280]u8 = undefined;
+    var state: u32 = 0x85ebca6b;
+    for (&input) |*byte| {
+        state = state *% 1664525 +% 1013904223;
+        byte.* = "AC"[state >> 31];
+    }
+    const clean = try std.testing.allocator.create(Encoder);
+    defer std.testing.allocator.destroy(clean);
+    const stale = try std.testing.allocator.create(Encoder);
+    defer std.testing.allocator.destroy(stale);
+    var expected: [65536 + 64]u8 = undefined;
+    var actual: [65536 + 64]u8 = undefined;
+    const NoCheck = struct {
+        fn update(_: *@This(), _: []const u8) void {}
+    };
+    for ([_]Level{ .fast, .even, .dense }) |level| {
+        @memset(&clean.head, 0);
+        @memset(&clean.previous, 0);
+        for (&stale.head, 0..) |*slot, i| slot.* = @truncate(i *% 2654435761 +% 7);
+        for (&stale.previous, 0..) |*slot, i| slot.* = @truncate(i *% 40503 +% 29);
+        // Two blocks in a row on each workspace: the second starts with the first one's tables.
+        for ([_]usize{ input.len, 20000 }) |len| {
+            var want_reader = std.Io.Reader.fixed(input[0..len]);
+            var want_writer = std.Io.Writer.fixed(&expected);
+            var want_check: NoCheck = .{};
+            _ = try clean.encodeBlock(NoCheck, &want_reader, &want_writer, &want_check, level);
+            var got_reader = std.Io.Reader.fixed(input[0..len]);
+            var got_writer = std.Io.Writer.fixed(&actual);
+            var got_check: NoCheck = .{};
+            _ = try stale.encodeBlock(NoCheck, &got_reader, &got_writer, &got_check, level);
+            try std.testing.expectEqualSlices(u8, want_writer.buffered(), got_writer.buffered());
+        }
+    }
 }
 
 test "[edge] - [deflate encoder]: position rebasing preserves sentinels and every vector tail" {
