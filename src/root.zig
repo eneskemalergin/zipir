@@ -1,9 +1,9 @@
-//! The zipir package root: the public API.
+//! The zipir package root: the public API. `gzip` re-exports only gzip's public API; the header and trailer helpers
+//! it shares with BGZF stay internal.
 
 const std = @import("std");
 const gzip_format = @import("format/gzip.zig");
 
-// The gzip format also serves BGZF its header and trailer helpers; only its public API is re-exported.
 pub const gzip = struct {
     pub const DecompressOptions = gzip_format.DecompressOptions;
     pub const DecompressError = gzip_format.DecompressError;

@@ -284,8 +284,6 @@ test "[regression] - [gzip decompressor]: fixed tables preserve all slots across
     }
 }
 
-// --- Compression ---
-
 fn encodeRoundtrip(encoder: *zipir.gzip.Compressor, plain: []const u8, options: zipir.gzip.CompressOptions, chunk: usize, capacity: usize) !usize {
     const encoded = try std.testing.allocator.alloc(u8, plain.len + 64);
     defer std.testing.allocator.free(encoded);
@@ -322,7 +320,6 @@ test "[property] - [gzip compressor]: reused workspaces match fresh output acros
     defer std.testing.allocator.destroy(encoder);
     const fresh = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(fresh);
-    // A four-letter alphabet gives long hash chains and lazy decisions in every block.
     var plain: [98305]u8 = undefined;
     var rng = std.Random.DefaultPrng.init(611);
     for (&plain) |*b| b.* = 'a' + rng.random().uintLessThan(u8, 4);
@@ -373,8 +370,6 @@ test "[property] - [gzip compressor]: periodic overlap and maximum history prese
 }
 
 test "[property] - [gzip compressor]: long-distance matches survive small writer buffers" {
-    // Random bytes with segments copied from far back: tokens of 40 bits and more, emitted while the writer
-    // has only a few bytes of room.
     const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(encoder);
     var plain: [3 * 32768 + 777]u8 = undefined;
@@ -389,8 +384,6 @@ test "[property] - [gzip compressor]: long-distance matches survive small writer
     }
     const encoded = try std.testing.allocator.alloc(u8, plain.len + 64);
     defer std.testing.allocator.free(encoded);
-    // Writer buffers around the emitters' 8- and 16-byte room checks, drained 7 bytes at a time or whole (a
-    // whole drain leaves room while bits from a writer-limited step are still pending).
     for ([_]usize{ 13, 16, 17, 23, 24, 31, 40, 64 }) |out_capacity| {
         for ([_]usize{ 7, std.math.maxInt(usize) }) |max_drain| {
             for ([_]zipir.gzip.CompressOptions{ .{ .preset = .fast }, .{}, .{ .preset = .dense } }) |options| {
@@ -401,9 +394,6 @@ test "[property] - [gzip compressor]: long-distance matches survive small writer
 }
 
 test "[property] - [gzip compressor]: stored, periodic, chain-heavy, and mixed inputs round-trip at every preset" {
-    // The compressor's hard input shapes at test size: incompressible bytes (stored blocks, and the search turned
-    // off), long runs and short periods (self-overlapping matches), four-letter near-repeats (long chains), and
-    // random bytes followed by text (the search has to turn back on).
     const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(encoder);
     const size = 200 * 1024 + 321;
@@ -451,10 +441,8 @@ test "[property] - [gzip compressor]: stored, periodic, chain-heavy, and mixed i
         for ([_]zipir.gzip.CompressOptions{ .{ .preset = .fast }, .{ .preset = .even }, .{ .preset = .dense } }) |options| {
             const len = try encodeRoundtrip(encoder, plain, options, 8191, 17);
             switch (shape) {
-                // Stored blocks: at most 0.1% over the input plus the gzip header and trailer.
                 0 => try std.testing.expect(len <= size + size / 1000 + 18),
                 1, 2 => try std.testing.expect(len * 50 < size),
-                // The text half compresses although the first half turned the search off.
                 4 => try std.testing.expect(len < size / 2 + size / 20),
                 else => {},
             }
@@ -483,7 +471,6 @@ test "[failure] - [gzip compressor]: I/O errors propagate and workspace resets" 
         var sink = support.Sink{ .output = &scratch, .fail_at = fail };
         try std.testing.expectError(error.WriteFailed, support.compressAll(encoder, &source, &sink.writer, .{ .preset = .fast }));
         if (fail == 0) try std.testing.expectEqual(@as(usize, 0), source.seek);
-        // fast writes one block per two 32 KiB windows, so at most two windows and the lookahead byte are read.
         if (fail <= 500) try std.testing.expect(source.seek <= 65537);
         _ = try encodeRoundtrip(encoder, "reused after write failure", .{ .preset = .fast }, 1, 17);
     }

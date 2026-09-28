@@ -1,4 +1,5 @@
-//! Streaming Adler-32 with a runtime-selected accelerated backend.
+//! Streaming Adler-32 with a runtime-selected accelerated backend. The AVX2 kernel is never inlined into its
+//! callers: inlining it slows zlib decoding.
 
 const std = @import("std");
 const options = @import("kernel_options");
@@ -27,15 +28,12 @@ pub const Adler32 = struct {
     }
 };
 
-// --- Backend dispatch ---
-
 inline fn useAvx2() bool {
     if (comptime options.adler32_x86_avx2 == .absent) return false;
     return cpu.has(.avx2);
 }
 
 inline fn avx2Update(start: u32, bytes: []const u8) u32 {
-    // Not inlined: inlining the AVX2 kernel into zlib decode costs 1.3% to 1.7% on the sequencing medium files.
     if (comptime options.adler32_x86_avx2 == .direct) return @call(.never_inline, avx2.update, .{ start, bytes });
     return zipir_adler32_x86_avx2_update(start, bytes.ptr, bytes.len);
 }
@@ -45,8 +43,6 @@ fn updateDispatched(start: u32, bytes: []const u8) u32 {
     if (bytes.len >= AVX2_MIN_LENGTH and useAvx2()) return avx2Update(start, bytes);
     return updatePortableChunk(start, bytes);
 }
-
-// --- Portable update ---
 
 fn updatePortableChunk(start: u32, bytes: []const u8) u32 {
     var a = start & 0xffff;

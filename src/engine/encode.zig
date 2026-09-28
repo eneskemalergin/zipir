@@ -1,4 +1,6 @@
-//! DEFLATE encoding (RFC 1951), a window at a time.
+//! DEFLATE encoding (RFC 1951), a window at a time: `codeWindow` codes `windowSpace()[0..n]`, 32 KiB except in the
+//! last window, and the `carried` bytes after it begin the next; `fullFlush` ends on a byte boundary and starts a new
+//! history. The preset tags are the zlib levels the CLI's hidden `--level 1|5|9` alias maps to.
 
 const std = @import("std");
 const copy = @import("../kernel/copy.zig");
@@ -63,7 +65,6 @@ const BitWriter = struct {
         const n: usize = self.count / 8;
         if (n == 0) return;
         if (self.writer.buffer.len - self.writer.end >= 8) {
-            // The wider store stays in unused capacity; only whole bytes become buffered.
             std.mem.writeInt(u64, self.writer.buffer[self.writer.end..][0..8], self.value, .little);
             self.writer.end += n;
         } else {
@@ -91,7 +92,6 @@ const BitWriter = struct {
     }
 };
 
-// Over-depth trees fall back to fixed or stored blocks.
 const EncodeTree = struct {
     lens: [288]u4 = @splat(0),
     codes: [288]u16 = undefined,
@@ -113,8 +113,6 @@ const EncodeTree = struct {
         sortKeys(keys[0..n]);
         var a: [288]u32 = undefined;
         for (keys[0..n], 0..) |k, i| a[i] = @intCast(k >> 9);
-        // Moffat and Katajainen, "In-place calculation of minimum-redundancy codes": a[i] ends as the code
-        // length of the i-th least frequent symbol.
         a[0] += a[1];
         var root: usize = 0;
         var leaf: usize = 2;
@@ -162,8 +160,6 @@ const EncodeTree = struct {
             depth += 1;
             used = 0;
         }
-        // a[0] is the longest code; limit the depth on the length counts (JPEG Annex K.3), then give the
-        // shortest lengths to the most frequent symbols.
         var count: [33]u32 = @splat(0);
         for (a[0..n]) |l| count[l] += 1;
         var len: usize = a[0];
@@ -187,9 +183,6 @@ const EncodeTree = struct {
         return self.canonical();
     }
 
-    // Ascending keys (frequency above the symbol). Many keys, as in a literal tree, are sorted by frequency with
-    // three stable 6-bit counting passes: keys arrive in symbol order and are unique, so the order is exactly the
-    // comparison sort's, without its mispredicted compares.
     fn sortKeys(keys: []u64) void {
         var top: u64 = 0;
         for (keys) |k| top |= k;
@@ -216,7 +209,6 @@ const EncodeTree = struct {
             from = to;
             to = swap;
         }
-        // Three passes end in `other`.
         @memcpy(keys, from);
     }
 
@@ -301,20 +293,12 @@ const FIXED_DIST: EncodeTree = blk: {
     break :blk tree;
 };
 
-/// The presets: fast, even (the default), and dense. The tags are the zlib levels each is compared with, which
-/// the CLI's hidden `--level 1|5|9` alias uses.
 pub const Preset = enum(u4) { fast = 1, even = 5, dense = 9 };
 
-// Self-contained tokens (after igzip's ICF): bits 0-9 hold the first symbol (a literal 0-255, or 254 + the
-// length of a match), bits 10-18 the second (a distance code 0-29, ICF_NONE, or ICF_LITERAL + a literal),
-// bits 19-31 the distance's extra bits. A token is a match, one literal, or two literals. At most one token
-// per two input bytes (a lone literal is always followed by a match of at least four), plus one per window.
 const ICF_NONE: u32 = 30;
 const ICF_LITERAL: u32 = 31;
 const ICF_CAP = WINDOW + 4;
 
-// fast hashes into the first FAST_HASH heads only: all 2^16 cost fast 2% to 5% of its speed for 0.1% to 0.5% more
-// ratio.
 const FAST_HASH = 32768;
 
 const LOG2_FRACTION: [256]f64 = blk: {
@@ -324,7 +308,6 @@ const LOG2_FRACTION: [256]f64 = blk: {
     break :blk t;
 };
 
-// log2 of a count to about 0.006: the exponent plus eight fraction bits (for estimates only).
 fn log2Table(x: u32) f64 {
     if (x == 0) return 0;
     const e = std.math.log2_int(u32, x);
@@ -339,17 +322,13 @@ fn fastHash(v: u32) usize {
 const EncodeError = std.Io.Writer.Error;
 
 pub const Encoder = struct {
-    // A window of input is parsed once more than a window is buffered (which also proves it is not the last);
-    // the third 32 KiB is room for that surplus, so a writer can always offer 32 KiB of contiguous space.
     window: [3 * WINDOW]u8 = undefined,
     head: [ENCODE_HASH]u16 = undefined,
     previous: [WINDOW]u16 = undefined,
     lit_freq: [286]u32 = undefined,
     dist_freq: [30]u32 = undefined,
-    // fast: self-contained tokens (see `parseFast`), one block per two windows.
     icf: [ICF_CAP]u32 = undefined,
     icf_count: usize = undefined,
-    // The stream: its output, bits not yet written, and the window pairing carried between windows.
     out: *std.Io.Writer = undefined,
     bit_value: u64 = 0,
     bit_count: u32 = 0,
@@ -362,8 +341,6 @@ pub const Encoder = struct {
     first_dist: [30]u32 = undefined,
     first_tokens: usize = 0,
 
-    // One BGZF block (at most 65280 bytes): the same presets with settings for a cold 64 KiB block: fast keeps two
-    // candidates per hash bucket and even searches deeper.
     pub fn encodeBlock(self: *Encoder, comptime Check: type, input: []const u8, writer: *std.Io.Writer, check: *Check, preset: Preset) EncodeError!void {
         std.debug.assert(input.len <= 2 * WINDOW);
         return self.encodeSlice(Check, input, writer, check, preset, true);
@@ -383,14 +360,8 @@ pub const Encoder = struct {
         try self.finish();
     }
 
-    // `block` selects the BGZF block settings.
     pub fn begin(self: *Encoder, writer: *std.Io.Writer, preset: Preset, comptime block: bool) void {
-        // `previous` is never cleared: with `head` clear, every position a chain reaches was inserted in this
-        // stream, which wrote its `previous` slot; a slot reused by a later position is behind `lower` and
-        // rejected before it is read. BGZF pays this once per 64 KiB block.
-        // 64 or 128 KiB: `@memset` here would call compiler_rt's byte-per-iteration `memset` (see `copy.zero`).
         copy.zero(std.mem.sliceAsBytes(self.headsFor(preset)));
-        // Block fast keeps each bucket's older candidate in `previous`, which must start clean too.
         if (block and preset == .fast) copy.zero(std.mem.asBytes(self.previous[0..FAST_HASH]));
         self.out = writer;
         self.bit_value = 0;
@@ -398,21 +369,14 @@ pub const Encoder = struct {
         self.preset = preset;
         self.history = 0;
         self.size = 0;
-        // A BGZF block learns nothing from the block before it: its first window starts with the search provisionally
-        // off, so `hasEarlyMatch` (on a clean table) and the entropy check decide from the block itself.
         self.skip_search = block;
         self.pending = false;
     }
 
-    // Where the next window's bytes go; `windowSpace()[0..carried]` already holds the bytes carried from the
-    // previous window.
     pub fn windowSpace(self: *Encoder) []u8 {
         return self.window[self.history..][0 .. 2 * WINDOW];
     }
 
-    // Codes `windowSpace()[0..n]` as the next window: `n` is 32 KiB except in the last. The `carried` bytes after it
-    // (at most 32 KiB) begin the next window. `last` ends the run of windows (a pending pair is coded); `final`
-    // marks its last block as the stream's last (false for a flush).
     pub fn codeWindow(self: *Encoder, comptime Check: type, check: *Check, n: usize, carried: usize, last: bool, final: bool, comptime block: bool) EncodeError!void {
         std.debug.assert(n <= WINDOW and (last or n == WINDOW) and carried <= WINDOW and (last or !final));
         var bits: BitWriter = .{ .writer = self.out, .value = self.bit_value, .count = self.bit_count };
@@ -425,8 +389,6 @@ pub const Encoder = struct {
         const end = history + n;
         check.update(self.window[history..end]);
         self.size +%= n;
-        // Positions at the end of the previous window were not inserted: the last two lacked three-byte
-        // lookahead, and `parseFast` stops eight bytes before the end.
         if (history != 0) {
             if (preset == .fast) {
                 var p = history - 8;
@@ -440,9 +402,6 @@ pub const Encoder = struct {
                 while (p < history and p + 3 <= end) : (p += 1) self.insert(p, if (preset == .even) self.hash(p, end, 5) else self.hash(p, end, 4));
             }
         }
-        // Windows go in pairs: the first is parsed and kept; after the slide it is the history half, so the pair's
-        // bytes are window[0..end]. fast makes one block per pair; even and dense make one block or two,
-        // whichever codes smaller (`emitPair`).
         if (preset == .fast and !block) {
             self.parseFast(history, end, !self.pending);
             if (!last and !self.pending) {
@@ -466,9 +425,7 @@ pub const Encoder = struct {
             }
         } else {
             if (preset == .even) self.parse(history, end, preset, self.skip_search, !self.pending, 5, block) else self.parse(history, end, preset, self.skip_search, !self.pending, 4, block);
-            // A stored block turns the search off until `hasEarlyMatch` sees a match near a block start.
             if (!last and !self.pending) {
-                // The first window of a pair: its counts price it as a block of its own later.
                 self.first_lit = self.lit_freq;
                 self.first_dist = self.dist_freq;
                 self.first_tokens = self.icf_count;
@@ -490,7 +447,6 @@ pub const Encoder = struct {
         self.history = WINDOW;
     }
 
-    // After the last window: pads the final block to a byte boundary and writes what is left.
     pub fn finish(self: *Encoder) EncodeError!void {
         var bits: BitWriter = .{ .writer = self.out, .value = self.bit_value, .count = self.bit_count };
         try bits.alignByte();
@@ -498,8 +454,6 @@ pub const Encoder = struct {
         self.bit_count = 0;
     }
 
-    // After a run ended by a non-final `codeWindow`: an empty stored block brings the output to a byte boundary, so
-    // every byte so far can be decoded, and the next window starts a new history (a full flush).
     pub fn fullFlush(self: *Encoder) EncodeError!void {
         var bits: BitWriter = .{ .writer = self.out, .value = self.bit_value, .count = self.bit_count };
         try bits.put(0, 3);
@@ -516,11 +470,8 @@ pub const Encoder = struct {
         return if (preset == .fast) self.head[0..FAST_HASH] else self.head[0..];
     }
 
-    // The chain hash of the `key` bytes at `p` (4 for dense, 5 for even; zero-padded at the tail).
     fn hash(self: *const Encoder, p: usize, end: usize, comptime key: u4) usize {
         if (key == 5) {
-            // Five-byte keys: DNA has 256 four-byte keys but 1024 five-byte ones, so even's short chain walk
-            // reaches four times further back, for 0.3% more ratio at equal speed.
             const v = if (p + 8 <= end) std.mem.readInt(u64, self.window[p..][0..8], .little) & 0xff_ffff_ffff else blk: {
                 var bytes: [8]u8 = @splat(0);
                 const n = @min(5, end - p);
@@ -529,7 +480,6 @@ pub const Encoder = struct {
             };
             return @intCast((v *% 0x9e3779b97f4a7c15) >> 48);
         }
-        // The final three-byte tail has no fourth byte for the hot-path key.
         const v = if (p + 4 <= end)
             std.mem.readInt(u32, self.window[p..][0..4], .little)
         else
@@ -554,8 +504,6 @@ pub const Encoder = struct {
         while (entry != 0 and attempts != 0) : (attempts -= 1) {
             const q: usize = entry - 1;
             if (q < lower or q >= p) break;
-            // Only a candidate matching every byte up to best.len can win, so the four bytes ending there are
-            // compared at once; the output is the same as checking the last one, but most losers stop here.
             const head_same = std.mem.readInt(u16, self.window[q..][0..2], .little) == std.mem.readInt(u16, self.window[p..][0..2], .little);
             const end_same = if (best.len >= 3)
                 std.mem.readInt(u32, self.window[q + best.len - 3 ..][0..4], .little) == std.mem.readInt(u32, self.window[p + best.len - 3 ..][0..4], .little)
@@ -575,7 +523,6 @@ pub const Encoder = struct {
         return best;
     }
 
-    // Order-0 entropy in bits per byte of `n` bytes with byte counts `counts`.
     fn entropyBits(counts: *const [256]u32, n: usize) f64 {
         if (n == 0) return 0;
         const total: f64 = @floatFromInt(n);
@@ -604,12 +551,6 @@ pub const Encoder = struct {
         return false;
     }
 
-    // fast, after igzip's level 1: two positions per step, one table candidate each,
-    // read without validity checks (every entry gives a distance in 1..32768; the bytes decide), length
-    // from one 8-byte XOR, minimum match 4, table inserts only at the two positions after a match start.
-    // From 32 missed pairs in a row, each further miss also passes `misses / 16` literals (rounded down to
-    // even) unsearched.
-    // Tokens are self-contained (`ICF_CAP`); a new block starts when `fresh`.
     fn parseFast(self: *Encoder, start: usize, end: usize, fresh: bool) void {
         if (fresh) {
             @memset(&self.lit_freq, 0);
@@ -662,7 +603,6 @@ pub const Encoder = struct {
             self.lit_freq[257 + @as(usize, LEN_CODE[len - 3])] += 1;
             self.dist_freq[dc] += 1;
             misses = 0;
-            // p + 1 is in the table already.
             var q = p + 2;
             while (q <= m + 2) : (q += 1) self.head[fastHash(std.mem.readInt(u32, self.window[q..][0..4], .little))] = @intCast(q);
             p = m + len;
@@ -679,10 +619,6 @@ pub const Encoder = struct {
         self.icf_count = n;
     }
 
-    // fast on a BGZF block, after libdeflate's level 1: two candidates per hash bucket (`head` the
-    // newest, `previous` the one before), both checked with an 8-byte XOR, the longer taken (both measured when
-    // both match eight bytes); one position per step; the first 12 positions of each match inserted. On a
-    // cold 64 KiB block this reaches libdeflate 1's ratio where `parseFast` is 6% short.
     fn parseFastBlock(self: *Encoder, start: usize, end: usize, fresh: bool) void {
         if (fresh) {
             @memset(&self.lit_freq, 0);
@@ -796,7 +732,6 @@ pub const Encoder = struct {
         return n + count / 2;
     }
 
-    // even and dense: chain search with lazy evaluation at `p + 1` (`parseFast` handles fast).
     fn parse(self: *Encoder, start: usize, end: usize, preset: Preset, skip_search: bool, fresh: bool, comptime key: u4, comptime block: bool) void {
         if (fresh) {
             @memset(&self.lit_freq, 0);
@@ -805,24 +740,17 @@ pub const Encoder = struct {
             self.icf_count = 0;
         }
         std.debug.assert(preset != .fast);
-        // dense: a deeper walk, no early stop below the longest match, lazy evaluation up to 32 bytes with 64
-        // candidates, and lazy2 (libdeflate's levels 8 and 9).
-        // even on a BGZF block: budget 32, nice 258, lazy evaluation below 32 with 16 candidates.
         const budget: usize = if (preset == .dense) 160 else if (block) 32 else 12;
         const nice: usize = if (preset == .dense) 258 else if (block) 258 else 96;
         const lazy_below: usize = if (preset == .dense) 32 else if (block) 32 else 16;
         var p = start;
         var n = self.icf_count;
-        // A literal waiting for a second one to share its token.
         var held: ?u8 = null;
         var pending: Match = .{};
         var pending_hash: usize = 0;
         var pending_pos: usize = 0;
         var literal_until: usize = 0;
         if (skip_search and !self.hasEarlyMatch(start, end, key)) search_off: {
-            // Count the bytes in four tables (no store-to-load chain on repeated bytes). The search stays off only
-            // for near-random bytes (at least 7.9 bits per byte of order-0 entropy): `hasEarlyMatch` sees only a
-            // block's first 1 KiB, and compressible data can start later in the block.
             var counts: [4][256]u32 = @splat(@splat(0));
             var q = start;
             while (q + 4 <= end) : (q += 4) {
@@ -835,7 +763,6 @@ pub const Encoder = struct {
             var total: [256]u32 = undefined;
             for (&total, 0..) |*t, b| t.* = counts[0][b] + counts[1][b] + counts[2][b] + counts[3][b];
             if (entropyBits(&total, end - start) < 7.9) break :search_off;
-            // All literals: insert every fourth position, enough for `hasEarlyMatch` to find history again.
             q = start;
             while (q + 3 <= end) : (q += 4) self.insert(q, self.hash(q, end, key));
             for (0..256) |b| self.lit_freq[b] += total[b];
@@ -877,7 +804,6 @@ pub const Encoder = struct {
                     pending_pos = p + 1;
                     m.len = 2;
                 } else if (preset == .dense and p + 4 < end) {
-                    // lazy2: p + 2 is worth two literals when its match is at least two longer.
                     const hash2 = self.hash(p + 2, end, key);
                     const next2 = self.find(p + 2, end, 16, nice, hash2);
                     if (next2.len > m.len + 1) {
@@ -902,8 +828,6 @@ pub const Encoder = struct {
                 self.dist_freq[dc] += 1;
                 const stop = p + m.len;
                 p += 1;
-                // A self-overlapping match (runs, short periods) repeats its last `dist` positions: insert the
-                // first three and the last dist + 3 only.
                 if (m.dist + 6 < m.len) {
                     const first_end = p + 3;
                     while (p < first_end) : (p += 1) self.insert(p, self.hash(p, end, key));
@@ -938,7 +862,6 @@ pub const Encoder = struct {
         return n;
     }
 
-    // A block's trees and its coded size, dynamic and fixed, in bits (header included, stored excluded).
     const Plan = struct {
         lit: EncodeTree = .{},
         dist: EncodeTree = .{},
@@ -983,9 +906,6 @@ pub const Encoder = struct {
         return self.emitPlanned(bits, &plan, raw, self.icf[0..self.icf_count], last);
     }
 
-    // A pair of windows (window[0..WINDOW] and window[WINDOW..end], tokens split at `first_tokens`) as one block or
-    // two, whichever is smaller counting stored blocks: mixed data gains from separate trees, uniform data from
-    // one header. Returns whether the last block written was stored.
     fn emitPair(self: *const Encoder, bits: *BitWriter, end: usize, last: bool, first_lit: *const [286]u32, first_dist: *const [30]u32, first_tokens: usize) EncodeError!bool {
         var second_lit: [286]u32 = undefined;
         for (&second_lit, self.lit_freq, first_lit) |*d, all, first| d.* = all - first;
@@ -993,8 +913,6 @@ pub const Encoder = struct {
         var second_dist: [30]u32 = undefined;
         for (&second_dist, self.dist_freq, first_dist) |*d, all, first| d.* = all - first;
         const estimate = struct {
-            // Coded bits under ideal codes plus extra bits, and a header allowance per used symbol (a stand-in
-            // for building the trees: about 3% of the time on BGZF blocks); capped at the stored size.
             fn of(lit_freq: *const [286]u32, dist_freq: *const [30]u32, len: usize) f64 {
                 var total: f64 = 0;
                 for (lit_freq) |f| total += @floatFromInt(f);
@@ -1029,13 +947,10 @@ pub const Encoder = struct {
         return self.emitPlanned(bits, &second, self.window[WINDOW..end], self.icf[first_tokens..self.icf_count], last);
     }
 
-    // Writes one block of `raw` as planned (or stored when smaller) from its `tokens`. Returns whether the block was
-    // stored.
     fn emitPlanned(self: *const Encoder, bits: *BitWriter, plan: *const Plan, raw: []const u8, tokens: []const u32, last: bool) EncodeError!bool {
         _ = self;
         const stored = 3 + ((8 - ((@as(usize, bits.count) + 3) & 7)) & 7) + 32 + raw.len * 8;
         if (stored < plan.fixed and stored <= plan.dynamic) {
-            // A block of two windows is one byte more than a stored block holds.
             var rest = raw;
             while (true) {
                 const chunk = rest[0..@min(rest.len, 65535)];
@@ -1072,7 +987,6 @@ pub const Encoder = struct {
     }
 
     fn emitIcf(tokens: []const u32, bits: *BitWriter, lit: *const EncodeTree, dist: *const EncodeTree) EncodeError!void {
-        // First symbol: code | length << 32, a match's length extra bits merged into the code.
         var first: [513]u64 = undefined;
         for (first[0..256], 0..) |*e, s| e.* = lit.codes[s] | (@as(u64, lit.lens[s]) << 32);
         first[256] = 0;
@@ -1082,7 +996,6 @@ pub const Encoder = struct {
             const extra = @as(u64, len) - LEN_BASE[l];
             e.* = (lit.codes[257 + @as(usize, l)] | (extra << code_len)) | (@as(u64, code_len + LEN_EXTRA[l]) << 32);
         }
-        // Second symbol: code | length << 32 | extra-bit count << 40.
         var second: [ICF_LITERAL + 256]u64 = undefined;
         for (second[0..30], 0..) |*e, c| e.* = dist.codes[c] | (@as(u64, dist.lens[c]) << 32) | (@as(u64, DIST_EXTRA[c]) << 40);
         second[ICF_NONE] = 0;
@@ -1091,15 +1004,11 @@ pub const Encoder = struct {
         const w = bits.writer;
         var i: usize = 0;
         while (true) {
-            // Bit buffer and output position in registers; one unconditional 8-byte store per token (at most 55
-            // bits pending) while 8 bytes of room remain.
             const buf = w.buffer;
             var pos = w.end;
             var value = bits.value;
             var count: u32 = bits.count;
             std.debug.assert(count <= 7);
-            // Two tokens per step: one add and one store when they fit in 56 bits together (the common case),
-            // which halves the chain of dependent bit-buffer updates.
             while (i + 2 <= tokens.len and buf.len - pos >= 16) : (i += 2) {
                 const c0 = icfCode(tokens[i], &first, &second);
                 const c1 = icfCode(tokens[i + 1], &first, &second);
@@ -1134,14 +1043,11 @@ pub const Encoder = struct {
             bits.value = value;
             bits.count = count;
             if (i == tokens.len) break;
-            // Under 8 bytes of room: one token through the writer, which drains its buffer.
             const code = icfCode(tokens[i], &first, &second);
             i += 1;
-            // `put` takes at most 16 bits; the bits above `len` are zero.
             try bits.put(@as(u16, @truncate(code.bits)), @intCast(@min(code.len, 16)));
             if (code.len > 16) try bits.put(@as(u16, @truncate(code.bits >> 16)), @intCast(@min(code.len - 16, 16)));
             if (code.len > 32) try bits.put(@as(u16, @truncate(code.bits >> 32)), @intCast(code.len - 32));
-            // The register loop needs at most 7 pending bits.
             try bits.drain();
         }
         try bits.symbol(lit, 256);
@@ -1149,7 +1055,6 @@ pub const Encoder = struct {
 
     const IcfCode = struct { bits: u64, len: u32 };
 
-    // One token's bits: at most 48 (a 20-bit length code and extra, a 28-bit distance code and extra).
     inline fn icfCode(t: u32, first: *const [513]u64, second: *const [ICF_LITERAL + 256]u64) IcfCode {
         const a = first[t & 0x3ff];
         const b = second[(t >> 10) & 0x1ff];
@@ -1170,7 +1075,6 @@ const TestCheck = struct {
 
 test "[edge] - [deflate encoder]: over-depth encoding trees are shortened to complete limited codes" {
     var tree: EncodeTree = .{};
-    // Fibonacci weights give an unlimited Huffman depth of symbols - 1.
     var fib: [25]u32 = @splat(1);
     for (2..fib.len) |i| fib[i] = fib[i - 1] + fib[i - 2];
     for ([_]struct { symbols: usize, limit: u4 }{ .{ .symbols = 25, .limit = 15 }, .{ .symbols = 19, .limit = 7 } }) |case| {
@@ -1196,9 +1100,6 @@ test "[edge] - [deflate encoder]: over-depth encoding trees are shortened to com
 }
 
 test "[property] - [deflate encoder]: BGZF block output does not depend on stale table entries" {
-    // A BGZF-sized block on a workspace full of stale entries writes the same bytes as on a clean one, at every
-    // preset. (A stale second slot of fast would change output only when a bucket is first used late in a block
-    // and its stale position holds matching bytes, which no small input guarantees; the clear is by construction.)
     var input: [65280]u8 = undefined;
     var state: u32 = 0x85ebca6b;
     for (&input) |*byte| {
@@ -1219,7 +1120,6 @@ test "[property] - [deflate encoder]: BGZF block output does not depend on stale
         @memset(&clean.previous, 0);
         for (&stale.head, 0..) |*slot, i| slot.* = @truncate(i *% 2654435761 +% 7);
         for (&stale.previous, 0..) |*slot, i| slot.* = @truncate(i *% 40503 +% 29);
-        // Two blocks in a row on each workspace: the second starts with the first one's tables.
         for ([_]usize{ input.len, 20000 }) |len| {
             var want_writer = std.Io.Writer.fixed(&expected);
             var want_check: NoCheck = .{};
@@ -1247,7 +1147,6 @@ test "[edge] - [deflate encoder]: position rebasing preserves sentinels and ever
 }
 
 test "[property] - [deflate encoder]: output does not depend on stale chain entries" {
-    // Repeats make long chains; more than two windows exercise rebasing.
     var input: [3 * WINDOW + 1234]u8 = undefined;
     var state: u32 = 0x9e3779b9;
     for (&input, 0..) |*byte, i| {
@@ -1268,7 +1167,6 @@ test "[property] - [deflate encoder]: output does not depend on stale chain entr
         @memset(&clean.previous, 0);
         for (&stale.head, 0..) |*slot, i| slot.* = @truncate(i *% 2654435761 +% 99);
         for (&stale.previous, 0..) |*slot, i| slot.* = @truncate(i *% 40503 +% 17);
-        // Two streams in a row on each workspace: the second starts with the first one's chains.
         for ([_]usize{ input.len, WINDOW / 3 }) |len| {
             var want_writer = std.Io.Writer.fixed(&expected);
             var want_check: NoCheck = .{};
@@ -1327,7 +1225,6 @@ test "[property] - [deflate encoder]: tree key sorting matches the comparison so
     var expected: [288]u64 = undefined;
     for (0..400) |round| {
         const n = 1 + random.random().uintLessThan(usize, 288);
-        // Small, repeated, and near-limit frequencies; some rounds exceed 18 bits and take the fallback.
         const top: u64 = switch (round % 4) {
             0 => 4,
             1 => 300,
@@ -1336,7 +1233,6 @@ test "[property] - [deflate encoder]: tree key sorting matches the comparison so
         };
         for (keys[0..n], 0..) |*k, symbol| k.* = random.random().uintAtMost(u64, top) << 9 | symbol;
         random.random().shuffle(u64, keys[0..n]);
-        // Keys arrive in symbol order in `build`; restore it, then compare both sorts.
         std.sort.pdq(u64, keys[0..n], {}, struct {
             fn bySymbol(_: void, x: u64, y: u64) bool {
                 return x & 511 < y & 511;

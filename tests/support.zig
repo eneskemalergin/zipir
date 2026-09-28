@@ -72,7 +72,6 @@ pub const Sink = struct {
     }
 };
 
-// Returns the decompress error itself rather than `ReadFailed`.
 pub fn decompressAll(decoder: anytype, reader: *std.Io.Reader, writer: *std.Io.Writer, options: std.meta.Child(@TypeOf(decoder)).DecompressOptions) !u64 {
     decoder.init(reader, options);
     return decoder.reader.streamRemaining(writer) catch |err| switch (err) {
@@ -100,8 +99,6 @@ pub fn encodeRoundtrip(
     return encodeRoundtripOut(Codec, encoder, container, plain, options, chunk, capacity, 13, 7, encoded);
 }
 
-// As `encodeRoundtrip`, with a writer buffer of `out_capacity` bytes (at most 64) that drains at most
-// `max_drain` bytes per call.
 pub fn encodeRoundtripOut(
     comptime Codec: type,
     encoder: *Codec.Compressor,

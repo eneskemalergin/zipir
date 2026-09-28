@@ -85,7 +85,6 @@ test "[property] - [writer]: one-byte writes and window-sized inputs give the sa
     defer allocator.free(plain);
     const encoder = try allocator.create(zipir.Compressor(.gzip));
     defer allocator.destroy(encoder);
-    // Exactly one, two, and three windows, one byte either side, and nothing.
     for ([_]usize{ 0, 1, 32767, 32768, 32769, 65536, 98304, 98305 }) |len| {
         const whole = try write(allocator, encoder, plain[0..len], .even, .{ .sizes = len + 1 });
         defer allocator.free(whole);
@@ -128,7 +127,6 @@ test "[integration] - [writer]: flush makes everything written so far decodable"
         try encoder.writer.writeAll(plain[0..70_000]);
         try encoder.writer.flush();
         const at_flush = out.written().len;
-        // A reader of the output so far gets every byte written before the flush, then runs out of input.
         const decoder = try allocator.create(zipir.Decompressor(format));
         defer allocator.destroy(decoder);
         var partial = std.Io.Reader.fixed(out.written()[0..at_flush]);
@@ -154,14 +152,12 @@ test "[failure] - [writer]: the writer fails after finish and after a failed out
     try std.testing.expectEqual(@as(u64, 3), try encoder.finish());
     try std.testing.expectError(error.WriteFailed, encoder.writer.writeAll("more"));
     try std.testing.expectError(error.WriteFailed, encoder.finish());
-    // An output with room for the header only.
     var small: [12]u8 = undefined;
     var fixed = std.Io.Writer.fixed(&small);
     try encoder.init(&fixed, .{});
     var random = std.Random.DefaultPrng.init(5);
     var noise: [70_000]u8 = undefined;
     random.fill(&noise);
-    // The first windows may only be buffered, so the failure can come from the write or from `finish`.
     encoder.writer.writeAll(&noise) catch {};
     try std.testing.expectError(error.WriteFailed, encoder.finish());
     try std.testing.expectError(error.WriteFailed, encoder.writer.writeAll("x"));
@@ -190,7 +186,6 @@ test "[property] - [writer]: BGZF output depends only on the bytes, and its erro
         _ = try encoder.finish();
         try std.testing.expectEqualSlices(u8, whole.written(), out.written());
     }
-    // An index with room for no entry: the second data block does not fit.
     var none: [0]zipir.bgzf.IndexEntry = .{};
     var index: zipir.bgzf.IndexBuilder = .init(&none);
     var discard: std.Io.Writer.Discarding = .init(&.{});

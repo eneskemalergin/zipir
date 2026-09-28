@@ -77,7 +77,6 @@ test "[cli] - [format]: --format selects the codec and auto detects gzip and zli
     defer allocator.free(executable);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    // "A" at the default preset: one fixed block (73 04 00) in each wrapper; Adler-32 of "A" is 0x00420042.
     const gzip = "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x73\x04\x00\x8b\x9e\xd9\xd3\x01\x00\x00\x00";
     const zlib = "\x78\x5e\x73\x04\x00\x00\x42\x00\x42";
     const raw = "\x73\x04\x00";
@@ -127,7 +126,6 @@ test "[cli] - [format]: --format selects the codec and auto detects gzip and zli
     }
 }
 
-// Uncompressed size of each block of a BGZF stream: BSIZE at offset 16, ISIZE in a block's last 4 bytes.
 fn bgzfBlockSizes(stream: []const u8, sizes: []u32) []u32 {
     var at: usize = 0;
     var n: usize = 0;
@@ -232,7 +230,6 @@ test "[cli] - [tar]: create, list, and test agree in every format, with the end-
     for ([_][]const u8{ "d", "d/a.txt", "d/sub", "d/sub/b" }, [_]u32{ 0o755, 0o640, 0o700, 0o600 }) |path, mode| {
         try tmp.dir.setFilePermissions(io, path, @enumFromInt(mode), .{});
     }
-    // Symlink permission bits differ between systems; the listing prints what lstat reports.
     const link_mode: u32 = @intCast(@intFromEnum((try tmp.dir.statFile(io, "d/s", .{ .follow_symlinks = false })).permissions) & 0o777);
     var link_bits: [9]u8 = undefined;
     for (&link_bits, 0..) |*c, bit| c.* = if (link_mode & (@as(u32, 0o400) >> @intCast(bit)) != 0) "rwxrwxrwx"[bit] else '-';

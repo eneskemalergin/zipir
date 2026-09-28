@@ -1,4 +1,5 @@
-//! The `std.Io.Writer` the gzip, zlib, and raw DEFLATE compressors are.
+//! The `std.Io.Writer` the gzip, zlib, and raw DEFLATE compressors are. A `Framing` declares `Check`, `header`, and
+//! `trailer`.
 
 const std = @import("std");
 const encode = @import("../engine/encode.zig");
@@ -10,9 +11,6 @@ pub const Options = struct {
     preset: encode.Preset = .even,
 };
 
-// `Framing` is a format's framing around one DEFLATE stream. It declares `Check` (with `init() Check`, `update`,
-// `final`), `header(*std.Io.Writer, encode.Preset) std.Io.Writer.Error!void`, and
-// `trailer(*std.Io.Writer, *Check, size: u64) std.Io.Writer.Error!void`.
 pub fn Compressor(comptime Framing: type) type {
     return struct {
         const Self = @This();
@@ -106,7 +104,6 @@ pub fn Compressor(comptime Framing: type) type {
             const self = parent(w);
             if (self.phase != .open) return error.WriteFailed;
             if (w.buffer.len - w.end >= capacity) return;
-            // Coding a window frees a window's room; the preserved bytes must lie after it.
             if (w.end <= WINDOW or w.end - WINDOW < preserve) return error.WriteFailed;
             errdefer self.close();
             try self.codeWindow();

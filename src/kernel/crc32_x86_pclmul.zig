@@ -1,5 +1,6 @@
 //! PCLMUL CRC-32 fold for 64 or more bytes in whole 16-byte blocks, imported directly when the
-//! target guarantees PCLMUL and SSE4.1, otherwise built as an object that exports C symbols.
+//! target guarantees PCLMUL and SSE4.1, otherwise built as an object that exports C symbols. The fold and Barrett
+//! constants are the reflected IEEE CRC-32 ones of Intel's PCLMUL CRC paper, as zlib's SSE path uses them.
 
 const std = @import("std");
 const options = @import("kernel_options");
@@ -29,8 +30,6 @@ fn copyUpdateExport(crc_in: u32, data: [*]const u8, dest: [*]u8, len: usize) cal
 
 const X = @Vector(2, u64);
 
-// IEEE CRC-32 fold constants (reflected). Same POLYNOMIAL as gzip. Barrett at the end.
-// Source: Intel PCLMUL CRC paper via zlib/chromium SSE path (k1..k5, POLYNOMIAL).
 const K1K2: X = .{ 0x0154442bd4, 0x01c6e41596 };
 const K3K4: X = .{ 0x01751997d0, 0x00ccaa009e };
 const K5K0: X = .{ 0x0163cd6124, 0 };

@@ -7,7 +7,6 @@ const support = @import("support.zig");
 const Format = zipir.Format;
 const FORMATS = [_]Format{ .gzip, .zlib, .deflate };
 
-// Lines of text, a long run, and a random stretch (stored blocks), about 700 KB with a final newline.
 fn makePlain(allocator: std.mem.Allocator) ![]u8 {
     const plain = try allocator.alloc(u8, 700_001);
     var random = std.Random.DefaultPrng.init(17);
@@ -94,7 +93,6 @@ test "[integration] - [reader]: every read pattern returns the decoded stream in
         const patterns = [_]Pattern{ .borrow, .{ .copy = 7 }, .{ .copy = 4093 }, .{ .copy = 65536 }, .lines, .{ .skip = 333_333 }, .{ .limited = 1 }, .{ .limited = 1000 } };
         for (patterns) |pattern| {
             for ([_][2]usize{ .{ 16, 1 }, .{ 17, 5 }, .{ 4096, 4096 }, .{ 65536, 65536 } }) |shape| {
-                // Tiny input reads only with borrowing and lines: they reach every refill path already.
                 if (shape[1] < 4096 and pattern != .borrow and pattern != .lines) continue;
                 var input: [65536]u8 = undefined;
                 var source = support.Source.init(stream, input[0..shape[0]], shape[1]);
@@ -133,7 +131,6 @@ test "[edge] - [reader]: a peek of 128 KiB always fits and a larger one that can
     const r = &decoder.reader;
     try r.discardAll(200_003);
     try std.testing.expectEqualSlices(u8, plain[200_003..][0..131072], try r.peek(131072));
-    // Five bytes unread: with 32 KiB of history kept before them, 131077 bytes fit and 163840 do not.
     var at: usize = 200_003 + r.bufferedLen() - 5;
     r.toss(r.bufferedLen() - 5);
     try std.testing.expectEqualSlices(u8, plain[at..][0..131077], try r.peek(131077));
@@ -172,7 +169,6 @@ test "[failure] - [reader]: bytes before a fault are delivered, then the fault, 
     defer allocator.destroy(decoder);
     var sink: std.Io.Writer.Allocating = .init(allocator);
     defer sink.deinit();
-    // A wrong CRC in the second member: every byte arrives, then CrcMismatch.
     joined[joined.len - 8] ^= 1;
     var input = std.Io.Reader.fixed(joined);
     decoder.init(&input, .{});
@@ -180,7 +176,6 @@ test "[failure] - [reader]: bytes before a fault are delivered, then the fault, 
     try std.testing.expectEqual(@as(?zipir.gzip.DecompressError, error.CrcMismatch), decoder.err);
     try std.testing.expectEqualSlices(u8, plain, sink.written());
     try std.testing.expectError(error.ReadFailed, decoder.reader.peekGreedy(1));
-    // Cut inside the second member: the first member and part of the second arrive, then Truncated.
     sink.clearRetainingCapacity();
     input = std.Io.Reader.fixed(joined[0 .. one.len + two.len / 2]);
     decoder.init(&input, .{});
@@ -236,12 +231,10 @@ test "[edge] - [reader]: the input stands after the stream when trailing data is
 }
 
 test "[failure] - [reader]: max_header_bytes bounds the optional gzip header" {
-    // FNAME of 99 bytes plus its NUL: 100 optional header bytes.
     var member: [10 + 100 + 13]u8 = undefined;
     @memcpy(member[0..10], &[_]u8{ 0x1f, 0x8b, 8, 8, 0, 0, 0, 0, 0, 0xff });
     @memset(member[10..109], 'n');
     member[109] = 0;
-    // An empty final stored block, CRC 0, ISIZE 0.
     @memcpy(member[110..], &[_]u8{ 0x01, 0x00, 0x00, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0 });
     const decoder = try std.testing.allocator.create(zipir.Decompressor(.gzip));
     defer std.testing.allocator.destroy(decoder);
@@ -298,7 +291,6 @@ test "[failure] - [reader]: a damaged BGZF block's bytes are never readable" {
     defer allocator.free(plain);
     const stream = try compressBgzf(allocator, plain);
     defer allocator.free(stream);
-    // The third block's CRC-32: blocks are found with the scanner.
     var fixed = std.Io.Reader.fixed(stream);
     var scanner = zipir.bgzf.scan(&fixed, .{});
     var third: zipir.bgzf.Block = undefined;

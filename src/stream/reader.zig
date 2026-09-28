@@ -1,4 +1,7 @@
-//! The `std.Io.Reader` every format's decompressor is: decoded bytes are read from the workspace's own buffer.
+//! The `std.Io.Reader` every decompressor is: decoded bytes are read from the workspace's own buffer. A `Framing`
+//! declares `Check`, `DecompressOptions`, `DecompressError`, `min_input_buffer`, `init`, `header` (true when a
+//! stream follows), and `trailer`. One with `max_stream_bytes` decodes each stream whole before it is readable and
+//! may declare `streamError` and a `seeking` field, which enables `seek` and `seekUncompressed`.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
@@ -13,25 +16,11 @@ pub const Options = struct {
 
 pub const Error = error{ InputBufferTooSmall, PeekTooLarge };
 
-// `Framing` is a format's framing around DEFLATE streams. It declares:
-// - `Check` (with `init() Check`, `update`, `final`), `DecompressOptions` (with `max_output_bytes`),
-//   `DecompressError` (containing `decode.DecodeError` and `Error`), and `min_input_buffer`;
-// - `init(DecompressOptions) Framing`;
-// - `header(*Framing, *decode.BitReader) DecompressError!bool`: reads what precedes the next stream; true when a
-//   stream follows, false when the input has ended as the format allows;
-// - `trailer(*Framing, *decode.BitReader, *Check, size: u64) DecompressError!void`: reads and checks what follows
-//   a stream of `size` decoded bytes.
-//
-// A framing with `max_stream_bytes` has small streams (BGZF blocks): each decodes to at most that many bytes, is
-// decoded whole, and becomes readable only after `trailer` accepts it. Such a framing may declare
-// `streamError(*const Framing, DecompressError, start: u64) DecompressError` to rename an error of the stream that
-// began at output position `start`, and a `seeking: bool` field to get `seek` and `seekUncompressed`.
 pub fn Decompressor(comptime Framing: type) type {
     return struct {
         const Self = @This();
         const Check = Framing.Check;
         const whole_streams = @hasDecl(Framing, "max_stream_bytes");
-        // Room needed to start decoding: a whole stream, or enough that small reads do not move the history each time.
         const min_room = if (whole_streams) Framing.max_stream_bytes else codes.WINDOW;
         pub const DecompressOptions = Framing.DecompressOptions;
         pub const DecompressError = Framing.DecompressError;
@@ -44,7 +33,6 @@ pub fn Decompressor(comptime Framing: type) type {
         br: decode.BitReader,
         check: Check,
         phase: Phase,
-        // An error met after this call had delivered bytes; reported on the next call.
         deferred: ?DecompressError,
 
         const Phase = enum { header, body, done, failed };
@@ -67,14 +55,8 @@ pub fn Decompressor(comptime Framing: type) type {
             self.phase = .header;
         }
 
-        /// Moves to a BGZF virtual offset: `offset.coffset` must be the start of a BGZF block in `source`, the file
-        /// reader `init` was given, and `offset.uoffset` bytes of that block are skipped. An offset
-        /// that is not a block start, or a skip past the block's end, is `BadVirtualOffset`.
         pub const seek = if (@hasField(Framing, "seeking")) seekVirtual else @compileError("only BGZF seeks");
 
-        /// Moves to uncompressed offset `uoffset` of a BGZF file through `.gzi` entries (from `IndexReader`, which
-        /// checked them; sparse or empty is fine, the skip then spans BGZF blocks). `source` as for `seek`. An offset
-        /// past the end leaves the reader at the end.
         pub const seekUncompressed = if (@hasField(Framing, "seeking")) seekIndexed else @compileError("only BGZF seeks");
 
         fn seekVirtual(self: *Self, source: *std.Io.File.Reader, offset: anytype) DecompressError!void {
@@ -93,7 +75,6 @@ pub fn Decompressor(comptime Framing: type) type {
             return self.seekTo(source, coffset, uoffset - from, false);
         }
 
-        // The first BGZF block is decoded here, so an offset that is not a block start fails now, not on a later read.
         fn seekTo(self: *Self, source: *std.Io.File.Reader, coffset: u64, skip: u64, in_block: bool) DecompressError!void {
             std.debug.assert(self.br.reader == &source.interface);
             const options = self.framing.options;
@@ -113,7 +94,6 @@ pub fn Decompressor(comptime Framing: type) type {
             return @alignCast(@fieldParentPtr("reader", r));
         }
 
-        // Decodes into the buffer until it is full or the input ends; `EndOfStream` only when nothing is left.
         fn fill(self: *Self) std.Io.Reader.Error!void {
             const r = &self.reader;
             if (self.deferred) |e| {
@@ -151,7 +131,6 @@ pub fn Decompressor(comptime Framing: type) type {
                             return self.fault(renamed, start);
                         };
                         if (stop == .full) {
-                            // A whole stream always has room: its cap ends it first.
                             std.debug.assert(!whole_streams);
                             r.end = self.session.out_pos;
                             break;
@@ -163,14 +142,12 @@ pub fn Decompressor(comptime Framing: type) type {
                         r.end = self.session.out_pos;
                         self.phase = .header;
                     },
-                    // Unreached: `fill` returns early on `done` and `failed`, and the loop breaks where it sets `done`.
                     .done, .failed => unreachable,
                 }
             }
             if (r.end == start) return if (self.phase == .done) error.EndOfStream else self.fail(error.PeekTooLarge);
         }
 
-        // Bytes delivered in this call come first; the error waits for the next call.
         fn fault(self: *Self, e: DecompressError, start: usize) std.Io.Reader.Error!void {
             self.br.release();
             if (self.reader.end > start) {
@@ -195,7 +172,6 @@ pub fn Decompressor(comptime Framing: type) type {
 
         fn stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
             const self = parent(r);
-            // Every buffered byte unread and no room: hand bytes on, so a caller waiting for room can progress.
             if (r.seek == 0 and r.end == r.buffer.len) {
                 const n = try w.write(limit.slice(r.buffer[r.seek..r.end]));
                 r.seek += n;

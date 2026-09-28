@@ -1,4 +1,5 @@
-//! Public BGZF reading contracts: structure checks, EOF policy, scan, single blocks, and virtual offsets.
+//! Public BGZF contracts. Fixture blocks are built independently of the BGZF code: a zipir gzip member whose
+//! 10-byte header is replaced by one with FEXTRA, the given subfields, then `BC`.
 
 const std = @import("std");
 const support = @import("support.zig");
@@ -7,8 +8,6 @@ const bgzf = zipir.bgzf;
 
 const EOF = &bgzf.EOF_MARKER;
 
-// Builds a block independently of the BGZF code: a zipir gzip member whose 10-byte header is replaced by one
-// with FEXTRA, `extra` subfields, then `BC`; `bsize_delta` falsifies BSIZE.
 fn block(out: []u8, plain: []const u8, extra: []const u8, bsize_delta: i32) ![]u8 {
     var member_buffer: [70000]u8 = undefined;
     var reader = std.Io.Reader.fixed(plain);
@@ -64,7 +63,6 @@ fn standard() !*Fixture {
     for (&text, 0..) |*b, i| b.* = "ACGT\n"[(i * 7 + i / 13) % 5];
     try f.add(text[0..60000], "");
     try f.add("second block", "XY\x03\x00abc");
-    // An empty block that is not the EOF marker: the extra subfield changes its header.
     try f.add("", "ZZ\x00\x00");
     f.addEof();
     return f;
@@ -85,13 +83,11 @@ fn decode(reader: *bgzf.Decompressor, bytes: []const u8, chunk: usize, options: 
     return .{ .bytes = n, .blocks = reader.framing.blocks, .eof_marker = reader.framing.eof_marker };
 }
 
-// Up to `out.len` bytes from a virtual offset; `source` is the reader's input.
 fn readAt(reader: *bgzf.Decompressor, source: *std.Io.File.Reader, offset: bgzf.VirtualOffset, out: []u8) !usize {
     try reader.seek(source, offset);
     return reader.reader.readSliceShort(out) catch reader.err.?;
 }
 
-// As `readAt`, from an uncompressed offset through `.gzi` entries.
 fn readAtUncompressed(reader: *bgzf.Decompressor, source: *std.Io.File.Reader, entries: []const bgzf.IndexEntry, uoffset: u64, out: []u8) !usize {
     try reader.seekUncompressed(source, entries, uoffset);
     return reader.reader.readSliceShort(out) catch reader.err.?;
@@ -166,7 +162,6 @@ test "[failure] - [bgzf decompressor]: an extra subfield that overruns XLEN is B
     var bytes: [70000]u8 = undefined;
     var out: [bgzf.MAX_BLOCK]u8 = undefined;
     var decoder: bgzf.BlockDecoder = undefined;
-    // After the 4-byte `XY` head, XLEN leaves 8 bytes: 9 overruns them, and 5 leaves 3, too few for a subfield.
     for ([_][]const u8{ "XY\x09\x00ab", "XY\x05\x00ab" }) |extra| {
         const bad = try block(&bytes, "subfield", extra, 0);
         try std.testing.expectError(error.BadHeader, decode(reader, bad, 3, .{}, "subfield"));
@@ -277,7 +272,6 @@ test "[failure] - [bgzf decompressor]: a read stops after its range, so damage i
     defer std.testing.allocator.destroy(f);
     const reader = try std.testing.allocator.create(bgzf.Decompressor);
     defer std.testing.allocator.destroy(reader);
-    // The second block's stored CRC-32 no longer matches its data.
     f.bytes[f.starts[2] - 8] ^= 1;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -319,8 +313,6 @@ test "[property] - [bgzf decompressor]: bounded bit flips and truncations end in
         while (scanner.next() catch null) |_| {}
     }
 }
-
-// --- Writing ---
 
 fn compress(writer: *bgzf.Compressor, plain: []const u8, options: bgzf.CompressOptions, chunk: usize, out: []u8) ![]u8 {
     var buffer: [16]u8 = undefined;
@@ -460,8 +452,6 @@ test "[failure] - [bgzf compressor]: flush ends a block early and write failures
     try std.testing.expectError(error.WriteFailed, writer.finish());
 }
 
-// --- Indexes ---
-
 test "[property] - [bgzf index]: entries built by scan and while writing agree and follow htslib's rule" {
     const writer = try std.testing.allocator.create(bgzf.Compressor);
     defer std.testing.allocator.destroy(writer);
@@ -557,7 +547,6 @@ test "[property] - [bgzf decompressor]: reads at uncompressed offsets through a 
         try std.testing.expectEqual(@min(length, plain.len - at), n);
         try std.testing.expectEqualSlices(u8, plain[@intCast(at)..][0..n], got[0..n]);
     }
-    // Starting blocks earlier than the offset's own, the skip spans whole blocks.
     for ([_][]const bgzf.IndexEntry{ index.slice()[1..2], &.{} }) |sparse| {
         for (0..20) |_| {
             const at = rng.random().uintAtMost(u64, plain.len);

@@ -2,9 +2,10 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const adapter = @import("adapter");
+
 const flate = std.compress.flate;
 const Io = std.Io;
-const adapter = @import("adapter");
 
 pub fn main(init: std.process.Init.Minimal) !void {
     var threaded: std.Io.Threaded = .init_single_threaded;

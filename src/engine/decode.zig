@@ -1,9 +1,10 @@
-//! DEFLATE decoding (RFC 1951) into a bounded buffer that pauses when full.
+//! DEFLATE decoding (RFC 1951) into a bounded buffer that pauses when full. The owner of a `Session` reads
+//! `buffer[0..out_pos]`, then `rebase` keeps the unread bytes and 32 KiB of history; bits, block state, and a match
+//! cut short by a full buffer carry over to the next `run`, and new bytes are in the check when `run` returns.
 
 const std = @import("std");
 const copy = @import("../kernel/copy.zig");
 const codes = @import("codes.zig");
-// Tests only: they make DEFLATE streams to decode.
 const encode = @import("encode.zig");
 
 const CLEN_ORDER = codes.CLEN_ORDER;
@@ -21,9 +22,6 @@ pub const DecodeError = error{ Truncated, BadHuffman, BadSymbol, BadDistance, Ba
 
 const Kind = enum(u4) { invalid = 0, lit, eob, len, dist, long };
 
-// `nbits` alone fills the low byte, so the fast loop shifts the bit buffer by the raw entry (x86 shifts use only the
-// count's low six bits) and subtracts the raw entry from its bit count, whose low byte stays exact: no mask on the
-// chain from one table load to the next (libdeflate's layout).
 const Entry = packed struct(u32) {
     nbits: u8,
     kind: Kind,
@@ -46,8 +44,6 @@ fn fixedTables() FixedTables {
     fillTwoLevel(&tables.dist, &no_spill, 9, &FIXED_DIST_LENS, distKind, distPayload, true) catch |err| @compileError(@errorName(err));
     return tables;
 }
-
-// --- Bit reader ---
 
 pub const BitReader = struct {
     reader: *std.Io.Reader,
@@ -83,7 +79,6 @@ pub const BitReader = struct {
         self.src = &.{};
     }
 
-    // Bytes taken from the reader since the bit reader started; exact when the reader is byte-aligned.
     pub fn consumed(self: *const BitReader) u64 {
         return self.tossed + self.i - self.nbits / 8;
     }
@@ -93,8 +88,6 @@ pub const BitReader = struct {
         if (self.nbits < n) return error.Truncated;
     }
 
-    // Loads up to `n` bits; at the end of the input it loads what remains, so a caller that peeks
-    // a code must check the code's length against `nbits`. Bits above `nbits` are zero.
     fn fill(self: *BitReader, n: u32) !void {
         while (self.nbits < n) {
             if (self.i >= self.src.len) {
@@ -172,14 +165,11 @@ pub const BitReader = struct {
     }
 };
 
-// --- Decoder ---
-
 const BATCH = 131072;
 
 const Tables = struct {
     lit_first: [1 << 10]Entry,
     dist_first: [1 << 9]Entry,
-    // Complete residual trees need <=1536/292 entries at widths 10/9.
     lit_spill: [288 * 16]Entry,
     dist_spill: [32 * 64]Entry,
 };
@@ -197,9 +187,6 @@ pub const Stop = enum { end, full };
 
 const Block = enum { header, stored, fixed, dynamic, end };
 
-// Decodes DEFLATE streams into `Decoder.buffer`, pausing when the buffer is full. `buffer[0..out_pos]` is
-// decoded output; the owner reads it, then `rebase` keeps what is unread plus 32 KiB of history and frees
-// the rest. Bits, block state, and a match cut short by a full buffer carry over to the next `run`.
 pub fn Session(comptime Check: type) type {
     return struct {
         const Self = @This();
@@ -209,12 +196,10 @@ pub fn Session(comptime Check: type) type {
         check: *Check = undefined,
         out: []u8 = &.{},
         out_pos: usize = 0,
-        // Bytes decoded before `buffer[0]`: `position` is `base + out_pos`.
         base: u64 = 0,
         check_pos: usize = 0,
         stream_start: u64 = 0,
         max_output_bytes: u64,
-        // Output cap for each stream (a BGZF block holds at most 65536 bytes), applied with max_output_bytes.
         max_stream_bytes: u64 = std.math.maxInt(u64),
         block: Block = .end,
         final: bool = false,
@@ -233,17 +218,13 @@ pub fn Session(comptime Check: type) type {
             self.limit();
         }
 
-        // New bytes are in the check when it returns.
         pub fn run(self: *Self) DecodeError!Stop {
             const stop = try self.decode();
             self.catchup();
-            // A pause can come right after a 64-bit refill; the fast loop's refill needs fewer than 64 bits held.
             if (stop == .full) self.br.putBack();
             return stop;
         }
 
-        // Keeps `buffer[keep_from..out_pos]` and at least 32 KiB of history before `out_pos`, moved to the front,
-        // and returns how far bytes moved, which the owner subtracts from its offsets.
         pub fn rebase(self: *Self, keep_from: usize) usize {
             const from = @min(keep_from, self.out_pos -| WINDOW);
             if (from != 0) {
@@ -261,7 +242,6 @@ pub fn Session(comptime Check: type) type {
             return self.base + self.out_pos;
         }
 
-        // `out` ends where the output limits stop this stream, or at the end of the buffer.
         fn limit(self: *Self) void {
             const at = self.position();
             const allowed = @min(self.max_output_bytes - at, (self.stream_start +| self.max_stream_bytes) - at);
@@ -269,7 +249,6 @@ pub fn Session(comptime Check: type) type {
             self.out = self.decoder.buffer[0 .. self.out_pos + @as(usize, @intCast(@min(room, allowed)))];
         }
 
-        // No room: a limit (not the buffer's end) is what stopped decoding.
         fn full(self: *const Self) DecodeError!Stop {
             if (self.out.len < self.decoder.buffer.len) return error.OutputLimitExceeded;
             return .full;
@@ -355,7 +334,6 @@ pub fn Session(comptime Check: type) type {
             self.check_pos = self.out_pos;
         }
 
-        // Stored bytes; the caller made room for all of them.
         fn put(self: *Self, bytes: []const u8) void {
             const dest = self.out[self.out_pos..][0..bytes.len];
             if (comptime @hasDecl(Check, "copyUpdate")) {
@@ -376,7 +354,6 @@ pub fn Session(comptime Check: type) type {
             return self.copyMatch();
         }
 
-        // Copies what fits of the pending match; true when none is left.
         fn copyMatch(self: *Self) bool {
             const n = @min(self.match_left, self.out.len - self.out_pos);
             if (self.match_distance == 1) {
@@ -426,15 +403,10 @@ fn fillFirst(table: []Entry, width: u4, lens: []const u4, kind_of: *const fn (us
     }
 }
 
-// A root table of `1 << width` entries plus spill subtables for longer codes, in the order and with the method
-// of libdeflate: symbols sorted by code length, each code written once at its bit-reversed position, and the root
-// doubled by copying whenever the length grows. A complete code fills every entry, so nothing is cleared first.
-// On error the root is all invalid.
 fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []const u4, comptime kind_of: fn (usize) Kind, comptime payload_of: fn (usize) u16, comptime predecoded: bool) !void {
     const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
     std.debug.assert(table.len == @as(usize, 1) << width);
     errdefer @memset(table, invalid);
-    // Index 16 stays 0 so the length scans below can read one past 15.
     var count: [17]u16 = @splat(0);
     for (lens) |len| count[len] += 1;
     var left: i32 = 1;
@@ -444,7 +416,6 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []cons
     }
     const symbols = lens.len - count[0];
     if (left != 0) {
-        // Incomplete: only no codes or one 1-bit code, which decodes on even prefixes.
         if (symbols != 0 and !(symbols == 1 and count[1] == 1)) return error.BadHuffman;
         @memset(table, invalid);
         if (symbols == 1) {
@@ -469,13 +440,11 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []cons
     var remaining: usize = count[len];
     var codeword: usize = 0;
     var end: usize = @as(usize, 1) << @intCast(@min(len, width));
-    // Root: codes of at most `width` bits.
     while (len <= width) {
         while (true) {
             table[codeword] = makeEntry(sorted[next], @intCast(len), kind_of, payload_of, predecoded);
             next += 1;
             if (codeword == end - 1) {
-                // The all-ones codeword is the last code: double the root up to its full width.
                 while (end < table.len) : (end <<= 1) @memcpy(table[end..][0..end], table[0..end]);
                 return;
             }
@@ -494,7 +463,6 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []cons
             if (remaining != 0) break;
         }
     }
-    // Spill: one subtable per root prefix of the longer codes, in code order, sized by the codes under it.
     const root_mask = table.len - 1;
     var prefix: usize = std.math.maxInt(usize);
     var start: usize = 0;
@@ -645,10 +613,7 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
     const output = ctx.out;
     const input = br.src;
     if (output.len - ctx.out_pos < 289 or input.len - br.i < 8) return false;
-    // The refill below shifts by the bit count, which must stay under 64 (a pause puts whole bytes back).
     std.debug.assert(br.nbits < 64);
-    // Input and output are walked by pointers checked against stop pointers: two fewer live registers keep the
-    // table pointers in registers, and each bound is one compare.
     var bits = br.bits;
     var count = br.nbits;
     var in: [*]const u8 = input.ptr + br.i;
@@ -657,7 +622,6 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
     const out_start = out;
     const out_stop: [*]u8 = output.ptr + (output.len - 289);
     const history = ctx.position() - ctx.stream_start;
-    // Only the low byte of `count` is the bit count: whole raw entries are subtracted from it.
     defer {
         br.bits = bits;
         br.nbits = count & 0xff;
@@ -666,8 +630,6 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
     }
     const first_word = std.mem.readInt(u64, in[0..8], .little);
     var e = lit[@intCast((bits | (first_word << @intCast(count))) & ((1 << 10) - 1))];
-    // Eight-byte reads leave >=16 physical bits after each <=48-bit token.
-    // Wild copies require 289 owned bytes; prefetched entries do not consume bits.
     while (@intFromPtr(out) <= @intFromPtr(out_stop) and @intFromPtr(in) <= @intFromPtr(in_stop)) {
         const word = std.mem.readInt(u64, in[0..8], .little);
         bits |= word << @as(u6, @truncate(count));
@@ -710,7 +672,6 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
                 (out + j)[0..32].* = chunk;
             }
         } else if (full_history or decoded >= 32) {
-            // 32 bytes of history before `out`, and the 289 owned bytes after it.
             copy.repeatSmall((out - 32)[0 .. 32 + 289], 32, distance, length);
         } else {
             copy.matchVec16((out - distance)[0 .. distance + length], distance, distance, length);
@@ -721,7 +682,6 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
     return false;
 }
 
-// `.end` at the end-of-block code; `.full` before a literal or match finds no room, or with a match pending.
 fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) DecodeError!Stop {
     const br = ctx.br;
     while (true) {
@@ -736,8 +696,6 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
             _ = try br.refill(8);
         }
         if (try @call(.never_inline, decodeFast, .{ Check, ctx, lit, dist })) return .end;
-        // A stream may end at the end of the input (raw DEFLATE has no trailer), so fewer than 15 bits
-        // can remain; a code that is invalid or longer than what remains is then a truncation.
         try br.fill(15);
         var e = peekFirst(lit, 10, br.bits);
         if (e.kind == .long) e = lookupLong(e, &ctx.decoder.tables.lit_spill, br.bits, 10);
@@ -981,7 +939,6 @@ const SumCheck = struct {
     }
 };
 
-// Reads `size` bytes at a time from a paused session, rebasing after each read while bytes stay unread.
 fn pumpSession(session: *Session(SumCheck), size: usize, expected: []const u8) !void {
     var seek: usize = 0;
     var got: usize = 0;
@@ -1011,7 +968,6 @@ test "[property] - [deflate decoder]: paused decoding returns the stream at ever
     defer allocator.destroy(decoder);
     const encoder = try allocator.create(encode.Encoder);
     defer allocator.destroy(encoder);
-    // Text-like runs, long matches across batch ends, and random stretches that become stored blocks.
     const plain = try allocator.alloc(u8, 420_000);
     defer allocator.free(plain);
     var random = std.Random.DefaultPrng.init(41);
@@ -1039,7 +995,6 @@ test "[property] - [deflate decoder]: paused decoding returns the stream at ever
             try std.testing.expectEqual(@as(u64, plain.len), session.position());
             try std.testing.expectEqual(expected, check);
         }
-        // An output limit equal to the stream's size is met; one byte less is exceeded.
         for ([_]u64{ plain.len, plain.len - 1 }) |max| {
             var reader = std.Io.Reader.fixed(writer.buffered());
             var br: BitReader = .{ .reader = &reader };

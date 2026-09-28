@@ -1,4 +1,5 @@
-//! What DEFLATE's decoder and encoder share (RFC 1951).
+//! What DEFLATE's decoder and encoder share (RFC 1951). `buildCodes` in `.symbols` mode also accepts an incomplete
+//! code of at most one symbol, as distance codes may be.
 
 pub const CLEN_ORDER = [_]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
 pub const LEN_EXTRA = [_]u4{ 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 };
@@ -23,7 +24,6 @@ pub fn bitReverse(code: u16, n: u4) u16 {
     return @bitReverse(code) >> @intCast(16 - @as(u16, n));
 }
 
-// `.symbols` also accepts an incomplete code of at most one symbol, as distance codes may be.
 pub fn buildCodes(lens: []const u4, codes: []u16, kind: enum { codes, symbols }) !void {
     var bl_count: [16]u16 = .{0} ** 16;
     for (lens) |code_len| {

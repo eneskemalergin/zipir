@@ -1,4 +1,5 @@
-//! Public tar reading and writing contracts.
+//! Public tar reading and writing contracts. `tar-gnu.tar` and `tar-pax.tar` are GNU tar's archives of a staged
+//! tree; malformed headers are built independently of the reader, for cases no tool writes.
 
 const std = @import("std");
 const support = @import("support.zig");
@@ -13,7 +14,6 @@ const BASE256 = @embedFile("data/synthetic/tar-base256.tar");
 
 const MTIME = 1700000000;
 
-// Records every visitor call as text: `kind size mode mtime name -> link|` then the data, then `;`.
 const Transcript = struct {
     out: std.Io.Writer,
     skip: bool = false,
@@ -38,7 +38,6 @@ const Transcript = struct {
 
 const Result = struct { summary: tar.Summary, transcript: []const u8 };
 
-// Feeds `archive` in pieces of `split` bytes, as a decompressor's batches would arrive.
 fn read(archive: []const u8, split: usize, visitor: *Transcript, names: tar.Names) !tar.Summary {
     var reader: tar.Reader(Transcript) = .init(visitor, names);
     var at: usize = 0;
@@ -62,7 +61,6 @@ fn binPattern() [1000]u8 {
     return bytes;
 }
 
-// The staged tree GNU tar archived in `tar-gnu.tar` and `tar-pax.tar`, in archive order.
 fn expectedTree(out: *std.Io.Writer) !void {
     const long_name = "d/" ++ "n" ** 120 ++ ".txt";
     const long_link = "t" ** 120;
@@ -77,7 +75,6 @@ fn expectedTree(out: *std.Io.Writer) !void {
     try out.print("symlink 0 777 {d} d/sym -> a.txt|;", .{MTIME});
 }
 
-// A ustar header built independently of the reader, for malformed cases no tool writes.
 fn header(block: *[512]u8, name: []const u8, typeflag: u8, size: []const u8) void {
     @memset(block, 0);
     @memcpy(block[0..name.len], name);
@@ -90,7 +87,6 @@ fn header(block: *[512]u8, name: []const u8, typeflag: u8, size: []const u8) voi
     @memset(block[148..156], ' ');
     var sum: u32 = 0;
     for (block) |b| sum += b;
-    // At most 512 * 255 = 130560, six octal digits, so the seven bytes always fit.
     _ = std.fmt.bufPrint(block[148..155], "{o:0>6}\x00", .{sum}) catch unreachable;
 }
 
@@ -158,7 +154,6 @@ test "[edge] - [tar reader]: the archive ends at its first zero block, and the e
     try std.testing.expectEqual(tar.Summary{ .entries = 3, .end_marker = false }, (try transcribe(body, 512, &storage)).summary);
     try std.testing.expectEqual(tar.Summary{ .entries = 3, .end_marker = false }, (try transcribe(USTAR[0 .. USTAR.len - 512], 512, &storage)).summary);
     try std.testing.expectEqual(tar.Summary{ .entries = 3, .end_marker = false }, (try transcribe(USTAR[0 .. USTAR.len - 100], 512, &storage)).summary);
-    // After one zero block GNU tar stops, even when a valid header follows.
     var lone: [USTAR.len]u8 = undefined;
     @memcpy(lone[0..body.len], body);
     @memset(lone[body.len..][0..512], 0);
@@ -171,13 +166,11 @@ test "[edge] - [tar reader]: the archive ends at its first zero block, and the e
 
 test "[edge] - [tar reader]: kinds without data skip any size their header claims; unknown kinds carry data" {
     var archive: [10 * 512]u8 = @splat(0);
-    // GNU tar and tarfile read the block after each of these headers as the next header.
     header(archive[0..512], "dir", '5', "00000001000");
     header(archive[512..1024], "sym", '2', "00000001000");
     header(archive[1024..1536], "old/", 0, "00000000000");
     header(archive[1536..2048], "vendor", 'Z', "00000000003");
     @memcpy(archive[2048..2051], "abc");
-    // A GNU long name ends at its NUL even when more bytes follow in its data.
     header(archive[2560..3072], "././@LongLink", 'L', "00000000011");
     @memcpy(archive[3072..3081], "long\x00junk");
     header(archive[3584..4096], "short", '0', "00000000000");
@@ -234,7 +227,6 @@ test "[failure] - [tar reader]: a stream cut anywhere but a block boundary betwe
             if (transcribe(archive[0..cut], 509, &storage)) |result| {
                 try std.testing.expect(!result.summary.end_marker);
                 try std.testing.expect(std.mem.startsWith(u8, whole.transcript, result.transcript));
-                // Once the first end block is complete the archive has ended, like GNU tar reads it.
                 if (cut >= first_end + 512) continue;
                 try std.testing.expect(cut % 512 == 0);
                 boundaries += 1;
@@ -243,7 +235,6 @@ test "[failure] - [tar reader]: a stream cut anywhere but a block boundary betwe
                 try std.testing.expect(cut < first_end + 512);
             }
         }
-        // Before each of the nine entries' first header block, and before the end blocks.
         try std.testing.expectEqual(@as(usize, 10), boundaries);
     }
 }
@@ -258,7 +249,6 @@ test "[failure] - [tar reader]: checksums, numbers, sparse entries, and names th
     try std.testing.expectError(error.BadNumber, transcribe(&archive, 512, &storage));
     header(archive[0..512], "sparse", 'S', "00000000000");
     try std.testing.expectError(error.UnsupportedEntry, transcribe(&archive, 512, &storage));
-    // Every way a name reaches the caller is bounded by the caller's buffer.
     var name: [100]u8 = undefined;
     var link: [100]u8 = undefined;
     for ([_][]const u8{ GNU, PAX, USTAR }) |fixture| {
@@ -323,11 +313,8 @@ test "[property] - [tar reader]: bounded bit flips end in success or a documente
     }
 }
 
-// --- Writing ---
-
 const File = struct { entry: tar.Entry, bytes: []const u8 = "" };
 
-// Yields `files` in order; `short` hands out one byte fewer than the entry's size.
 const Files = struct {
     files: []const File,
     index: usize = 0,
@@ -376,7 +363,6 @@ fn sampleFiles() [9]File {
     };
 }
 
-// What the reader reports for `sampleFiles` written with mtime 0.
 fn expectedSample(out: *std.Io.Writer, files: []const File) !void {
     for (files) |file| {
         const e = file.entry;
@@ -386,7 +372,6 @@ fn expectedSample(out: *std.Io.Writer, files: []const File) !void {
     }
 }
 
-// Reads the whole archive from a writer whose reader has `buffer`, `chunk` bytes at a time.
 fn writeArchive(files: []const File, buffer: []u8, chunk: usize, options: tar.WriterOptions, out: []u8) ![]u8 {
     var source: Files = .{ .files = files };
     var writer: tar.Writer(Files) = .init(&source, buffer, options);
@@ -410,8 +395,6 @@ test "[property] - [tar writer]: archives read back entry for entry through any 
     try expectedSample(&expected, &files);
     var first: [16384]u8 = undefined;
     const reference = try writeArchive(&files, &.{}, first.len, .{}, &first);
-    // Header blocks plus data blocks: the 121-byte name fits ustar's prefix, the 300-byte name and the
-    // 200-byte target each take a GNU header and one block of name, and two zero blocks end the archive.
     try std.testing.expectEqual(@as(usize, (1 + 2 + 1 + 3 + 2 + 2 + 4 + 3 + 1 + 2) * 512), reference.len);
     var storage: [4096]u8 = undefined;
     const result = try transcribe(reference, 512, &storage);
@@ -455,7 +438,6 @@ test "[edge] - [tar writer]: the output depends only on the entries and the mtim
     const dated = try writeArchive(files[1..2], &.{}, b.len, .{ .mtime = -86400 }, &b);
     var storage: [256]u8 = undefined;
     try std.testing.expectEqualStrings("file 6 644 -86400 d/a.txt|hello\n;", (try transcribe(dated, 512, &storage)).transcript);
-    // 12345 in each entry does not reach the archive.
     try std.testing.expect(std.mem.find(u8, zero, "30071") == null);
 }
 
@@ -469,7 +451,6 @@ test "[edge] - [tar writer]: a size of 8 GiB or more is written base-256 and rea
     var storage: [256]u8 = undefined;
     try std.testing.expectError(error.Truncated, transcribe(&block, 512, &storage));
     try std.testing.expectEqualStrings("file 8589934592 644 0 huge|", storage[0..27]);
-    // The largest size a u64 holds still fits the 12-byte field.
     const largest = [_]File{.{ .entry = entry("largest", .file, std.math.maxInt(u64), "") }};
     var largest_source: Files = .{ .files = &largest };
     var largest_writer: tar.Writer(Files) = .init(&largest_source, &.{}, .{});

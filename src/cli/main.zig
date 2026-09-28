@@ -1,5 +1,9 @@
 //! Streams gzip, BGZF, zlib, and raw DEFLATE files and standard input through zipir, and lists, tests, and
-//! creates tar archives in those formats or plain.
+//! creates tar archives in those formats or plain. `--format auto` tries a plain tar header first (tar commands),
+//! then gzip (BGZF by its first member's `BC` subfield) and zlib by its header; input under two bytes is truncated
+//! gzip. `tar list` prints GNU `tar -tv --full-time`'s line without the owner column, in UTC. `tar create` never
+//! follows symlinks, refuses absolute and `..` names, writes directory contents in byte order of names, and does
+//! not detect hardlinks (`std.Io.File.Stat` has no device number).
 
 const std = @import("std");
 const zipir = @import("zipir");
@@ -51,7 +55,6 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     defer allocator.free(args);
     var output_buffer: [4096]u8 = undefined;
     var stdout = std.Io.File.stdout().writer(io, &output_buffer);
-    // An empty argument vector (possible through execve) gets the version, not an out-of-bounds read.
     if (args.len <= 1 or (args.len == 2 and std.mem.eql(u8, args[1], "--version"))) {
         try stdout.interface.print("zipir {d}.{d}.{d}\n", .{
             zipir.version.major, zipir.version.minor, zipir.version.patch,
@@ -111,7 +114,6 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
             has_preset = true;
             continue;
         }
-        // --level 1|5|9 is the hidden alias of --fast, --even, and --dense.
         if (!literal and std.mem.eql(u8, arg, "--level")) {
             if (!compress or has_preset or i + 1 == args.len) return usage(io);
             i += 1;
@@ -156,7 +158,6 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     const input: Input = if (format) |known| .{ .codec = known } else try detect(&reader.interface, false) orelse return unknownFormat(io);
     var discard: std.Io.Writer.Discarding = .init(&.{});
     const writer = if (verify) &discard.writer else &stdout.interface;
-    // Detection without tar never reports a plain archive; `--format` cannot name one here.
     if (input == .plain) return unknownFormat(io);
     if (input == .codec) {
         switch (input.codec) {
@@ -173,7 +174,6 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
     return 0;
 }
 
-// Decodes all of `input` into `out`; a decode error is returned as itself rather than as `ReadFailed`.
 fn decompressAll(decoder: anytype, input: *std.Io.Reader, out: *std.Io.Writer, options: std.meta.Child(@TypeOf(decoder)).DecompressOptions) !void {
     decoder.init(input, options);
     _ = decoder.reader.streamRemaining(out) catch |err| return switch (err) {
@@ -186,13 +186,8 @@ fn compressAll(input: *std.Io.Reader, writer: *std.Io.Writer) !void {
     _ = try input.streamRemaining(writer);
 }
 
-// What `--format` names or `auto` detects: a codec, BGZF (gzip read with its structure checks), or a
-// plain tar archive.
 const Input = union(enum) { codec: zipir.Format, bgzf, plain };
 
-// `--format auto` for every command: gzip, BGZF by its first member's `BC` subfield, zlib by a valid
-// RFC 1950 header, and for tar commands a plain archive by a valid first header block (or a zero block,
-// an archive with no entries). The tar check comes first: it is the strongest signal.
 fn detect(reader: *std.Io.Reader, archive: bool) !?Input {
     if (archive) {
         if (reader.peek(512)) |block| {
@@ -203,7 +198,6 @@ fn detect(reader: *std.Io.Reader, archive: bool) !?Input {
         }
     }
     const head = reader.peek(2) catch |err| switch (err) {
-        // Inputs shorter than two bytes keep failing as truncated gzip, as they did before auto-detection.
         error.EndOfStream => return .{ .codec = .gzip },
         error.ReadFailed => return err,
     };
@@ -220,7 +214,6 @@ fn unknownFormat(io: std.Io) !u8 {
     return 2;
 }
 
-// A gzip member whose FEXTRA holds a `BC` subfield starts a BGZF file; headers larger than the buffer are not.
 fn isBgzf(reader: *std.Io.Reader) !bool {
     const fixed = reader.peek(12) catch |err| switch (err) {
         error.EndOfStream => return false,
@@ -257,7 +250,6 @@ fn compressBgzf(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, out
     _ = encoder.finish() catch |err| return encoder.err orelse err;
 }
 
-// Two scans of FILE (the first counts the entries), then FILE.gzi, created exclusively.
 fn bgzfIndex(io: std.Io, allocator: std.mem.Allocator, args: []const [:0]const u8) !u8 {
     if (args.len < 2 or !std.mem.eql(u8, args[0], "index")) return usage(io);
     const literal = args.len == 3 and std.mem.eql(u8, args[1], "--");
@@ -303,8 +295,6 @@ fn decompressBgzf(io: std.Io, allocator: std.mem.Allocator, reader: *std.Io.Read
     try stderr.interface.writeAll("zipir: warning: EOF marker is absent. The input may be truncated\n");
     try stderr.interface.flush();
 }
-
-// --- tar ---
 
 fn tarCommand(io: std.Io, allocator: std.mem.Allocator, args: []const [:0]const u8, stdout: *std.Io.Writer) !u8 {
     if (args.len == 0) return usage(io);
@@ -392,7 +382,6 @@ fn readArchive(io: std.Io, allocator: std.mem.Allocator, reader: *std.Io.Reader,
             },
         },
         .bgzf => try decompressBgzf(io, allocator, reader, archive, std.math.maxInt(u64), verify),
-        // The archive's writer has no buffer, so plain input is fed from the reader's buffer.
         .plain => while (true) {
             const bytes = reader.peekGreedy(1) catch |err| switch (err) {
                 error.EndOfStream => return,
@@ -404,7 +393,6 @@ fn readArchive(io: std.Io, allocator: std.mem.Allocator, reader: *std.Io.Reader,
     }
 }
 
-// Prints `tar -tv --full-time`'s line without the owner column, in UTC; with no output, only reads.
 const Lister = struct {
     out: ?*std.Io.Writer,
 
@@ -430,7 +418,6 @@ const Lister = struct {
         }
         const time = civil(e.mtime);
         try out.print("{s} {d} ", .{ &mode, e.size });
-        // A signed number with a width prints its sign; GNU tar prints 1970, not +1970.
         if (time.year >= 0) try out.print("{d:0>4}", .{@as(u64, @intCast(time.year))}) else try out.print("{d}", .{time.year});
         try out.print("-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} {s}", .{ time.month, time.day, time.hour, time.minute, time.second, e.name });
         switch (e.kind) {
@@ -454,8 +441,6 @@ const Lister = struct {
 
 const Civil = struct { year: i64, month: u8, day: u8, hour: u8, minute: u8, second: u8 };
 
-// Days to a proleptic Gregorian date (Howard Hinnant's `civil_from_days`), valid for negative times too;
-// `std.time.epoch` takes unsigned seconds only.
 fn civil(seconds: i64) Civil {
     const days = @divFloor(seconds, 86400);
     const rest: u32 = @intCast(@mod(seconds, 86400));
@@ -516,8 +501,6 @@ fn writeArchive(allocator: std.mem.Allocator, archive: *std.Io.Reader, output: I
     }
 }
 
-// Archive names come from PATH as given; zipir's own extraction refuses absolute and `..` names, so they
-// are refused here rather than rewritten.
 fn safePath(path: []const u8) bool {
     if (path.len == 0 or path[0] == '/') return false;
     var parts = std.mem.splitScalar(u8, path, '/');
@@ -525,9 +508,6 @@ fn safePath(path: []const u8) bool {
     return true;
 }
 
-// The source for `tar create`: each PATH and, for directories, their contents in byte order of names,
-// never following symlinks. Hardlinks are not detected: `std.Io.File.Stat` has no device number, and an
-// inode alone could join two files of different file systems.
 const Tree = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -540,8 +520,6 @@ const Tree = struct {
     file_reader: std.Io.File.Reader = undefined,
     read_buffer: [65536]u8 = undefined,
 
-    // One directory's names, back to back in `bytes`, in byte order through `spans`: two allocations per
-    // directory, not one per name.
     const Frame = struct { prefix_len: usize, bytes: []u8, spans: []Span, next: usize };
     const Span = struct { start: usize, len: usize };
 
@@ -614,7 +592,6 @@ const Tree = struct {
                     self.freeFrame(frame);
                     return err;
                 };
-                // Directory names end with a slash, as GNU tar writes them.
                 try self.path.append(self.allocator, '/');
                 return .{ .name = self.path.items, .link_name = "", .kind = .directory, .size = 0, .mode = mode, .mtime = 0 };
             },
@@ -626,8 +603,6 @@ const Tree = struct {
                 const file = try cwd.openFile(self.io, path, .{});
                 self.file = file;
                 self.file_reader = file.readerStreaming(self.io, &self.read_buffer);
-                // std's copy_file_range path costs about 49 us per file on btrfs, so below 1 MiB buffered reads
-                // are faster.
                 if (stat.size < 1 << 20) self.file_reader.mode = .streaming_simple;
                 return .{ .name = path, .link_name = "", .kind = .file, .size = stat.size, .mode = mode, .mtime = 0 };
             },

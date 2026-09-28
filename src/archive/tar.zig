@@ -1,5 +1,13 @@
-//! Streaming tar (ustar, pax, GNU): reading as a `std.Io.Writer` that calls a caller's visitor per entry,
-//! and writing as a `std.Io.Reader` over a caller's source of entries.
+//! Streaming tar (ustar, pax, GNU). `Reader(Visitor)` is a `std.Io.Writer` that calls
+//! `entry(*Visitor, Entry) !Action`, then `data(*Visitor, []const u8) !void` when `entry` returned `.read`, then
+//! `entryEnd(*Visitor) !void`; the archive ends at its first zero block, as in GNU tar. `Writer(Source)` is a
+//! `std.Io.Reader` over `next(*Source) !?Entry` and `data(*Source) *std.Io.Reader`, of which exactly `Entry.size`
+//! bytes are read (`SourceTooShort` otherwise); every header gets `options.mtime`, so the same entries give the same
+//! bytes. After `WriteFailed` or `ReadFailed`, `finish` returns the cause.
+//! `Entry.name` and `link_name` borrow the caller's `Names` until the next entry; over `MAX_NAME` is `NameTooLong`.
+//! `Entry.size` is 0 for kinds that never carry data, whatever the header claims. The reader's writer has no buffer:
+//! feed a plain file from its reader's buffer (`peekGreedy`, then `toss`). `isHeader` accepts a block that is not all
+//! zeros and whose checksum is right; pre-POSIX headers have no magic, so it is not checked.
 
 const std = @import("std");
 
@@ -7,9 +15,6 @@ pub const Error = error{ BadHeaderChecksum, BadNumber, BadPax, NameTooLong, Unsu
 
 pub const Kind = enum { file, directory, symlink, hardlink, char_device, block_device, fifo, other };
 
-/// `size` is the number of data bytes that follow, 0 for kinds that never carry data whatever their
-/// header claims, as GNU tar and Python `tarfile` read them. `name` and `link_name` borrow the
-/// caller's `Names` until the next entry.
 pub const Entry = struct {
     name: []const u8,
     link_name: []const u8,
@@ -25,12 +30,6 @@ pub const Names = struct { name: []u8, link: []u8 };
 
 pub const Summary = struct { entries: u64, end_marker: bool };
 
-/// Bytes of a tar stream are written to `writer`, which has no buffer: feed a plain file from its
-/// reader's buffer (`peekGreedy`, then `toss`), since std's file reader streams into the destination's
-/// buffer. `Visitor` declares `pub fn entry(*Visitor, Entry) !Action`, `pub fn data(*Visitor, []const u8) !void`
-/// (the entry's bytes in order, when `entry` returned `.read`), and `pub fn entryEnd(*Visitor) !void`.
-/// A failed write is `WriteFailed`; `finish` then returns the cause. The archive ends at its first zero
-/// block, as in GNU tar; later bytes are ignored.
 pub fn Reader(comptime Visitor: type) type {
     return struct {
         const Self = @This();
@@ -49,11 +48,9 @@ pub fn Reader(comptime Visitor: type) type {
         action: Action = .read,
         entries: u64 = 0,
         end_marker: bool = false,
-        // Overrides from GNU long-name headers and pax records, for the next entry only.
         long_name: ?usize = null,
         long_link: ?usize = null,
         pax_size: ?u64 = null,
-        // A long-name or pax header was read and the entry it describes has not started.
         pending: bool = false,
         meta: Meta = .{},
 
@@ -189,7 +186,6 @@ pub fn Reader(comptime Visitor: type) type {
                 '6' => .fifo,
                 else => .other,
             };
-            // Pre-POSIX archives mark directories by a trailing slash on a regular-file entry.
             if (typeflag == 0 and name_len != 0 and self.names.name[name_len - 1] == '/') kind = .directory;
             const carries_data = kind == .file or kind == .other;
             const size = if (carries_data) self.pax_size orelse header_size else 0;
@@ -224,8 +220,6 @@ pub fn Reader(comptime Visitor: type) type {
             self.section = if (self.remaining == 0) .header else .skip;
         }
 
-        // One byte of a pax extended header: records are `LENGTH KEY=VALUE\n`, LENGTH counting the whole
-        // record. Only `path`, `linkpath`, and `size` are kept; values stream into the caller's buffers.
         fn paxByte(self: *Self, b: u8) ReadError!void {
             const m = &self.meta;
             m.used += 1;
@@ -284,8 +278,6 @@ pub fn Reader(comptime Visitor: type) type {
     };
 }
 
-/// A header block that is not all zeros and whose checksum is right, for telling a plain archive from other
-/// data. Pre-POSIX headers have no magic, so the magic is not checked.
 pub fn isHeader(block: *const [512]u8) bool {
     const sum = byteSum(block);
     if (sum == 0) return false;
@@ -297,17 +289,8 @@ pub const WriterOptions = struct { mtime: i64 = 0 };
 
 pub const WriteError = error{ NameTooLong, UnsupportedEntry, SourceTooShort };
 
-/// The longest name or link target written, in bytes (Linux `PATH_MAX` less its NUL).
 pub const MAX_NAME = 4095;
 
-/// The tar stream is read from `reader`: `reader.streamRemaining(&compressor.writer)`, then `compressor.finish()`,
-/// makes a compressed archive. `init(source, buffer, options)` takes the reader's buffer, of any size; every header
-/// gets `options.mtime`, so an archive of the same entries is the same bytes. `Source` declares
-/// `pub fn next(*Source) !?Entry` and `pub fn data(*Source) *std.Io.Reader`, the current file's bytes, of which exactly
-/// `Entry.size` are read; a source that ends sooner is `SourceTooShort`. Files, directories, symlinks, and hardlinks
-/// are written; `name` and `link_name` over `MAX_NAME` are `NameTooLong`. A name that does not fit ustar's fields gets
-/// a GNU long-name header, a size of 8 GiB or more a base-256 field. A failed read is `ReadFailed`; `finish` then
-/// returns the cause.
 pub fn Writer(comptime Source: type) type {
     return struct {
         const Self = @This();
@@ -352,7 +335,6 @@ pub fn Writer(comptime Source: type) type {
             };
         }
 
-        // Writes the next part of the stream to `w`; the reader's buffer is never written directly.
         fn produce(self: *Self, w: *std.Io.Writer, limit: std.Io.Limit) (CreateError || std.Io.Reader.StreamError)!usize {
             switch (self.state) {
                 .next => {
@@ -439,14 +421,12 @@ pub fn Writer(comptime Source: type) type {
 
 const BLOCK = 512;
 
-// A header block plus a GNU long name and a long link of `MAX_NAME` bytes, each with its NUL.
 const HEADER_ROOM = 3 * BLOCK + 2 * (MAX_NAME + 1);
 
 const ZEROS = [_]u8{0} ** (2 * BLOCK);
 
 const Section = enum { header, data, skip, long_name, long_link, pax, end, after_end };
 
-// Parse state of one GNU long-name or pax extended header.
 const Meta = struct {
     len: usize = 0,
     nul: bool = false,
@@ -459,7 +439,6 @@ const Meta = struct {
     target: PaxTarget = .other,
     value: u64 = 0,
 
-    // GNU long names end at their first NUL; the rest of the data is padding.
     fn longName(self: *Meta, out: []u8, bytes: []const u8) Error!void {
         if (self.nul) return;
         const end = std.mem.findScalar(u8, bytes, 0);
@@ -486,8 +465,6 @@ fn paxTarget(key: []const u8) PaxTarget {
     return .other;
 }
 
-// --- Header formatting ---
-
 const HeaderFields = struct {
     name: []const u8,
     prefix: []const u8 = "",
@@ -498,7 +475,6 @@ const HeaderFields = struct {
     mtime: i64,
 };
 
-// ustar with zero owner, group, and device numbers; the checksum is the unsigned byte sum.
 fn formatHeader(h: *[BLOCK]u8, f: HeaderFields) void {
     @memset(h, 0);
     @memcpy(h[0..f.name.len], f.name);
@@ -514,11 +490,9 @@ fn formatHeader(h: *[BLOCK]u8, f: HeaderFields) void {
     putNumber(h[337..345], 0);
     @memcpy(h[345..][0..f.prefix.len], f.prefix);
     @memset(h[148..156], ' ');
-    // A block's byte sum is at most 512 * 255 = 130560, six octal digits, so the seven bytes always fit.
     _ = std.fmt.bufPrint(h[148..155], "{o:0>6}\x00", .{byteSum(h)}) catch unreachable;
 }
 
-// Octal with a NUL terminator when the value fits, else GNU base-256 two's complement.
 fn putNumber(field: []u8, value: i128) void {
     const digits = field.len - 1;
     if (value >= 0 and value >> @intCast(3 * digits) == 0) {
@@ -542,7 +516,6 @@ fn putNumber(field: []u8, value: i128) void {
     field[0] |= 0x80;
 }
 
-// Splits a path at a slash so the prefix fits ustar's 155 bytes and the name its 100.
 fn splitUstar(path: []const u8) ?[2][]const u8 {
     if (path.len > 256) return null;
     var i = @min(path.len - 1, 155);
@@ -553,7 +526,6 @@ fn splitUstar(path: []const u8) ?[2][]const u8 {
     return null;
 }
 
-// A GNU long-name header and its data (the name, a NUL, zero padding) at `at`; returns the end.
 fn longName(out: []u8, at: usize, typeflag: u8, name: []const u8) usize {
     formatHeader(out[at..][0..BLOCK], .{ .name = "././@LongLink", .typeflag = typeflag, .size = name.len + 1, .mode = 0, .mtime = 0 });
     const data = out[at + BLOCK ..][0..@intCast(name.len + 1 + pad(name.len + 1))];
@@ -580,8 +552,6 @@ fn pad(size: u64) u64 {
     return (BLOCK - size % BLOCK) % BLOCK;
 }
 
-// Vectors by hand: Zig 0.16 does not vectorize the scalar loop, and this pass runs over every header block, where
-// the scalar loop costs about 5% of the instructions of listing the Linux tarball through the gzip decoder.
 fn byteSum(block: *const [BLOCK]u8) u32 {
     const Lanes = @Vector(64, u16);
     var lanes: Lanes = @splat(0);
@@ -603,8 +573,6 @@ fn copyField(field: []const u8, out: []u8) Error!usize {
     return field.len;
 }
 
-// The POSIX prefix field holds the leading directories of a long name; old GNU headers use that
-// space for other fields and carry the magic "ustar  " instead.
 fn ustarName(h: *const [BLOCK]u8, out: []u8) Error!usize {
     const name = cstr(h[0..100]);
     const prefix = if (std.mem.eql(u8, h[257..263], "ustar\x00")) cstr(h[345..500]) else "";
@@ -616,8 +584,6 @@ fn ustarName(h: *const [BLOCK]u8, out: []u8) Error!usize {
     return prefix.len + 1 + name.len;
 }
 
-// The checksum counts its own field as spaces. Writers disagree on whether header bytes are signed,
-// so either sum is accepted, as GNU tar does.
 fn checkChecksum(h: *const [BLOCK]u8, sum: u32) Error!void {
     const stored = try unsignedNumber(h[148..156]);
     var field: u32 = 0;
@@ -636,8 +602,6 @@ fn unsignedNumber(field: []const u8) Error!u64 {
     return @intCast(value);
 }
 
-// Octal digits between optional spaces and a space or NUL terminator, or GNU base-256: the first
-// byte's top bit set, then a big-endian two's complement value in the remaining bits.
 fn number(field: []const u8) Error!i64 {
     if (field[0] & 0x80 != 0) {
         var value: i64 = if (field[0] & 0x40 != 0) -1 else 0;

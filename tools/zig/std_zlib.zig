@@ -1,10 +1,12 @@
-//! Streaming zlib decompression adapter for `std.compress.flate`.
+//! Streaming zlib decompression adapter for `std.compress.flate`. It reads the zlib trailer from a private field of
+//! Zig 0.16's decompressor, so it is pinned to that version.
 
 const std = @import("std");
 const builtin = @import("builtin");
+const adapter = @import("adapter");
+
 const flate = std.compress.flate;
 const Io = std.Io;
-const adapter = @import("adapter");
 
 pub fn main(init: std.process.Init.Minimal) !void {
     var threaded: std.Io.Threaded = .init_single_threaded;
@@ -69,7 +71,6 @@ fn decompressPath(io: Io, paths: adapter.Paths) !void {
     };
     try adler_writer.writer.flush();
 
-    // Zig 0.16 stores the parsed zlib trailer privately; this peer is pinned to that version.
     const metadata = @field(d, "container_metadata");
     const expected_adler = @field(metadata, "zlib").adler;
     if (adler_writer.hasher.adler != expected_adler) return error.BadAdler;

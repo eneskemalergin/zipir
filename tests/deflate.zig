@@ -41,7 +41,6 @@ test "[property] - [raw deflate]: output equals the gzip payload and decodes wit
     defer std.testing.allocator.destroy(gzip_encoder);
     const decoder = try std.testing.allocator.create(Decompressor);
     defer std.testing.allocator.destroy(decoder);
-    // A four-letter alphabet gives long hash chains; the random middle forces stored blocks.
     var plain: [131073]u8 = undefined;
     var rng = std.Random.DefaultPrng.init(1414);
     for (&plain) |*b| b.* = 'a' + rng.random().uintLessThan(u8, 4);

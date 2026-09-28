@@ -1,4 +1,10 @@
-//! gzip (RFC 1952) framing and its public decompressor and compressor.
+//! gzip (RFC 1952). `Decompressor` reads concatenated members and checks each CRC-32 and ISIZE (empty input is
+//! `Truncated`); `max_header_bytes` bounds each member's header after the fixed ten bytes. `Compressor` writes one
+//! member. `init` sets either up in place and assumes the workspace stays at that address while `reader` or `writer`
+//! is used. On `ReadFailed`, `err` holds the reason; after the end, the input stands just after the last member. The
+//! output depends only on the bytes written, and a contiguous request of up to 32 KiB always fits; `writer.flush()`
+//! is a full flush; `finish` writes the final block and the trailer and returns the plain byte count. ISIZE is
+//! checked before CRC-32, as gzip does. The header and trailer helpers are shared with BGZF.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
@@ -24,25 +30,12 @@ pub const DecompressError = decode.DecodeError || stream_reader.Error || error{
     TrailingData,
 };
 
-/// Decompresses concatenated gzip members, checking each CRC-32 and ISIZE; empty input is `Truncated`.
-/// `options.max_header_bytes` bounds each member's header bytes after the fixed ten (extra field, name, comment, header
-/// CRC), so a header cannot cause unbounded work before any output (`HeaderTooLong`). `init(input, options)` starts it
-/// in place and resets it, also after errors; it assumes the workspace stays at that address while `reader` is used
-/// (the reader's buffer is inside it) and requires an input reader capacity of at least 16 bytes
-/// (`InputBufferTooSmall`). `reader` gives the decoded bytes; on `ReadFailed`, `err` holds the reason. After the end,
-/// `input` stands just after the compressed data.
 pub const Decompressor = stream_reader.Decompressor(DecompressFraming);
 
 pub const CompressOptions = stream_writer.Options;
 
 pub const CompressError = std.Io.Writer.Error;
 
-/// Writes one gzip member. `init(output, options)` writes the header and starts it in place, also after errors; it
-/// assumes the workspace stays at that address while `writer` is used. The output depends only on the bytes written,
-/// never on the write sizes, and a contiguous request of up to 32 KiB always fits. `writer.flush()` is a full flush
-/// (everything so far decodes, and the history restarts); it does not flush `output`. `finish` writes the final DEFLATE
-/// block and the trailer and returns the number of plain bytes; the writer then fails until `init`, and the caller
-/// flushes `output`.
 pub const Compressor = stream_writer.Compressor(CompressFraming);
 
 comptime {
@@ -100,9 +93,6 @@ const CompressFraming = struct {
     }
 };
 
-// Reads a member's header, shared with BGZF. `Visitor` is `void` (plain gzip) or declares
-// `subfield(*Visitor, id: [2]u8, len: u16, offset: u16, bytes: []const u8) !void`, called as extra subfield bytes
-// stream by; a subfield that overruns XLEN is `BadHeader`. `limit` bounds the bytes after the fixed ten.
 pub fn readHeader(br: *decode.BitReader, comptime Visitor: type, visitor: if (Visitor == void) void else *Visitor, limit: u64) !void {
     const header = try br.getBytes(10);
     if (header[0] != 0x1f or header[1] != 0x8b) return error.BadHeader;
@@ -175,8 +165,6 @@ fn readSubfields(br: *decode.BitReader, checksum: *crc.Crc32, size: u16, comptim
     }
 }
 
-// Writes a member's header, shared with BGZF: MTIME 0, XFL 0, OS 255 (unknown), and FEXTRA with `extra` as the
-// subfields when not empty.
 pub fn writeHeader(writer: *std.Io.Writer, extra: []const u8) std.Io.Writer.Error!void {
     std.debug.assert(extra.len <= std.math.maxInt(u16));
     var header = [12]u8{ 0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 0, 0 };
@@ -187,7 +175,6 @@ pub fn writeHeader(writer: *std.Io.Writer, extra: []const u8) std.Io.Writer.Erro
     try writer.writeAll(extra);
 }
 
-// Reads and checks a member's trailer, shared with BGZF: ISIZE is compared before CRC-32, the gzip error precedence.
 pub fn readTrailer(br: *decode.BitReader, crc_value: u32, size: u64) DecompressError!void {
     const footer = try br.getBytes(8);
     if (std.mem.readInt(u32, footer[4..8], .little) != @as(u32, @truncate(size))) return error.IsizeMismatch;

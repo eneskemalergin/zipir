@@ -1,4 +1,4 @@
-//! Public zlib decompression contracts.
+//! Public zlib contracts. The zlib fixtures rewrap only the first gzip member of their source files.
 
 const std = @import("std");
 const support = @import("support.zig");
@@ -6,8 +6,6 @@ const zipir = @import("zipir");
 const zlib = zipir.zlib;
 const Compressor = zipir.Compressor(.zlib);
 
-// Only the first gzip member is rewrapped: copy-boundaries repeats one member and
-// final-stored-concat ends with the short6 member.
 const COPY_GZIP = @embedFile("data/synthetic/copy-boundaries.gz");
 const COPY_PLAIN = @embedFile("data/synthetic/copy-boundaries.plain");
 const COPY_MEMBER = COPY_GZIP[0 .. COPY_GZIP.len / 2];
@@ -302,8 +300,6 @@ test "[failure] - [zlib decompressor]: rejects undersized input buffers and pres
     try std.testing.expectError(error.DictionaryUnsupported, support.decompressAll(decoder, &source.reader, &sink.writer, .{}));
 }
 
-// --- Compression ---
-
 fn encodeRoundtrip(encoder: *Compressor, plain: []const u8, options: zlib.CompressOptions, chunk: usize, capacity: usize, encoded: []u8) ![]const u8 {
     const stream = try support.encodeRoundtrip(zlib, encoder, .zlib, plain, options, chunk, capacity, encoded);
     try std.testing.expectEqual(@as(u16, 0), (@as(u16, stream[0]) << 8 | stream[1]) % 31);
@@ -337,7 +333,6 @@ test "[property] - [zlib compressor]: payload equals the gzip payload across blo
     defer std.testing.allocator.destroy(gzip_encoder);
     const decoder = try std.testing.allocator.create(zlib.Decompressor);
     defer std.testing.allocator.destroy(decoder);
-    // A four-letter alphabet gives long hash chains and lazy decisions in every block.
     var plain: [131073]u8 = undefined;
     var rng = std.Random.DefaultPrng.init(1313);
     for (&plain) |*b| b.* = 'a' + rng.random().uintLessThan(u8, 4);

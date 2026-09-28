@@ -1,12 +1,13 @@
-//! Streaming peer adapter for zipir's gzip, zlib, raw DEFLATE, and BGZF codecs.
+//! Streaming peer adapter for zipir's gzip, zlib, raw DEFLATE, and BGZF codecs. `--level N` names a preset by the
+//! zlib level it is compared with; BGZF splits as the CLI does (whole blocks for binary input, lines for text).
 
 const std = @import("std");
 const build_options = @import("build_options");
-const Io = std.Io;
 const adapter = @import("adapter");
 const zipir = @import("zipir");
 
-// BGZF is not a zipir.Format: it has its own `Compressor` and `Decompressor`.
+const Io = std.Io;
+
 const BGZF = std.mem.eql(u8, build_options.format, "bgzf");
 const FORMAT: zipir.Format = blk: {
     if (std.mem.eql(u8, build_options.format, "gzip") or BGZF) break :blk .gzip;
@@ -54,7 +55,6 @@ fn usage() error{InvalidArguments} {
 }
 
 fn compressPath(comptime codec_format: zipir.Format, io: Io, paths: adapter.Paths) !void {
-    // The adapters' shared `--level N` names a zipir preset by the zlib level it is compared with.
     const preset = std.enums.fromInt(zipir.Preset, paths.level) orelse
         return error.InvalidArguments;
     const compressor = try std.heap.page_allocator.create(zipir.Compressor(codec_format));
@@ -98,7 +98,6 @@ fn decompressPath(comptime codec_format: zipir.Format, io: Io, paths: adapter.Pa
     try out_writer.interface.flush();
 }
 
-// The CLI's split rule: whole blocks for binary input, blocks ending at line breaks for text (bgzip's default).
 fn compressBgzf(io: Io, paths: adapter.Paths) !void {
     const preset = std.enums.fromInt(zipir.Preset, paths.level) orelse
         return error.InvalidArguments;
