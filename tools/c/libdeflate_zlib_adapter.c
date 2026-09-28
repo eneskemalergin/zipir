@@ -27,7 +27,7 @@
  * This is deliberately a full-buffer peer. libdeflate's public zlib API is
  * one-shot: it accepts the complete compressed input and writes to one
  * caller-sized output buffer. The benchmark supplies the known plaintext size
- * so the timed call follows the same path used by mzValidate. The no-size
+ * so the timed call decodes into one buffer of exactly that size. The no-size
  * form is kept for CLI tests and grows by retrying, so it is not a benchmark
  * mode.
  */

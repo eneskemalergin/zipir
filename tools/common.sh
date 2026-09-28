@@ -31,16 +31,20 @@ PIGZ_VERSION=2.8
 PIGZ_BIN=/usr/bin/pigz
 LIBDEFLATE_VERSION=1.26
 LIBDEFLATE_URL=https://github.com/ebiggers/libdeflate/archive/refs/tags/v1.26.tar.gz
+LIBDEFLATE_SHA256=bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85
 ISAL_VERSION=2.32.1
 ISAL_URL=https://github.com/intel/isa-l/archive/refs/tags/v2.32.1.tar.gz
+ISAL_SHA256=d9f7179ab0e14a3db9b610fac22793854a1435e8423ec9ce07f4cbedc5f92f5e
 FLATE2_MINIZ_VERSION=1.1.10
 FLATE2_ZLIB_RS_VERSION=1.1.10
 ZLIB_RS_VERSION=0.6.7
 ZLIB_NG_VERSION=2.3.3
 ZLIB_NG_URL=https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz
+ZLIB_NG_SHA256=f9c65aa9c852eb8255b636fd9f07ce1c406f061ec19a2e7d508b318ca0c907d1
 SYSTEM_ZLIB_VERSION=1.3.1.zlib-ng
 HTSLIB_VERSION=1.24
 HTSLIB_URL=https://github.com/samtools/htslib/releases/download/1.24/htslib-1.24.tar.bz2
+HTSLIB_SHA256=28a8de191381c7a97a35675ceac76fa1ea95e7b678d6a2e9d600a7874e4077de
 
 die() {
     printf 'error: %s\n' "$*" >&2

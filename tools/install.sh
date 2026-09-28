@@ -51,13 +51,15 @@ expand_target() {
     esac
 }
 
+# fetch_source URL SHA256 DEST: the archive must match the SHA-256 pinned in common.sh before it is unpacked.
 fetch_source() {
-    local url="$1" dest="$2" archive="$2.archive"
+    local url="$1" sha256="$2" dest="$3" archive="$3.archive"
     [[ -d "$dest" ]] && return 0
-    require_command curl
+    require_command curl sha256sum
     mkdir -p "$dest.part"
     printf 'download: %s\n' "$url"
     curl --fail --location --retry 3 --show-error --silent "$url" --output "$archive"
+    printf '%s  %s\n' "$sha256" "$archive" | sha256sum -c --status || die "sha256 mismatch: $url"
     tar -xf "$archive" -C "$dest.part" --strip-components=1
     mv -- "$dest.part" "$dest"
 }
@@ -214,7 +216,7 @@ build_zig_adapter() {
     require_zig
     mkdir -p "$work/prefix"
     printf 'build: %s Zig adapter\n' "$name"
-    # The configured zig owns cache selection (plan/RULES.md): no task-specific cache directories.
+    # The configured zig owns cache selection: no task-specific cache directories.
     zig build --build-file "$TOOLS_DIR/build.zig" -Dadapter="$name" \
         -Doptimize=ReleaseFast -Dstrip=true -Dcpu=native --prefix "$work/prefix" -j"$TOOL_JOBS"
     case "$name" in
@@ -241,7 +243,7 @@ build_flate2() {
 build_libdeflate() {
     local work="$WORK/libdeflate"
     [[ -x "$work/prefix/bin/libdeflate-gzip" ]] && return 0
-    fetch_source "$LIBDEFLATE_URL" "$work/source"
+    fetch_source "$LIBDEFLATE_URL" "$LIBDEFLATE_SHA256" "$work/source"
     printf 'build: libdeflate %s static library and gzip CLI\n' "$LIBDEFLATE_VERSION"
     cmake_install "$work/source" "$work/build" "$work/prefix" \
         -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=native" -DLIBDEFLATE_BUILD_SHARED_LIB=OFF \
@@ -252,7 +254,7 @@ build_libdeflate() {
 # zlib-ng configured for its minigzip CLI (cli), its native zlib API (api), or zlib compatibility (compat).
 build_zlib_ng_prefix() {
     local kind="$1" work="$WORK/zlib-ng"
-    fetch_source "$ZLIB_NG_URL" "$work/source"
+    fetch_source "$ZLIB_NG_URL" "$ZLIB_NG_SHA256" "$work/source"
     printf 'build: zlib-ng %s (%s)\n' "$ZLIB_NG_VERSION" "$kind"
     if [[ "$kind" == compat ]]; then
         # zlib-compatible static libz.a for htslib, with the same native instructions as the other zlib-ng peers.
@@ -312,7 +314,7 @@ build_target() {
         igzip)
             require_command nasm
             work="$WORK/isal"
-            fetch_source "$ISAL_URL" "$work/source"
+            fetch_source "$ISAL_URL" "$ISAL_SHA256" "$work/source"
             printf 'build: ISA-L %s igzip CLI (static, no shim, no -T)\n' "$ISAL_VERSION"
             cmake_install "$work/source" "$work/build" "$work/prefix" \
                 -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=native" -DCMAKE_ASM_NASM_COMPILER="$(command -v nasm)" \
@@ -341,7 +343,7 @@ build_target() {
         bgzip)
             require_command make cc
             work="$WORK/htslib"
-            fetch_source "$HTSLIB_URL" "$work/source"
+            fetch_source "$HTSLIB_URL" "$HTSLIB_SHA256" "$work/source"
             printf 'build: htslib %s bgzip (static libhts, host libz, no libdeflate)\n' "$HTSLIB_VERSION"
             # configure links libdeflate whenever its headers are installed; that would make
             # bgzip output depend on the host, so it is always disabled.
@@ -366,7 +368,7 @@ build_target() {
             # Only static archives are installed in the backend prefix, so the linker takes them.
             cppflags="-I$backend/include" ldflags="-L$backend/lib -L$backend/lib64"
             work="$WORK/$name"
-            fetch_source "$HTSLIB_URL" "$work/source"
+            fetch_source "$HTSLIB_URL" "$HTSLIB_SHA256" "$work/source"
             printf 'build: htslib %s bgzip timed peer (%s)\n' "$HTSLIB_VERSION" "${name#bgzip-}"
             (
                 cd "$work/source"

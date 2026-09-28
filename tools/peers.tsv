@@ -4,8 +4,8 @@
 # levels    compression levels on the tool's own scale: a range A-B or a space list; - is decode-only.
 # fast balanced dense
 #           the three lane levels (--levels lanes, the default); - for decode-only tools. zipir,
-#           zlib-ng, and the zlib-scale tools use 1/5/9. igzip 0/1/2 is its measured frontier
-#           (tmp/gzip/compress/PEER-MAPPING.md). libdeflate 1/6/12 is provisional. The zlib,
+#           zlib-ng, and the zlib-scale tools use 1/5/9. igzip 0/1/2 is its measured frontier.
+#           libdeflate 1/6/12 is provisional. The zlib,
 #           deflate, and bgzf compressor lanes (added 2026-09-26) are provisional too: zlib-scale
 #           1/5/9, libdeflate 1/6/12, and bgzip 1/5/9 on its own -l scale (with libdeflate, htslib
 #           maps -l 1/5/9 to libdeflate 1/6/12).
