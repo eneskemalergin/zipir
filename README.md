@@ -76,19 +76,40 @@ The default build targets the host CPU. `-Dcpu=baseline` builds a portable binar
 
 ## Library
 
-The API borrows the reader and writer, keeps codec storage with the caller, and returns the decoded or consumed byte count.
+Every decompressor is a `std.Io.Reader` over any input reader, and every compressor is a `std.Io.Writer` into any output writer. The caller owns the workspace (about 197 KB to decode, 429 KB to encode), sets it up in place with `init`, and reuses it; nothing is allocated.
 
 ```zig
 const zipir = @import("zipir");
 
-const decoder = try allocator.create(zipir.Decompressor(.zlib));
+// Decoded bytes, borrowed a chunk at a time.
+const decoder = try allocator.create(zipir.gzip.Decompressor);
 defer allocator.destroy(decoder);
+decoder.init(&file_reader.interface, .{});
+while (decoder.reader.peekGreedy(1)) |chunk| {
+    use(chunk);
+    decoder.reader.toss(chunk.len);
+} else |err| switch (err) {
+    error.EndOfStream => {},
+    error.ReadFailed => return decoder.err.?, // CrcMismatch, Truncated, ..., or the input's ReadFailed
+}
 
-const decoded = try decoder.decompress(&reader, &writer, .{});
-try writer.flush();
+// Plain bytes in, one gzip member out; the output does not depend on the write sizes.
+const encoder = try allocator.create(zipir.gzip.Compressor);
+defer allocator.destroy(encoder);
+try encoder.init(&out.interface, .{ .level = .even });
+try encoder.writer.writeAll(record);
+_ = try encoder.finish();
+try out.interface.flush();
 ```
 
-Use `zipir.gzip.Options.max_output_bytes` or `zipir.zlib.Options.max_output_bytes` when decoded output needs a caller-defined bound. The full format behavior and error contracts will move into the project wiki as they settle.
+A whole stream is one pump either way: `decoder.reader.streamRemaining(writer)`, or `input.streamRemaining(&encoder.writer)` then `encoder.finish()`. The same shape serves `zipir.zlib`, `zipir.deflate`, and `zipir.bgzf`, whose decompressor also seeks by virtual offset or through a `.gzi` index. `max_output_bytes` bounds decoded output and gzip's `max_header_bytes` bounds header fields.
+
+To use zipir from another Zig project, add it to `build.zig.zon` (for example `.zipir = .{ .path = "../zipir" }`) and import its module:
+
+```zig
+const zipir = b.dependency("zipir", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("zipir", zipir.module("zipir"));
+```
 
 ## Benchmarks
 
