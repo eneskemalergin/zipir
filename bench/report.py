@@ -528,12 +528,30 @@ def figure_memory(rows, theme, path):
 
 
 PRESET_NAME = {'1': 'fast', '5': 'even', '9': 'dense'}
-FRONTIER_INPUTS = (('sequencing', 'medium'), ('ms', 'medium'), ('generalized', 'small'))
+# Per format: the panels of the frontier figure, the files the equivalents average over (the preset targets' files),
+# the peer families of the equivalents table, and the figure's subtitle.
+FRONTIER = {
+    'gzip': {
+        'panels': (('sequencing', 'medium'), ('ms', 'medium'), ('generalized', 'small')),
+        'average': (('sequencing', 'medium'), ('ms', 'medium'), ('generalized', 'small')),
+        'families': ('zlib-ng', 'igzip', 'libdeflate'),
+        'subtitle': 'zlib-ng 1 to 9, ISA-L igzip 0 to 3, and libdeflate\'s CLI 1 to 12 (dashed: it reads the whole file '
+                    'into memory, a quality reference). Up and to the right is better.',
+    },
+    'bgzf': {
+        'panels': (('sequencing', 'medium'), ('sequencing', 'small'), ('ms', 'medium'), ('generalized', 'small')),
+        'average': (('sequencing', 'medium'), ('sequencing', 'small'), ('ms', 'medium'), ('ms', 'small'),
+                    ('generalized', 'small')),
+        'families': ('bgzip-libdeflate', 'bgzip-zlib-ng'),
+        'subtitle': 'bgzip with libdeflate and with zlib-ng at every level (bgzip -l 1 to 9; with libdeflate, htslib maps them '
+                    'onto libdeflate 1 to 12). Up and to the right is better.',
+    },
+}
 
 
-def load_frontier(run):
-    """Peer rows of a run that timed every level (zipir's rows there are older and are left out)."""
-    rows = [r for r in csv.DictReader(open(ROOT / 'tools/.local/report' / run / 'facts.tsv'), delimiter='\t')
+def load_frontier(runs):
+    """Peer rows of runs that timed every level (zipir's rows there are older and are left out)."""
+    rows = [r for run in runs for r in csv.DictReader(open(ROOT / 'tools/.local/report' / run / 'facts.tsv'), delimiter='\t')
             if r['op'] == 'compress' and not r['tool'].startswith('zipir')]
     for r in rows:
         r['mbs'], r['ratio'] = float(r['mbs']), float(r['ratio'])
@@ -541,23 +559,25 @@ def load_frontier(run):
     return rows
 
 
-def figure_frontier(rows, peers, theme, path):
-    """gzip: every peer level (from the frontier run) against zipir's three presets (from the report run)."""
-    zipir = [r for r in rows if r['format'] == 'gzip' and r['op'] == 'compress' and r['family'] == 'zipir'
+def figure_frontier(rows, peers, fmt, theme, path):
+    """Every peer level of `fmt` (from the frontier runs) against zipir's three presets (from the report run)."""
+    spec = FRONTIER[fmt]
+    peers = [r for r in peers if r['format'] == fmt]
+    zipir = [r for r in rows if r['format'] == fmt and r['op'] == 'compress' and r['family'] == 'zipir'
              and r['level'] != '-']
     families = [f for f in FAMILY_ORDER if f == 'zipir' or any(r['family'] == f for r in peers)]
+    panels = spec['panels']
     pw, ph, gap, left, top = 300, 300, 30, 66, 126
-    w = left + len(FRONTIER_INPUTS) * pw + (len(FRONTIER_INPUTS) - 1) * gap + 30
+    w = left + len(panels) * pw + (len(panels) - 1) * gap + 30
     h = top + ph + 112
-    svg = Svg(w, h, theme, 'gzip compression: zipir presets against every peer level',
-              'zipir fast, even, and dense against zlib-ng 1 to 9, igzip 0 to 3, and libdeflate 1 to 12.')
-    svg.text(28, 38, 'gzip compression: zipir presets against every peer level', 20, weight=650)
-    svg.text(28, 62, 'zlib-ng 1 to 9, ISA-L igzip 0 to 3, and libdeflate\'s CLI 1 to 12 (dashed: it reads the whole file '
-             'into memory, a quality reference). Up and to the right is better.', 13, 'ink2')
+    title = f'{FORMAT_NAME[fmt]} compression: zipir presets against every peer level'
+    svg = Svg(w, h, theme, title, spec['subtitle'])
+    svg.text(28, 38, title, 20, weight=650)
+    svg.text(28, 62, spec['subtitle'], 13, 'ink2')
     svg.legend(28, 88, families)
-    for i, (cat, cls) in enumerate(FRONTIER_INPUTS):
-        sel_peers = [r for r in peers if r['category'] == cat and r['class'] == cls and r['level'] not in ('-', '0')
-                     or (r['category'] == cat and r['class'] == cls and r['family'] == 'igzip')]
+    for i, (cat, cls) in enumerate(panels):
+        sel_peers = [r for r in peers if r['category'] == cat and r['class'] == cls and r['level'] != '-'
+                     and (r['level'] != '0' or r['family'] == 'igzip')]
         sel_zipir = [r for r in zipir if r['category'] == cat and r['class'] == cls]
         sel = sel_peers + sel_zipir
         x0 = left + i * (pw + gap)
@@ -600,36 +620,39 @@ def figure_frontier(rows, peers, theme, path):
              extra=f'transform="rotate(-90 24 {top + ph / 2})"')
     svg.text(28, h - 36, 'Ratio is plaintext bytes / compressed bytes. MB/s is plaintext MB (10^6 bytes) per second of '
              'median wall time. Each panel has its own scales.', 12, 'muted')
-    svg.text(28, h - 18, 'Peers come from a run of every level; zipir from the report run. zlib-ng 0 (stored) is left out.',
-             12, 'muted')
+    svg.text(28, h - 18, 'Peers come from a run of every level; zipir from the report run. Level 0 (stored) is left out, '
+             'except igzip 0, which compresses.', 12, 'muted')
     svg.save(path)
 
 
-def geo_points(sel):
-    """(MB/s, ratio) geometric means over the frontier inputs, per (family, level), where all three are present."""
+def geo_points(sel, inputs):
+    """(MB/s, ratio) geometric means over `inputs`, per (family, level), where all of them are present."""
     by = defaultdict(dict)
     for r in sel:
-        if (r['category'], r['class']) in FRONTIER_INPUTS:
+        if (r['category'], r['class']) in inputs:
             by[(r['family'], r['level'])][(r['category'], r['class'])] = (r['mbs'], r['ratio'])
     out = {}
     for k, v in by.items():
-        if len(v) == len(FRONTIER_INPUTS):
+        if len(v) == len(inputs):
             out[k] = (math.exp(sum(math.log(a) for a, _ in v.values()) / len(v)),
                       math.exp(sum(math.log(b) for _, b in v.values()) / len(v)))
     return out
 
 
-def equivalents_table(rows, peers):
+def equivalents_table(rows, peers, fmt):
     """For each zipir preset: the peer levels that bracket its ratio, with their speeds."""
-    zip_pts = geo_points([r for r in rows if r['format'] == 'gzip' and r['op'] == 'compress' and r['family'] == 'zipir'])
-    peer_pts = geo_points([r for r in peers if not (r['family'] == 'zlib-ng' and r['level'] == '0')])
+    spec = FRONTIER[fmt]
+    zip_pts = geo_points([r for r in rows if r['format'] == fmt and r['op'] == 'compress' and r['family'] == 'zipir'],
+                         spec['average'])
+    peer_pts = geo_points([r for r in peers if r['format'] == fmt and (r['level'] != '0' or r['family'] == 'igzip')],
+                          spec['average'])
     out = []
     for level in ('1', '5', '9'):
         if ('zipir', level) not in zip_pts:
             continue
         zm, zr = zip_pts[('zipir', level)]
         cells = [PRESET_NAME[level], f'{zm:.1f}', f'{zr:.3f}']
-        for fam in ('zlib-ng', 'igzip', 'libdeflate'):
+        for fam in spec['families']:
             pts = sorted(((int(lv), m, r) for (f, lv), (m, r) in peer_pts.items() if f == fam), key=lambda t: t[2])
             below = [p for p in pts if p[2] <= zr]
             above = [p for p in pts if p[2] > zr]
@@ -642,8 +665,8 @@ def equivalents_table(rows, peers):
                 parts.append(f'{lv}: {m:.0f} MB/s, {r:.3f}')
             cells.append('<br>'.join(parts) if parts else '')
         out.append(cells)
-    return md_table(['zipir preset', 'MB/s', 'Ratio', 'zlib-ng levels around its ratio', 'igzip levels around its ratio',
-                     'libdeflate CLI levels around its ratio'], out, ['---', '---:', '---:', '---', '---', '---'])
+    return md_table(['zipir preset', 'MB/s', 'Ratio'] + [f'{FAMILY_NAME[f]} levels around its ratio' for f in spec['families']],
+                    out, ['---', '---:', '---:'] + ['---'] * len(spec['families']))
 
 
 def statistics_median(values):
@@ -761,16 +784,23 @@ def write_readme(target, rows, summary, meta, out):
     if meta.get('frontier'):
         L.append('## Presets against every peer level')
         L.append('')
-        L.append(picture('frontier-gzip', 'gzip compression: zipir presets against every peer level'))
+        L.append('For each zipir preset, the levels of each peer whose ratios bracket it (the level just below and just '
+                 'above), with their speed; geometric means over the files the presets are designed and judged on. Peer '
+                 'levels come from runs of every level of each peer on these files (' +
+                 ', '.join(f'`{r}`' for r in meta['frontier_runs']) + '); zipir comes from this report\'s run.')
         L.append('')
-        L.append('Geometric means over the three files of the figure. For each zipir preset, the levels of each peer '
-                 'whose ratios bracket it (the level just below and just above), with their speed:')
-        L.append('')
-        L.append(equivalents_table(rows, meta['frontier']))
-        L.append('')
-        L.append(f'Peer levels come from `{meta["frontier_run"]}`, a run of every level of each peer on these files '
-                 '(10 rounds per batch); zipir comes from this report\'s run. libdeflate\'s CLI reads the whole file '
-                 'into memory (77 to 83 MiB here), so it shows what ratio is reachable, not a streaming rival.')
+        for fmt in FRONTIER:
+            if not any(r['format'] == fmt for r in meta['frontier']):
+                continue
+            L.append(f'### {FORMAT_NAME[fmt]}')
+            L.append('')
+            L.append(picture(f'frontier-{fmt}', f'{FORMAT_NAME[fmt]} compression: zipir presets against every peer level'))
+            L.append('')
+            L.append(equivalents_table(rows, meta['frontier'], fmt))
+            L.append('')
+        L.append('On gzip, libdeflate\'s CLI reads the whole file into memory (77 to 83 MiB here), so it shows what ratio '
+                 'is reachable, not a streaming rival. On BGZF, `bgzip` compresses one 64 KiB block at a time with either '
+                 'library, so both are streaming rivals there.')
         L.append('')
     L.append('## Memory')
     L.append('')
@@ -1099,7 +1129,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('run', nargs='?', default='prime-lanes')
     ap.add_argument('--target', default='linux-x86-avx2')
-    ap.add_argument('--frontier', help='a run that timed every peer level (gzip), for the frontier figure')
+    ap.add_argument('--frontier', action='append', default=[],
+                    help='a run that timed every peer level (repeat for several formats), for the frontier figures')
     args = ap.parse_args()
     rows, meta = load(args.run)
     meta['run'] = args.run
@@ -1111,7 +1142,7 @@ def main():
     meta['date'] = datetime.datetime.fromtimestamp(stamp).strftime('%Y-%m-%d')  # the host's local date
     if args.frontier:
         meta['frontier'] = load_frontier(args.frontier)
-        meta['frontier_run'] = args.frontier
+        meta['frontier_runs'] = args.frontier
     out = ROOT / 'bench' / args.target
     (out / 'figures').mkdir(parents=True, exist_ok=True)
     summary = summary_rows(rows)
@@ -1121,8 +1152,9 @@ def main():
             figure_tradeoff(rows, fmt, theme, out / 'figures' / f'tradeoff-{fmt}-{theme}.svg')
         figure_decode(rows, theme, out / 'figures' / f'decode-{theme}.svg')
         figure_memory(rows, theme, out / 'figures' / f'memory-{theme}.svg')
-        if meta.get('frontier'):
-            figure_frontier(rows, meta['frontier'], theme, out / 'figures' / f'frontier-gzip-{theme}.svg')
+        for fmt in FRONTIER:
+            if any(r['format'] == fmt for r in meta.get('frontier', [])):
+                figure_frontier(rows, meta['frontier'], fmt, theme, out / 'figures' / f'frontier-{fmt}-{theme}.svg')
     write_tsv(rows, summary, meta, out)
     write_readme(args.target, rows, summary, meta, out)
     print(f'wrote {out.relative_to(ROOT)}: README.md, measurements.tsv, summary.tsv, '

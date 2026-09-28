@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1056 538" width="1056" height="538" role="img" font-family="system-ui, -apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">
-<title>gzip compression: zipir presets against every peer level</title><desc>zipir fast, even, and dense against zlib-ng 1 to 9, igzip 0 to 3, and libdeflate 1 to 12.</desc>
+<title>gzip compression: zipir presets against every peer level</title><desc>zlib-ng 1 to 9, ISA-L igzip 0 to 3, and libdeflate's CLI 1 to 12 (dashed: it reads the whole file into memory, a quality reference). Up and to the right is better.</desc>
 <rect width="1056" height="538" rx="12" fill="#fcfcfb"/>
 <text x="28.0" y="38.0" font-size="20" fill="#0b0b0b" text-anchor="start" font-weight="650" >gzip compression: zipir presets against every peer level</text>
 <text x="28.0" y="62.0" font-size="13" fill="#52514e" text-anchor="start" font-weight="400" >zlib-ng 1 to 9, ISA-L igzip 0 to 3, and libdeflate's CLI 1 to 12 (dashed: it reads the whole file into memory, a quality reference). Up and to the right is better.</text>
@@ -84,13 +84,13 @@
 <text x="104.1" y="149.2" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >11</text>
 <path d="M87.9,148.8 L95.1,156.0 L87.9,163.2 L80.8,156.0 Z" fill="#4a3aa7" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"><title>libdeflate CLI (full buffer) 12: 4.6 MB/s, ratio 2.785</title></path>
 <text x="95.9" y="149.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >12</text>
-<path d="M320.8,255.0 L240.9,203.6 L162.8,185.6" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
-<circle cx="320.8" cy="255.0" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 257.6 MB/s, ratio 2.346</title></circle>
-<text x="328.8" y="248.0" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
-<circle cx="240.9" cy="203.6" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 64.8 MB/s, ratio 2.574</title></circle>
-<text x="248.9" y="196.6" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
-<circle cx="162.8" cy="185.6" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 16.8 MB/s, ratio 2.654</title></circle>
-<text x="170.8" y="178.6" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
+<path d="M321.7,254.9 L242.7,203.6 L164.0,185.6" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="321.7" cy="254.9" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 261.6 MB/s, ratio 2.346</title></circle>
+<text x="329.7" y="247.9" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="242.7" cy="203.6" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 66.8 MB/s, ratio 2.574</title></circle>
+<text x="250.7" y="196.6" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
+<circle cx="164.0" cy="185.6" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 17.2 MB/s, ratio 2.654</title></circle>
+<text x="172.0" y="178.6" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
 <text x="216.0" y="462.0" font-size="11" fill="#52514e" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
 <text x="396.0" y="112.0" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="600" >Mass spectrometry: PRIDE XML, 48.0 MB</text>
 <line x1="419.9" y1="126.0" x2="419.9" y2="426.0" stroke="#e1e0d9" stroke-width="1" />
@@ -169,13 +169,13 @@
 <text x="455.7" y="150.2" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >11</text>
 <path d="M417.4,148.9 L424.6,156.0 L417.4,163.2 L410.3,156.0 Z" fill="#4a3aa7" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"><title>libdeflate CLI (full buffer) 12: 4.8 MB/s, ratio 4.679</title></path>
 <text x="425.4" y="149.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >12</text>
-<path d="M651.8,252.7 L588.6,189.8 L559.7,172.4" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
-<circle cx="651.8" cy="252.7" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 428.0 MB/s, ratio 4.119</title></circle>
-<text x="659.8" y="245.7" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
-<circle cx="588.6" cy="189.8" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 127.4 MB/s, ratio 4.483</title></circle>
-<text x="596.6" y="182.8" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
-<circle cx="559.7" cy="172.4" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 73.1 MB/s, ratio 4.584</title></circle>
-<text x="567.7" y="165.4" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
+<path d="M653.6,252.7 L592.9,189.8 L562.4,172.4" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="653.6" cy="252.7" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 443.4 MB/s, ratio 4.119</title></circle>
+<text x="661.6" y="245.7" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="592.9" cy="189.8" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 138.2 MB/s, ratio 4.483</title></circle>
+<text x="600.9" y="182.8" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
+<circle cx="562.4" cy="172.4" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 77.0 MB/s, ratio 4.584</title></circle>
+<text x="570.4" y="165.4" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
 <text x="546.0" y="462.0" font-size="11" fill="#52514e" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
 <text x="726.0" y="112.0" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="600" >General: Canterbury tar, 2.8 MB</text>
 <line x1="752.5" y1="126.0" x2="752.5" y2="426.0" stroke="#e1e0d9" stroke-width="1" />
@@ -254,15 +254,15 @@
 <text x="783.8" y="149.7" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >11</text>
 <path d="M752.3,148.8 L759.4,156.0 L752.3,163.1 L745.1,156.0 Z" fill="#4a3aa7" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"><title>libdeflate CLI (full buffer) 12: 5.0 MB/s, ratio 4.185</title></path>
 <text x="760.3" y="149.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >12</text>
-<path d="M991.0,278.4 L919.2,204.0 L870.2,196.3" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
-<circle cx="991.0" cy="278.4" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 307.1 MB/s, ratio 3.335</title></circle>
-<text x="999.0" y="271.4" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
-<circle cx="919.2" cy="204.0" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 88.9 MB/s, ratio 3.852</title></circle>
-<text x="927.2" y="197.0" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
-<circle cx="870.2" cy="196.3" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 38.1 MB/s, ratio 3.905</title></circle>
-<text x="878.2" y="189.3" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
+<path d="M992.9,278.3 L922.8,203.8 L872.8,196.1" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="992.9" cy="278.3" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 317.7 MB/s, ratio 3.336</title></circle>
+<text x="1000.9" y="271.3" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="922.8" cy="203.8" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 94.6 MB/s, ratio 3.853</title></circle>
+<text x="930.8" y="196.8" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
+<circle cx="872.8" cy="196.1" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 39.9 MB/s, ratio 3.906</title></circle>
+<text x="880.8" y="189.1" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
 <text x="876.0" y="462.0" font-size="11" fill="#52514e" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
 <text x="24.0" y="276.0" font-size="11" fill="#52514e" text-anchor="middle" font-weight="400" transform="rotate(-90 24 276.0)">compression ratio</text>
 <text x="28.0" y="502.0" font-size="12" fill="#898781" text-anchor="start" font-weight="400" >Ratio is plaintext bytes / compressed bytes. MB/s is plaintext MB (10^6 bytes) per second of median wall time. Each panel has its own scales.</text>
-<text x="28.0" y="520.0" font-size="12" fill="#898781" text-anchor="start" font-weight="400" >Peers come from a run of every level; zipir from the report run. zlib-ng 0 (stored) is left out.</text>
+<text x="28.0" y="520.0" font-size="12" fill="#898781" text-anchor="start" font-weight="400" >Peers come from a run of every level; zipir from the report run. Level 0 (stored) is left out, except igzip 0, which compresses.</text>
 </svg>

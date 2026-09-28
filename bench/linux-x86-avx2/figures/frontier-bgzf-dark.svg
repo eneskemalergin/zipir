@@ -1,0 +1,287 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1386 538" width="1386" height="538" role="img" font-family="system-ui, -apple-system, &quot;Segoe UI&quot;, Helvetica, Arial, sans-serif">
+<title>BGZF compression: zipir presets against every peer level</title><desc>bgzip with libdeflate and with zlib-ng at every level (bgzip -l 1 to 9; with libdeflate, htslib maps them onto libdeflate 1 to 12). Up and to the right is better.</desc>
+<rect width="1386" height="538" rx="12" fill="#1a1a19"/>
+<text x="28.0" y="38.0" font-size="20" fill="#ffffff" text-anchor="start" font-weight="650" >BGZF compression: zipir presets against every peer level</text>
+<text x="28.0" y="62.0" font-size="13" fill="#c3c2b7" text-anchor="start" font-weight="400" >bgzip with libdeflate and with zlib-ng at every level (bgzip -l 1 to 9; with libdeflate, htslib maps them onto libdeflate 1 to 12). Up and to the right is better.</text>
+<circle cx="34.0" cy="84.0" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"></circle>
+<text x="46.0" y="88.0" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >zipir</text>
+<rect x="92.6" y="79.0" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"></rect>
+<text x="109.6" y="88.0" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >bgzip + libdeflate</text>
+<path d="M248.6,76.4 L255.4,89.5 L241.7,89.5 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"></path>
+<text x="260.6" y="88.0" font-size="12" fill="#c3c2b7" text-anchor="start" font-weight="400" >bgzip + zlib-ng</text>
+<text x="66.0" y="112.0" font-size="13" fill="#ffffff" text-anchor="start" font-weight="600" >Sequencing: BAM, 76.2 MB</text>
+<line x1="72.1" y1="126.0" x2="72.1" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="72.1" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >2</text>
+<line x1="119.9" y1="126.0" x2="119.9" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="119.9" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >5</text>
+<line x1="156.0" y1="126.0" x2="156.0" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="156.0" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >10</text>
+<line x1="192.1" y1="126.0" x2="192.1" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="192.1" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >20</text>
+<line x1="239.9" y1="126.0" x2="239.9" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="239.9" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >50</text>
+<line x1="276.0" y1="126.0" x2="276.0" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="276.0" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >100</text>
+<line x1="312.1" y1="126.0" x2="312.1" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="312.1" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >200</text>
+<line x1="359.9" y1="126.0" x2="359.9" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="359.9" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >500</text>
+<line x1="66.0" y1="378.1" x2="366.0" y2="378.1" stroke="#2c2c2a" stroke-width="1" />
+<text x="60.0" y="382.1" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >4</text>
+<line x1="66.0" y1="281.4" x2="366.0" y2="281.4" stroke="#2c2c2a" stroke-width="1" />
+<text x="60.0" y="285.4" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >5</text>
+<line x1="66.0" y1="184.7" x2="366.0" y2="184.7" stroke="#2c2c2a" stroke-width="1" />
+<text x="60.0" y="188.7" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >6</text>
+<line x1="66.0" y1="426.0" x2="366.0" y2="426.0" stroke="#383835" stroke-width="1" />
+<path d="M332.3,254.1 L309.2,247.7 L303.7,236.4 L289.5,211.2 L277.3,199.2 L261.0,192.5 L236.0,186.5 L146.6,161.0 L94.0,156.0" fill="none" stroke="#9085e9" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<rect x="327.3" y="249.1" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 1: 294.3 MB/s, ratio 5.283</title></rect>
+<text x="340.3" y="247.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >1</text>
+<rect x="304.3" y="242.8" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 2: 189.2 MB/s, ratio 5.348</title></rect>
+<text x="317.2" y="240.7" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >2</text>
+<rect x="298.8" y="231.4" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 3: 170.3 MB/s, ratio 5.465</title></rect>
+<text x="311.7" y="229.4" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >3</text>
+<rect x="284.6" y="206.3" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 4: 129.6 MB/s, ratio 5.725</title></rect>
+<text x="297.5" y="204.2" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >4</text>
+<rect x="272.4" y="194.2" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 5: 102.6 MB/s, ratio 5.850</title></rect>
+<text x="285.3" y="192.2" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >5</text>
+<rect x="256.1" y="187.5" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 6: 75.0 MB/s, ratio 5.919</title></rect>
+<text x="269.0" y="185.5" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >6</text>
+<rect x="231.1" y="181.6" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 7: 46.4 MB/s, ratio 5.981</title></rect>
+<text x="244.0" y="179.5" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >7</text>
+<rect x="141.7" y="156.0" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 8: 8.4 MB/s, ratio 6.245</title></rect>
+<text x="154.6" y="154.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
+<rect x="89.1" y="151.1" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 9: 3.0 MB/s, ratio 6.296</title></rect>
+<text x="102.0" y="149.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
+<path d="M343.9,406.0 L316.5,285.1 L302.1,243.3 L291.1,224.7 L283.6,208.0 L270.8,201.5 L250.5,194.2 L218.1,188.4 L217.2,190.1" fill="none" stroke="#d55181" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<path d="M343.9,398.4 L350.8,411.5 L337.0,411.5 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 1: 368.1 MB/s, ratio 3.712</title></path>
+<text x="351.9" y="399.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >1</text>
+<path d="M316.5,277.5 L323.4,290.6 L309.7,290.6 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 2: 217.7 MB/s, ratio 4.962</title></path>
+<text x="324.5" y="278.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >2</text>
+<path d="M302.1,235.7 L309.0,248.8 L295.2,248.8 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 3: 165.0 MB/s, ratio 5.394</title></path>
+<text x="310.1" y="236.3" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >3</text>
+<path d="M291.1,217.2 L298.0,230.2 L284.2,230.2 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 4: 133.6 MB/s, ratio 5.586</title></path>
+<text x="299.1" y="217.7" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >4</text>
+<path d="M283.6,200.5 L290.5,213.5 L276.8,213.5 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 5: 115.8 MB/s, ratio 5.758</title></path>
+<text x="291.6" y="201.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >5</text>
+<path d="M270.8,193.9 L277.7,207.0 L263.9,207.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 6: 90.5 MB/s, ratio 5.826</title></path>
+<text x="278.8" y="194.5" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >6</text>
+<path d="M250.5,186.6 L257.4,199.7 L243.7,199.7 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 7: 61.3 MB/s, ratio 5.902</title></path>
+<text x="258.5" y="187.2" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >7</text>
+<path d="M218.1,180.8 L225.0,193.9 L211.2,193.9 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 8: 32.9 MB/s, ratio 5.962</title></path>
+<text x="226.1" y="181.4" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
+<path d="M217.2,182.5 L224.1,195.6 L210.3,195.6 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 9: 32.4 MB/s, ratio 5.944</title></path>
+<text x="225.2" y="183.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
+<path d="M326.8,262.5 L276.8,201.2 L243.9,192.5" fill="none" stroke="#f7a41d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="326.8" cy="262.5" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir fast: 265.0 MB/s, ratio 5.195</title></circle>
+<text x="334.8" y="255.5" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="276.8" cy="201.2" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir even: 101.6 MB/s, ratio 5.830</title></circle>
+<text x="284.8" y="194.2" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >even</text>
+<circle cx="243.9" cy="192.5" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir dense: 54.0 MB/s, ratio 5.919</title></circle>
+<text x="251.9" y="185.5" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >dense</text>
+<text x="216.0" y="462.0" font-size="11" fill="#c3c2b7" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
+<text x="396.0" y="112.0" font-size="13" fill="#ffffff" text-anchor="start" font-weight="600" >Sequencing: VCF, 11.5 MB</text>
+<line x1="402.8" y1="126.0" x2="402.8" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="402.8" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >2</text>
+<line x1="455.9" y1="126.0" x2="455.9" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="455.9" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >5</text>
+<line x1="496.0" y1="126.0" x2="496.0" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="496.0" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >10</text>
+<line x1="536.1" y1="126.0" x2="536.1" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="536.1" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >20</text>
+<line x1="589.2" y1="126.0" x2="589.2" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="589.2" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >50</text>
+<line x1="629.3" y1="126.0" x2="629.3" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="629.3" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >100</text>
+<line x1="669.5" y1="126.0" x2="669.5" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="669.5" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >200</text>
+<line x1="396.0" y1="377.1" x2="696.0" y2="377.1" stroke="#2c2c2a" stroke-width="1" />
+<text x="390.0" y="381.1" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >3</text>
+<line x1="396.0" y1="284.6" x2="696.0" y2="284.6" stroke="#2c2c2a" stroke-width="1" />
+<text x="390.0" y="288.6" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >4</text>
+<line x1="396.0" y1="192.1" x2="696.0" y2="192.1" stroke="#2c2c2a" stroke-width="1" />
+<text x="390.0" y="196.1" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >5</text>
+<line x1="396.0" y1="426.0" x2="696.0" y2="426.0" stroke="#383835" stroke-width="1" />
+<path d="M680.4,285.9 L657.0,268.3 L651.4,258.3 L635.0,221.2 L624.0,206.1 L602.6,197.0 L569.1,180.6 L487.1,160.2 L425.7,156.0" fill="none" stroke="#9085e9" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<rect x="675.5" y="280.9" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 1: 241.6 MB/s, ratio 3.986</title></rect>
+<text x="688.4" y="278.9" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >1</text>
+<rect x="652.0" y="263.4" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 2: 161.1 MB/s, ratio 4.176</title></rect>
+<text x="665.0" y="261.3" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >2</text>
+<rect x="646.5" y="253.4" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 3: 146.5 MB/s, ratio 4.284</title></rect>
+<text x="659.4" y="251.3" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >3</text>
+<rect x="630.0" y="216.2" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 4: 110.2 MB/s, ratio 4.686</title></rect>
+<text x="643.0" y="214.2" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >4</text>
+<rect x="619.1" y="201.1" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 5: 91.3 MB/s, ratio 4.849</title></rect>
+<text x="632.0" y="199.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >5</text>
+<rect x="597.7" y="192.0" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 6: 63.1 MB/s, ratio 4.947</title></rect>
+<text x="610.6" y="190.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >6</text>
+<rect x="564.2" y="175.7" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 7: 35.4 MB/s, ratio 5.124</title></rect>
+<text x="577.1" y="173.6" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >7</text>
+<rect x="482.2" y="155.2" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 8: 8.6 MB/s, ratio 5.345</title></rect>
+<text x="495.1" y="153.2" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
+<rect x="420.8" y="151.1" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 9: 3.0 MB/s, ratio 5.390</title></rect>
+<text x="433.7" y="149.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
+<path d="M686.2,406.0 L658.8,294.5 L644.2,268.3 L635.6,238.1 L629.5,222.9 L607.8,219.3 L574.3,200.6 L548.4,198.4 L572.8,212.7" fill="none" stroke="#d55181" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<path d="M686.2,398.4 L693.0,411.5 L679.3,411.5 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 1: 266.8 MB/s, ratio 2.688</title></path>
+<text x="694.2" y="399.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >1</text>
+<path d="M658.8,286.9 L665.7,300.0 L651.9,300.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 2: 166.3 MB/s, ratio 3.894</title></path>
+<text x="666.8" y="287.5" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >2</text>
+<path d="M644.2,260.7 L651.1,273.8 L637.3,273.8 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 3: 129.2 MB/s, ratio 4.176</title></path>
+<text x="652.2" y="261.3" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >3</text>
+<path d="M635.6,230.5 L642.5,243.6 L628.8,243.6 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 4: 111.5 MB/s, ratio 4.503</title></path>
+<text x="643.6" y="231.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >4</text>
+<path d="M629.5,215.4 L636.3,228.4 L622.6,228.4 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 5: 100.2 MB/s, ratio 4.667</title></path>
+<text x="637.5" y="215.9" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >5</text>
+<path d="M607.8,211.7 L614.7,224.8 L600.9,224.8 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 6: 68.9 MB/s, ratio 4.706</title></path>
+<text x="615.8" y="212.3" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >6</text>
+<path d="M574.3,193.0 L581.2,206.1 L567.5,206.1 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 7: 38.7 MB/s, ratio 4.908</title></path>
+<text x="582.3" y="193.6" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >7</text>
+<path d="M548.4,190.8 L555.2,203.9 L541.5,203.9 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 8: 24.7 MB/s, ratio 4.932</title></path>
+<text x="556.4" y="191.4" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
+<path d="M572.8,205.2 L579.7,218.2 L565.9,218.2 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 9: 37.7 MB/s, ratio 4.777</title></path>
+<text x="580.8" y="205.7" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
+<path d="M673.3,287.1 L620.8,201.2 L582.3,191.5" fill="none" stroke="#f7a41d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="673.3" cy="287.1" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir fast: 213.6 MB/s, ratio 3.973</title></circle>
+<text x="681.3" y="280.1" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="620.8" cy="201.2" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir even: 86.4 MB/s, ratio 4.902</title></circle>
+<text x="628.8" y="194.2" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >even</text>
+<circle cx="582.3" cy="191.5" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir dense: 44.4 MB/s, ratio 5.006</title></circle>
+<text x="590.3" y="184.5" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >dense</text>
+<text x="546.0" y="462.0" font-size="11" fill="#c3c2b7" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
+<text x="726.0" y="112.0" font-size="13" fill="#ffffff" text-anchor="start" font-weight="600" >Mass spectrometry: PRIDE XML, 48.0 MB</text>
+<line x1="752.5" y1="126.0" x2="752.5" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="752.5" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >5</text>
+<line x1="792.7" y1="126.0" x2="792.7" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="792.7" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >10</text>
+<line x1="832.8" y1="126.0" x2="832.8" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="832.8" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >20</text>
+<line x1="885.9" y1="126.0" x2="885.9" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="885.9" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >50</text>
+<line x1="926.0" y1="126.0" x2="926.0" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="926.0" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >100</text>
+<line x1="966.1" y1="126.0" x2="966.1" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="966.1" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >200</text>
+<line x1="1019.2" y1="126.0" x2="1019.2" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="1019.2" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >500</text>
+<line x1="726.0" y1="339.9" x2="1026.0" y2="339.9" stroke="#2c2c2a" stroke-width="1" />
+<text x="720.0" y="343.9" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >3.5</text>
+<line x1="726.0" y1="232.9" x2="1026.0" y2="232.9" stroke="#2c2c2a" stroke-width="1" />
+<text x="720.0" y="236.9" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >4.0</text>
+<line x1="726.0" y1="426.0" x2="1026.0" y2="426.0" stroke="#383835" stroke-width="1" />
+<path d="M981.5,228.6 L959.7,221.1 L957.9,215.9 L949.7,190.5 L944.0,182.1 L930.4,173.2 L898.8,166.8 L817.3,163.6 L750.5,156.0" fill="none" stroke="#9085e9" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<rect x="976.5" y="223.6" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 1: 260.8 MB/s, ratio 4.020</title></rect>
+<text x="989.5" y="221.6" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >1</text>
+<rect x="954.7" y="216.2" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 2: 178.8 MB/s, ratio 4.055</title></rect>
+<text x="967.7" y="214.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >2</text>
+<rect x="953.0" y="210.9" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 3: 173.6 MB/s, ratio 4.080</title></rect>
+<text x="965.9" y="208.9" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >3</text>
+<rect x="944.7" y="185.5" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 4: 150.4 MB/s, ratio 4.198</title></rect>
+<text x="957.7" y="183.5" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >4</text>
+<rect x="939.0" y="177.1" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 5: 136.4 MB/s, ratio 4.238</title></rect>
+<text x="952.0" y="175.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >5</text>
+<rect x="925.4" y="168.3" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 6: 107.9 MB/s, ratio 4.279</title></rect>
+<text x="938.4" y="166.2" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >6</text>
+<rect x="893.8" y="161.9" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 7: 62.5 MB/s, ratio 4.309</title></rect>
+<text x="906.8" y="159.8" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >7</text>
+<rect x="812.4" y="158.6" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 8: 15.3 MB/s, ratio 4.324</title></rect>
+<text x="825.3" y="156.6" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
+<rect x="745.6" y="151.1" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 9: 4.8 MB/s, ratio 4.359</title></rect>
+<text x="758.5" y="149.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
+<path d="M998.3,406.0 L967.5,234.1 L954.9,218.5 L950.3,202.8 L946.9,190.8 L942.5,187.9 L917.3,176.9 L865.8,172.0 L903.6,189.8" fill="none" stroke="#d55181" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<path d="M998.3,398.4 L1005.2,411.5 L991.4,411.5 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 1: 348.5 MB/s, ratio 3.191</title></path>
+<text x="1006.3" y="399.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >1</text>
+<path d="M967.5,226.5 L974.3,239.6 L960.6,239.6 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 2: 204.6 MB/s, ratio 3.995</title></path>
+<text x="975.5" y="227.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >2</text>
+<path d="M954.9,211.0 L961.8,224.0 L948.0,224.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 3: 164.7 MB/s, ratio 4.067</title></path>
+<text x="962.9" y="211.5" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >3</text>
+<path d="M950.3,195.3 L957.2,208.3 L943.4,208.3 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 4: 152.1 MB/s, ratio 4.141</title></path>
+<text x="958.3" y="195.8" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >4</text>
+<path d="M946.9,183.2 L953.8,196.3 L940.0,196.3 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 5: 143.4 MB/s, ratio 4.197</title></path>
+<text x="954.9" y="183.8" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >5</text>
+<path d="M942.5,180.3 L949.4,193.4 L935.6,193.4 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 6: 133.0 MB/s, ratio 4.210</title></path>
+<text x="950.5" y="180.9" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >6</text>
+<path d="M917.3,169.3 L924.2,182.4 L910.5,182.4 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 7: 86.1 MB/s, ratio 4.262</title></path>
+<text x="925.3" y="169.9" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >7</text>
+<path d="M865.8,164.4 L872.7,177.5 L859.0,177.5 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 8: 35.4 MB/s, ratio 4.285</title></path>
+<text x="873.8" y="165.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
+<path d="M903.6,182.2 L910.5,195.3 L896.8,195.3 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 9: 68.0 MB/s, ratio 4.202</title></path>
+<text x="911.6" y="182.8" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
+<path d="M981.8,231.1 L937.3,183.7 L912.6,173.9" fill="none" stroke="#f7a41d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="981.8" cy="231.1" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir fast: 262.2 MB/s, ratio 4.009</title></circle>
+<text x="989.8" y="224.1" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="937.3" cy="183.7" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir even: 121.6 MB/s, ratio 4.230</title></circle>
+<text x="945.3" y="176.7" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >even</text>
+<circle cx="912.6" cy="173.9" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir dense: 79.3 MB/s, ratio 4.276</title></circle>
+<text x="920.6" y="166.9" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >dense</text>
+<text x="876.0" y="462.0" font-size="11" fill="#c3c2b7" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
+<text x="1056.0" y="112.0" font-size="13" fill="#ffffff" text-anchor="start" font-weight="600" >General: Canterbury tar, 2.8 MB</text>
+<line x1="1085.8" y1="126.0" x2="1085.8" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="1085.8" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >5</text>
+<line x1="1131.0" y1="126.0" x2="1131.0" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="1131.0" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >10</text>
+<line x1="1176.2" y1="126.0" x2="1176.2" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="1176.2" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >20</text>
+<line x1="1235.8" y1="126.0" x2="1235.8" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="1235.8" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >50</text>
+<line x1="1281.0" y1="126.0" x2="1281.0" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="1281.0" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >100</text>
+<line x1="1326.2" y1="126.0" x2="1326.2" y2="426.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="1326.2" y="443.0" font-size="11" fill="#898781" text-anchor="middle" font-weight="400" >200</text>
+<line x1="1056.0" y1="392.8" x2="1356.0" y2="392.8" stroke="#2c2c2a" stroke-width="1" />
+<text x="1050.0" y="396.8" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >2.5</text>
+<line x1="1056.0" y1="315.6" x2="1356.0" y2="315.6" stroke="#2c2c2a" stroke-width="1" />
+<text x="1050.0" y="319.6" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >3.0</text>
+<line x1="1056.0" y1="238.3" x2="1356.0" y2="238.3" stroke="#2c2c2a" stroke-width="1" />
+<text x="1050.0" y="242.3" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >3.5</text>
+<line x1="1056.0" y1="161.0" x2="1356.0" y2="161.0" stroke="#2c2c2a" stroke-width="1" />
+<text x="1050.0" y="165.0" font-size="11" fill="#898781" text-anchor="end" font-weight="400" >4.0</text>
+<line x1="1056.0" y1="426.0" x2="1356.0" y2="426.0" stroke="#383835" stroke-width="1" />
+<path d="M1330.6,242.7 L1301.7,214.8 L1292.2,208.2 L1276.8,197.4 L1266.3,194.0 L1247.8,191.9 L1198.6,175.8 L1148.1,159.5 L1089.6,156.0" fill="none" stroke="#9085e9" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<rect x="1325.7" y="237.7" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 1: 214.2 MB/s, ratio 3.472</title></rect>
+<text x="1338.6" y="235.7" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >1</text>
+<rect x="1296.8" y="209.9" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 2: 137.5 MB/s, ratio 3.652</title></rect>
+<text x="1309.7" y="207.8" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >2</text>
+<rect x="1287.2" y="203.2" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 3: 118.7 MB/s, ratio 3.695</title></rect>
+<text x="1300.2" y="201.2" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >3</text>
+<rect x="1271.9" y="192.5" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 4: 93.8 MB/s, ratio 3.764</title></rect>
+<text x="1284.8" y="190.4" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >4</text>
+<rect x="1261.3" y="189.1" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 5: 79.8 MB/s, ratio 3.786</title></rect>
+<text x="1274.3" y="187.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >5</text>
+<rect x="1242.8" y="187.0" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 6: 60.1 MB/s, ratio 3.800</title></rect>
+<text x="1255.8" y="184.9" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >6</text>
+<rect x="1193.7" y="170.9" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 7: 28.2 MB/s, ratio 3.904</title></rect>
+<text x="1206.6" y="168.8" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >7</text>
+<rect x="1143.2" y="154.6" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 8: 13.0 MB/s, ratio 4.010</title></rect>
+<text x="1156.1" y="152.5" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
+<rect x="1084.7" y="151.1" width="9.9" height="9.9" rx="1.5" fill="#9085e9" stroke="#1a1a19" stroke-width="2"><title>bgzip + libdeflate 9: 5.3 MB/s, ratio 4.032</title></rect>
+<text x="1097.6" y="149.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
+<path d="M1336.9,406.0 L1303.5,255.1 L1290.4,228.9 L1278.8,221.4 L1274.8,213.5 L1263.3,212.2 L1227.1,201.1 L1149.9,198.4 L1144.4,200.5" fill="none" stroke="#d55181" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<path d="M1336.9,398.4 L1343.8,411.5 L1330.0,411.5 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 1: 235.8 MB/s, ratio 2.415</title></path>
+<text x="1344.9" y="399.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >1</text>
+<path d="M1303.5,247.6 L1310.3,260.6 L1296.6,260.6 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 2: 141.2 MB/s, ratio 3.391</title></path>
+<text x="1311.5" y="248.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >2</text>
+<path d="M1290.4,221.4 L1297.3,234.4 L1283.5,234.4 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 3: 115.5 MB/s, ratio 3.561</title></path>
+<text x="1298.4" y="221.9" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >3</text>
+<path d="M1278.8,213.9 L1285.7,226.9 L1271.9,226.9 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 4: 96.7 MB/s, ratio 3.609</title></path>
+<text x="1286.8" y="214.4" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >4</text>
+<path d="M1274.8,206.0 L1281.6,219.0 L1267.9,219.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 5: 90.9 MB/s, ratio 3.660</title></path>
+<text x="1282.8" y="206.5" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >5</text>
+<path d="M1263.3,204.6 L1270.2,217.7 L1256.4,217.7 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 6: 76.2 MB/s, ratio 3.669</title></path>
+<text x="1271.3" y="205.2" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >6</text>
+<path d="M1227.1,193.5 L1234.0,206.6 L1220.2,206.6 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 7: 43.7 MB/s, ratio 3.741</title></path>
+<text x="1235.1" y="194.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >7</text>
+<path d="M1149.9,190.8 L1156.8,203.9 L1143.1,203.9 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 8: 13.4 MB/s, ratio 3.758</title></path>
+<text x="1157.9" y="191.4" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
+<path d="M1144.4,192.9 L1151.3,206.0 L1137.5,206.0 Z" fill="#d55181" stroke="#1a1a19" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 9: 12.3 MB/s, ratio 3.745</title></path>
+<text x="1152.4" y="193.5" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
+<path d="M1321.6,237.7 L1267.5,200.4 L1223.9,194.3" fill="none" stroke="#f7a41d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="1321.6" cy="237.7" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir fast: 186.4 MB/s, ratio 3.504</title></circle>
+<text x="1329.6" y="230.7" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="1267.5" cy="200.4" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir even: 81.3 MB/s, ratio 3.745</title></circle>
+<text x="1275.5" y="193.4" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >even</text>
+<circle cx="1223.9" cy="194.3" r="5.5" fill="#f7a41d" stroke="#1a1a19" stroke-width="2"><title>zipir dense: 41.6 MB/s, ratio 3.785</title></circle>
+<text x="1231.9" y="187.3" font-size="10" fill="#ffffff" text-anchor="start" font-weight="600" >dense</text>
+<text x="1206.0" y="462.0" font-size="11" fill="#c3c2b7" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
+<text x="24.0" y="276.0" font-size="11" fill="#c3c2b7" text-anchor="middle" font-weight="400" transform="rotate(-90 24 276.0)">compression ratio</text>
+<text x="28.0" y="502.0" font-size="12" fill="#898781" text-anchor="start" font-weight="400" >Ratio is plaintext bytes / compressed bytes. MB/s is plaintext MB (10^6 bytes) per second of median wall time. Each panel has its own scales.</text>
+<text x="28.0" y="520.0" font-size="12" fill="#898781" text-anchor="start" font-weight="400" >Peers come from a run of every level; zipir from the report run. Level 0 (stored) is left out, except igzip 0, which compresses.</text>
+</svg>

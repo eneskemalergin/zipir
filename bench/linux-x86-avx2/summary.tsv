@@ -3,15 +3,15 @@ decompress	gzip	-	6	igzip	-	1.0095	0.8083	1.2493	1.0000	igzip	-	1.0095	1.0000	54
 decompress	zlib	-	6	zlib-ng-zlib	-	1.2394	1.1746	1.2737	1.0000	zlib-ng-zlib	-	1.2394	1.0000	568.7	1170.7
 decompress	deflate	-	6	zlib-ng-deflate	-	1.2355	1.1757	1.2799	1.0000	zlib-ng-deflate	-	1.2355	1.0000	566.8	1210.4
 decompress	bgzf	-	6	bgzip-libdeflate	-	0.9363	0.8460	1.1104	1.0000	bgzip-libdeflate	-	0.9363	1.0000	586.3	1030.5
-compress	gzip	1	5	igzip	0	0.8153	0.6770	0.9814	1.2169					257.6	436.5
-compress	gzip	5	5	igzip	1	0.2665	0.2159	0.3739	1.1515					64.8	141.9
-compress	gzip	9	5	igzip	2	0.1264	0.0587	0.2962	1.1507					16.8	88.1
-compress	zlib	1	5	zlib-ng-zlib	1	1.3280	1.2187	1.4720	1.3405					262.7	453.0
-compress	zlib	5	5	zlib-ng-zlib	5	1.0284	0.8806	1.1886	1.0150					63.9	143.8
-compress	zlib	9	5	zlib-ng-zlib	9	1.9488	1.1562	3.7631	1.0186					16.9	86.8
-compress	deflate	1	5	zlib-ng-deflate	1	1.3418	1.2169	1.5334	1.3405					267.2	458.1
-compress	deflate	5	5	zlib-ng-deflate	5	1.0251	0.8759	1.2142	1.0150					63.9	141.2
-compress	deflate	9	5	zlib-ng-deflate	9	1.9696	1.1762	3.7043	1.0186					17.1	89.0
-compress	bgzf	1	5	bgzip-zlib-ng	1	1.2484	1.1339	1.3867	1.3247	bgzip-libdeflate	1	1.5082	0.9397	293.9	429.4
-compress	bgzf	5	5	bgzip-zlib-ng	5	1.0476	0.9430	1.1076	1.0128	bgzip-libdeflate	5	1.1237	0.9861	92.5	133.4
-compress	bgzf	9	5	bgzip-zlib-ng	9	1.6501	1.1518	3.2565	1.0255	bgzip-libdeflate	9	15.7079	0.9419	40.0	93.0
+compress	gzip	1	5	igzip	0	0.8314	0.7013	0.9832	1.2170					261.6	443.4
+compress	gzip	5	5	igzip	1	0.2813	0.2225	0.3864	1.1516					66.8	151.1
+compress	gzip	9	5	igzip	2	0.1304	0.0600	0.2969	1.1508					17.2	88.3
+compress	zlib	1	5	zlib-ng-zlib	1	1.3489	1.2066	1.5225	1.3406					267.9	457.4
+compress	zlib	5	5	zlib-ng-zlib	5	1.0787	0.9357	1.2261	1.0150					65.9	148.7
+compress	zlib	9	5	zlib-ng-zlib	9	2.0060	1.1976	3.8703	1.0187					17.2	91.5
+compress	deflate	1	5	zlib-ng-deflate	1	1.3495	1.2182	1.5354	1.3406					263.1	459.6
+compress	deflate	5	5	zlib-ng-deflate	5	1.0818	0.9339	1.2228	1.0150					64.3	150.2
+compress	deflate	9	5	zlib-ng-deflate	9	2.0074	1.1965	3.8506	1.0187					16.9	91.2
+compress	bgzf	1	5	bgzip-zlib-ng	1	0.7958	0.7170	0.9321	1.4098	bgzip-libdeflate	1	0.9614	1.0001	186.4	265.0
+compress	bgzf	5	5	bgzip-zlib-ng	5	0.9169	0.8596	1.0955	1.0282	bgzip-libdeflate	5	0.9836	1.0011	81.3	123.0
+compress	bgzf	9	5	bgzip-zlib-ng	9	1.7060	1.1839	3.3850	1.0257	bgzip-libdeflate	9	16.2397	0.9420	41.6	94.4

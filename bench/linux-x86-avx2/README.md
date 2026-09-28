@@ -1,6 +1,6 @@
 # zipir benchmark: linux-x86-avx2
 
-zipir `fc81d5201bab` (uncommitted changes), measured on 2026-09-27. One host: AMD Ryzen 9 3950X, Linux 7.2.7-200.fc44.x86_64 x86_64.
+zipir `5f25547b826e` (uncommitted changes), measured on 2026-09-27. One host: AMD Ryzen 9 3950X, Linux 7.2.7-200.fc44.x86_64 x86_64.
 
 This report shows where zipir stands against the fastest single-threaded tools on the same machine, on every format zipir writes and reads. Compression is a trade-off between speed and output size, so compression results always show both; decompression output is identical across tools, so speed and memory are the whole story there.
 
@@ -22,28 +22,28 @@ Each row compares zipir with every peer on the same path and names the fastest o
 | zlib decompress |  | zlib-ng | 1.24 (1.17 to 1.27) |  |  | 569 to 1171 |
 | raw DEFLATE decompress |  | zlib-ng | 1.24 (1.18 to 1.28) |  |  | 567 to 1210 |
 | BGZF decompress |  | bgzip + libdeflate | 0.94 (0.85 to 1.11) |  |  | 586 to 1030 |
-| gzip compress | 1 | ISA-L igzip 0 | 0.82 (0.68 to 0.98) | +22% size | none | 258 to 436 |
-| gzip compress | 5 | ISA-L igzip 1 | 0.27 (0.22 to 0.37) | +15% size | none | 65 to 142 |
+| gzip compress | 1 | ISA-L igzip 0 | 0.83 (0.70 to 0.98) | +22% size | none | 262 to 443 |
+| gzip compress | 5 | ISA-L igzip 1 | 0.28 (0.22 to 0.39) | +15% size | none | 67 to 151 |
 | gzip compress | 9 | ISA-L igzip 2 | 0.13 (0.06 to 0.30) | +15% size | none | 17 to 88 |
-| zlib compress | 1 | zlib-ng 1 | 1.33 (1.22 to 1.47) | +34% size | none | 263 to 453 |
-| zlib compress | 5 | zlib-ng 5 | 1.03 (0.88 to 1.19) | +1.5% size | none | 64 to 144 |
-| zlib compress | 9 | zlib-ng 9 | 1.95 (1.16 to 3.76) | +2% size | none | 17 to 87 |
-| raw DEFLATE compress | 1 | zlib-ng 1 | 1.34 (1.22 to 1.53) | +34% size | none | 267 to 458 |
-| raw DEFLATE compress | 5 | zlib-ng 5 | 1.03 (0.88 to 1.21) | +1.5% size | none | 64 to 141 |
-| raw DEFLATE compress | 9 | zlib-ng 9 | 1.97 (1.18 to 3.70) | +2% size | none | 17 to 89 |
-| BGZF compress | 1 | bgzip + zlib-ng 1 | 1.25 (1.13 to 1.39) | +32% size | bgzip + libdeflate 1: 1.51 | 294 to 429 |
-| BGZF compress | 5 | bgzip + zlib-ng 5 | 1.05 (0.94 to 1.11) | +1.3% size | bgzip + libdeflate 5: 1.12 | 93 to 133 |
-| BGZF compress | 9 | bgzip + zlib-ng 9 | 1.65 (1.15 to 3.26) | +3% size | bgzip + libdeflate 9: 15.71 | 40 to 93 |
+| zlib compress | 1 | zlib-ng 1 | 1.35 (1.21 to 1.52) | +34% size | none | 268 to 457 |
+| zlib compress | 5 | zlib-ng 5 | 1.08 (0.94 to 1.23) | +2% size | none | 66 to 149 |
+| zlib compress | 9 | zlib-ng 9 | 2.01 (1.20 to 3.87) | +2% size | none | 17 to 91 |
+| raw DEFLATE compress | 1 | zlib-ng 1 | 1.35 (1.22 to 1.54) | +34% size | none | 263 to 460 |
+| raw DEFLATE compress | 5 | zlib-ng 5 | 1.08 (0.93 to 1.22) | +2% size | none | 64 to 150 |
+| raw DEFLATE compress | 9 | zlib-ng 9 | 2.01 (1.20 to 3.85) | +2% size | none | 17 to 91 |
+| BGZF compress | 1 | bgzip + zlib-ng 1 | 0.80 (0.72 to 0.93) | +41% size | bgzip + libdeflate 1: 0.96 | 186 to 265 |
+| BGZF compress | 5 | bgzip + zlib-ng 5 | 0.92 (0.86 to 1.10) | +3% size | bgzip + libdeflate 5: 0.98 | 81 to 123 |
+| BGZF compress | 9 | bgzip + zlib-ng 9 | 1.71 (1.18 to 3.38) | +3% size | bgzip + libdeflate 9: 16.24 | 42 to 94 |
 
 ### Reading the summary
 
 - Decompression: zipir is the fastest tool on zlib and raw DEFLATE.
 - Decompression: on gzip, zipir and ISA-L igzip are level on average; per file the peer ranges from 0.80x to 1.24x zipir's speed.
 - Decompression: on BGZF, bgzip + libdeflate is 1.07x faster than zipir on average (0.90x to 1.18x across files).
-- Compression level 1 (fast): no peer reaches zipir's output size on gzip, zlib and raw DEFLATE; no peer with output no larger than zipir's is faster on BGZF; the fastest peer at any size is ISA-L igzip 0, 1.2x faster with 22% larger output.
-- Compression level 5 (balanced): no peer reaches zipir's output size on gzip, zlib and raw DEFLATE; no peer with output no larger than zipir's is faster on BGZF; the fastest peer at any size is ISA-L igzip 1, 3.8x faster with 15% larger output.
-- Compression level 9 (dense): no peer reaches zipir's output size on gzip, zlib and raw DEFLATE; no peer with output no larger than zipir's is faster on BGZF; the fastest peer at any size is ISA-L igzip 2, 7.9x faster with 15% larger output.
-- Memory: zipir peaks at 0.54 to 0.62 MiB on every path; the C tools peak at 1.6 to 5.0 MiB (whole process, see [Memory](#memory)).
+- Compression level 1 (fast): no peer reaches zipir's output size on gzip, zlib and raw DEFLATE; bgzip + libdeflate 1 is 1.04x faster at no larger output on BGZF; the fastest peer at any size is bgzip + zlib-ng 1, 1.3x faster with 41% larger output.
+- Compression level 5 (balanced): no peer reaches zipir's output size on gzip, zlib and raw DEFLATE; bgzip + libdeflate 5 is 1.02x faster at no larger output on BGZF; the fastest peer at any size is ISA-L igzip 1, 3.6x faster with 15% larger output.
+- Compression level 9 (dense): no peer reaches zipir's output size on gzip, zlib and raw DEFLATE; no peer with output no larger than zipir's is faster on BGZF; the fastest peer at any size is ISA-L igzip 2, 7.7x faster with 15% larger output.
+- Memory: zipir peaks at 0.55 to 0.62 MiB on every path; the C tools peak at 1.6 to 5.0 MiB (whole process, see [Memory](#memory)).
 
 ## Compression: speed against ratio
 
@@ -71,18 +71,18 @@ Each cell: MB/s · compression ratio. Peer cells add their time relative to zipi
 
 | Tool | Level | FASTQ, 57.2 MB | FASTQ, 20.2 MB | PRIDE XML, 48.0 MB | mzIdentML, 1.2 MB | Canterbury tar, 2.8 MB |
 | --- | --- | --- | --- | --- | --- | --- |
-| **zipir** | 1 | 257.6 MB/s · 2.346 | 436.5 MB/s · 4.684 | 428.0 MB/s · 4.119 | 333.7 MB/s · 4.307 | 307.1 MB/s · 3.335 |
-| **zipir** | 5 | 64.8 MB/s · 2.574 | 141.9 MB/s · 6.084 | 127.4 MB/s · 4.483 | 120.7 MB/s · 4.859 | 88.9 MB/s · 3.852 |
-| **zipir** | 9 | 16.8 MB/s · 2.654 | 58.8 MB/s · 6.325 | 73.1 MB/s · 4.584 | 88.1 MB/s · 4.745 | 38.1 MB/s · 3.905 |
-| zlib-ng | 1 | 192.7 MB/s · 1.677 · 1.34× · +40% | 363.3 MB/s · 3.648 · 1.20× · +28% | 317.7 MB/s · 3.332 · 1.35× · +24% | 229.2 MB/s · 3.008 · 1.46× · +43% | 241.5 MB/s · 2.449 · 1.27× · +36% |
-| zlib-ng | 5 | 52.4 MB/s · 2.589 · 1.24× · -0.6% | 128.3 MB/s · 5.999 · 1.11× · +1.4% | 141.9 MB/s · 4.482 · 0.90× · ±0% | 114.9 MB/s · 4.662 · 1.05× · +4% | 89.2 MB/s · 3.759 · 1.00× · +2% |
-| zlib-ng | 9 | 6.2 MB/s · 2.648 · 2.70× · ±0% | 43.6 MB/s · 6.256 · 1.35× · +1.1% | 63.2 MB/s · 4.511 · 1.16× · +2% | 49.7 MB/s · 4.521 · 1.77× · +5% | 10.3 MB/s · 3.847 · 3.71× · +2% |
-| ISA-L igzip | 0 | 327.4 MB/s · 2.095 · 0.79× · +12% | 564.3 MB/s · 4.106 · 0.77× · +14% | 632.2 MB/s · 3.231 · 0.68× · +27% | 340.1 MB/s · 2.965 · 0.98× · +45% | 344.7 MB/s · 2.957 · 0.89× · +13% |
-| ISA-L igzip | 1 | 300.3 MB/s · 2.371 · 0.22× · +9% | 533.3 MB/s · 4.877 · 0.27× · +25% | 579.1 MB/s · 4.054 · 0.22× · +11% | 322.8 MB/s · 4.293 · 0.37× · +13% | 312.2 MB/s · 3.225 · 0.28× · +19% |
-| ISA-L igzip | 2 | 286.6 MB/s · 2.399 · 0.06× · +11% | 511.9 MB/s · 4.917 · 0.11× · +29% | 556.0 MB/s · 4.184 · 0.13× · +10% | 297.4 MB/s · 4.362 · 0.30× · +9% | 310.4 MB/s · 3.282 · 0.12× · +19% |
-| Zig std | 1 | 60.1 MB/s · 2.367 · 4.28× · -0.9% | 89.4 MB/s · 4.486 · 4.88× · +4% | 83.9 MB/s · 3.922 · 5.10× · +5% | 83.4 MB/s · 3.970 · 4.00× · +8% | 76.5 MB/s · 3.302 · 4.01× · +1.0% |
-| Zig std | 5 | 25.8 MB/s · 2.516 · 2.51× · +2% | 63.5 MB/s · 5.540 · 2.24× · +10% | 70.8 MB/s · 4.366 · 1.80× · +3% | 47.9 MB/s · 4.296 · 2.52× · +13% | 42.0 MB/s · 3.688 · 2.12× · +4% |
-| Zig std | 9 | 4.3 MB/s · 2.648 · 3.95× · ±0% | 18.6 MB/s · 6.213 · 3.16× · +2% | 16.1 MB/s · 4.499 · 4.54× · +2% | 37.4 MB/s · 4.477 · 2.36× · +6% | 6.7 MB/s · 3.802 · 5.68× · +3% |
+| **zipir** | 1 | 261.6 MB/s · 2.346 | 441.5 MB/s · 4.684 | 443.4 MB/s · 4.119 | 334.3 MB/s · 4.307 | 317.7 MB/s · 3.336 |
+| **zipir** | 5 | 66.8 MB/s · 2.574 | 151.1 MB/s · 6.084 | 138.2 MB/s · 4.483 | 124.7 MB/s · 4.859 | 94.6 MB/s · 3.853 |
+| **zipir** | 9 | 17.2 MB/s · 2.654 | 60.9 MB/s · 6.325 | 77.0 MB/s · 4.584 | 88.3 MB/s · 4.745 | 39.9 MB/s · 3.906 |
+| zlib-ng | 1 | 192.7 MB/s · 1.677 · 1.36× · +40% | 363.3 MB/s · 3.648 · 1.22× · +28% | 317.7 MB/s · 3.332 · 1.40× · +24% | 229.2 MB/s · 3.008 · 1.46× · +43% | 241.5 MB/s · 2.449 · 1.32× · +36% |
+| zlib-ng | 5 | 52.4 MB/s · 2.589 · 1.27× · -0.6% | 128.3 MB/s · 5.999 · 1.18× · +1.4% | 141.9 MB/s · 4.482 · 0.97× · ±0% | 114.9 MB/s · 4.662 · 1.09× · +4% | 89.2 MB/s · 3.759 · 1.06× · +2% |
+| zlib-ng | 9 | 6.2 MB/s · 2.648 · 2.76× · ±0% | 43.6 MB/s · 6.256 · 1.40× · +1.1% | 63.2 MB/s · 4.511 · 1.22× · +2% | 49.7 MB/s · 4.521 · 1.78× · +5% | 10.3 MB/s · 3.847 · 3.88× · +2% |
+| ISA-L igzip | 0 | 327.4 MB/s · 2.095 · 0.80× · +12% | 564.3 MB/s · 4.106 · 0.78× · +14% | 632.2 MB/s · 3.231 · 0.70× · +27% | 340.1 MB/s · 2.965 · 0.98× · +45% | 344.7 MB/s · 2.957 · 0.92× · +13% |
+| ISA-L igzip | 1 | 300.3 MB/s · 2.371 · 0.22× · +9% | 533.3 MB/s · 4.877 · 0.28× · +25% | 579.1 MB/s · 4.054 · 0.24× · +11% | 322.8 MB/s · 4.293 · 0.39× · +13% | 312.2 MB/s · 3.225 · 0.30× · +19% |
+| ISA-L igzip | 2 | 286.6 MB/s · 2.399 · 0.06× · +11% | 511.9 MB/s · 4.917 · 0.12× · +29% | 556.0 MB/s · 4.184 · 0.14× · +10% | 297.4 MB/s · 4.362 · 0.30× · +9% | 310.4 MB/s · 3.282 · 0.13× · +19% |
+| Zig std | 1 | 60.1 MB/s · 2.367 · 4.35× · -0.9% | 89.4 MB/s · 4.486 · 4.94× · +4% | 83.9 MB/s · 3.922 · 5.28× · +5% | 83.4 MB/s · 3.970 · 4.01× · +8% | 76.5 MB/s · 3.302 · 4.15× · +1.0% |
+| Zig std | 5 | 25.8 MB/s · 2.516 · 2.59× · +2% | 63.5 MB/s · 5.540 · 2.38× · +10% | 70.8 MB/s · 4.366 · 1.95× · +3% | 47.9 MB/s · 4.296 · 2.61× · +13% | 42.0 MB/s · 3.688 · 2.25× · +4% |
+| Zig std | 9 | 4.3 MB/s · 2.648 · 4.03× · ±0% | 18.6 MB/s · 6.213 · 3.27× · +2% | 16.1 MB/s · 4.499 · 4.78× · +2% | 37.4 MB/s · 4.477 · 2.36× · +6% | 6.7 MB/s · 3.802 · 5.94× · +3% |
 
 <details><summary><b>zlib compression</b> (same engines as gzip)</summary>
 
@@ -96,12 +96,12 @@ Each cell: MB/s · compression ratio. Peer cells add their time relative to zipi
 
 | Tool | Level | FASTQ, 57.2 MB | FASTQ, 20.2 MB | PRIDE XML, 48.0 MB | mzIdentML, 1.2 MB | Canterbury tar, 2.8 MB |
 | --- | --- | --- | --- | --- | --- | --- |
-| **zipir** | 1 | 262.7 MB/s · 2.346 | 453.0 MB/s · 4.684 | 450.9 MB/s · 4.119 | 334.2 MB/s · 4.307 | 316.4 MB/s · 3.335 |
-| **zipir** | 5 | 63.9 MB/s · 2.574 | 143.8 MB/s · 6.084 | 128.1 MB/s · 4.483 | 116.6 MB/s · 4.859 | 88.9 MB/s · 3.852 |
-| **zipir** | 9 | 16.9 MB/s · 2.654 | 60.3 MB/s · 6.325 | 74.7 MB/s · 4.584 | 86.8 MB/s · 4.745 | 38.8 MB/s · 3.905 |
-| zlib-ng | 1 | 198.2 MB/s · 1.677 · 1.33× · +40% | 371.7 MB/s · 3.648 · 1.22× · +28% | 332.2 MB/s · 3.332 · 1.36× · +24% | 227.0 MB/s · 3.008 · 1.47× · +43% | 247.2 MB/s · 2.449 · 1.28× · +36% |
-| zlib-ng | 5 | 53.7 MB/s · 2.589 · 1.19× · -0.6% | 131.1 MB/s · 5.999 · 1.10× · +1.4% | 145.4 MB/s · 4.482 · 0.88× · ±0% | 115.2 MB/s · 4.662 · 1.01× · +4% | 89.8 MB/s · 3.760 · 0.99× · +2% |
-| zlib-ng | 9 | 6.3 MB/s · 2.648 · 2.67× · ±0% | 43.8 MB/s · 6.256 · 1.38× · +1.1% | 64.6 MB/s · 4.511 · 1.16× · +2% | 49.5 MB/s · 4.521 · 1.75× · +5% | 10.3 MB/s · 3.847 · 3.76× · +2% |
+| **zipir** | 1 | 267.9 MB/s · 2.346 | 448.5 MB/s · 4.684 | 457.4 MB/s · 4.119 | 345.7 MB/s · 4.307 | 323.0 MB/s · 3.336 |
+| **zipir** | 5 | 65.9 MB/s · 2.574 | 148.7 MB/s · 6.084 | 136.1 MB/s · 4.483 | 125.0 MB/s · 4.859 | 92.9 MB/s · 3.853 |
+| **zipir** | 9 | 17.2 MB/s · 2.654 | 61.0 MB/s · 6.325 | 77.4 MB/s · 4.584 | 91.5 MB/s · 4.745 | 39.9 MB/s · 3.906 |
+| zlib-ng | 1 | 198.2 MB/s · 1.677 · 1.35× · +40% | 371.7 MB/s · 3.648 · 1.21× · +28% | 332.2 MB/s · 3.332 · 1.38× · +24% | 227.0 MB/s · 3.008 · 1.52× · +43% | 247.2 MB/s · 2.449 · 1.31× · +36% |
+| zlib-ng | 5 | 53.7 MB/s · 2.589 · 1.23× · -0.6% | 131.1 MB/s · 5.999 · 1.13× · +1.4% | 145.4 MB/s · 4.482 · 0.94× · ±0% | 115.2 MB/s · 4.662 · 1.09× · +4% | 89.8 MB/s · 3.760 · 1.03× · +2% |
+| zlib-ng | 9 | 6.3 MB/s · 2.648 · 2.72× · ±0% | 43.8 MB/s · 6.256 · 1.39× · +1.1% | 64.6 MB/s · 4.511 · 1.20× · +2% | 49.5 MB/s · 4.521 · 1.85× · +5% | 10.3 MB/s · 3.847 · 3.87× · +2% |
 
 </details>
 
@@ -117,12 +117,12 @@ Each cell: MB/s · compression ratio. Peer cells add their time relative to zipi
 
 | Tool | Level | FASTQ, 57.2 MB | FASTQ, 20.2 MB | PRIDE XML, 48.0 MB | mzIdentML, 1.2 MB | Canterbury tar, 2.8 MB |
 | --- | --- | --- | --- | --- | --- | --- |
-| **zipir** | 1 | 267.2 MB/s · 2.346 | 458.1 MB/s · 4.684 | 457.1 MB/s · 4.119 | 343.5 MB/s · 4.307 | 312.2 MB/s · 3.336 |
-| **zipir** | 5 | 63.9 MB/s · 2.574 | 141.2 MB/s · 6.084 | 127.7 MB/s · 4.483 | 115.7 MB/s · 4.859 | 87.5 MB/s · 3.852 |
-| **zipir** | 9 | 17.1 MB/s · 2.654 | 60.3 MB/s · 6.325 | 76.0 MB/s · 4.584 | 89.0 MB/s · 4.745 | 38.3 MB/s · 3.905 |
-| zlib-ng | 1 | 195.3 MB/s · 1.677 · 1.37× · +40% | 376.4 MB/s · 3.648 · 1.22× · +28% | 334.2 MB/s · 3.332 · 1.37× · +24% | 224.0 MB/s · 3.008 · 1.53× · +43% | 250.6 MB/s · 2.449 · 1.25× · +36% |
-| zlib-ng | 5 | 52.6 MB/s · 2.589 · 1.21× · -0.6% | 132.3 MB/s · 5.999 · 1.07× · +1.4% | 145.8 MB/s · 4.482 · 0.88× · ±0% | 111.3 MB/s · 4.662 · 1.04× · +4% | 91.1 MB/s · 3.760 · 0.96× · +2% |
-| zlib-ng | 9 | 6.2 MB/s · 2.648 · 2.75× · ±0% | 44.4 MB/s · 6.256 · 1.36× · +1.1% | 64.6 MB/s · 4.511 · 1.18× · +2% | 49.0 MB/s · 4.521 · 1.82× · +5% | 10.3 MB/s · 3.847 · 3.70× · +2% |
+| **zipir** | 1 | 263.1 MB/s · 2.346 | 458.6 MB/s · 4.684 | 459.6 MB/s · 4.119 | 343.9 MB/s · 4.307 | 323.8 MB/s · 3.336 |
+| **zipir** | 5 | 64.3 MB/s · 2.574 | 150.2 MB/s · 6.084 | 136.1 MB/s · 4.483 | 124.5 MB/s · 4.859 | 93.1 MB/s · 3.853 |
+| **zipir** | 9 | 16.9 MB/s · 2.654 | 61.8 MB/s · 6.325 | 77.3 MB/s · 4.584 | 91.2 MB/s · 4.745 | 39.8 MB/s · 3.906 |
+| zlib-ng | 1 | 195.3 MB/s · 1.677 · 1.35× · +40% | 376.4 MB/s · 3.648 · 1.22× · +28% | 334.2 MB/s · 3.332 · 1.38× · +24% | 224.0 MB/s · 3.008 · 1.54× · +43% | 250.6 MB/s · 2.449 · 1.29× · +36% |
+| zlib-ng | 5 | 52.6 MB/s · 2.589 · 1.22× · -0.6% | 132.3 MB/s · 5.999 · 1.14× · +1.4% | 145.8 MB/s · 4.482 · 0.93× · ±0% | 111.3 MB/s · 4.662 · 1.12× · +4% | 91.1 MB/s · 3.760 · 1.02× · +2% |
+| zlib-ng | 9 | 6.2 MB/s · 2.648 · 2.73× · ±0% | 44.4 MB/s · 6.256 · 1.39× · +1.1% | 64.6 MB/s · 4.511 · 1.20× · +2% | 49.0 MB/s · 4.521 · 1.86× · +5% | 10.3 MB/s · 3.847 · 3.85× · +2% |
 
 </details>
 
@@ -130,15 +130,15 @@ Each cell: MB/s · compression ratio. Peer cells add their time relative to zipi
 
 | Tool | Level | BAM, 76.2 MB | VCF, 11.5 MB | PRIDE XML, 48.0 MB | mzIdentML, 1.2 MB | Canterbury tar, 2.8 MB |
 | --- | --- | --- | --- | --- | --- | --- |
-| **zipir** | 1 | 419.0 MB/s · 4.783 | 334.1 MB/s · 3.582 | 429.4 MB/s · 3.912 | 319.3 MB/s · 4.179 | 293.9 MB/s · 3.271 |
-| **zipir** | 5 | 122.7 MB/s · 5.724 | 110.2 MB/s · 4.740 | 133.4 MB/s · 4.198 | 124.4 MB/s · 4.660 | 92.5 MB/s · 3.731 |
-| **zipir** | 9 | 51.2 MB/s · 5.919 | 43.2 MB/s · 5.006 | 76.7 MB/s · 4.276 | 93.0 MB/s · 4.547 | 40.0 MB/s · 3.784 |
-| bgzip + libdeflate | 1 | 295.3 MB/s · 5.283 · 1.42× · -9% | 243.4 MB/s · 3.986 · 1.37× · -10% | 256.6 MB/s · 4.020 · 1.67× · -3% | 184.6 MB/s · 4.254 · 1.73× · -2% | 212.2 MB/s · 3.472 · 1.38× · -6% |
-| bgzip + libdeflate | 5 | 102.0 MB/s · 5.850 · 1.20× · -2% | 91.1 MB/s · 4.849 · 1.21× · -2% | 135.2 MB/s · 4.238 · 0.99× · -0.9% | 114.8 MB/s · 4.666 · 1.08× · ±0% | 80.4 MB/s · 3.786 · 1.15× · -1.5% |
-| bgzip + libdeflate | 9 | 3.0 MB/s · 6.296 · 16.81× · -6% | 3.0 MB/s · 5.390 · 14.52× · -7% | 4.8 MB/s · 4.359 · 15.99× · -2% | 2.9 MB/s · 4.928 · 32.42× · -8% | 5.3 MB/s · 4.032 · 7.56× · -6% |
-| bgzip + zlib-ng | 1 | 369.5 MB/s · 3.712 · 1.13× · +29% | 268.9 MB/s · 2.688 · 1.24× · +33% | 345.7 MB/s · 3.191 · 1.24× · +23% | 230.3 MB/s · 2.921 · 1.39× · +43% | 235.2 MB/s · 2.415 · 1.25× · +35% |
-| bgzip + zlib-ng | 5 | 115.6 MB/s · 5.758 · 1.06× · -0.6% | 99.7 MB/s · 4.667 · 1.11× · +2% | 141.5 MB/s · 4.197 · 0.94× · ±0% | 112.3 MB/s · 4.501 · 1.11× · +4% | 90.0 MB/s · 3.660 · 1.03× · +2% |
-| bgzip + zlib-ng | 9 | 32.2 MB/s · 5.944 · 1.59× · ±0% | 37.5 MB/s · 4.777 · 1.15× · +5% | 66.6 MB/s · 4.202 · 1.15× · +2% | 52.2 MB/s · 4.300 · 1.78× · +6% | 12.3 MB/s · 3.745 · 3.26× · +1.0% |
+| **zipir** | 1 | 265.0 MB/s · 5.195 | 213.6 MB/s · 3.973 | 262.2 MB/s · 4.009 | 214.6 MB/s · 4.315 | 186.4 MB/s · 3.504 |
+| **zipir** | 5 | 101.6 MB/s · 5.830 | 86.4 MB/s · 4.902 | 121.6 MB/s · 4.230 | 123.0 MB/s · 4.717 | 81.3 MB/s · 3.745 |
+| **zipir** | 9 | 54.0 MB/s · 5.919 | 44.4 MB/s · 5.006 | 79.3 MB/s · 4.276 | 94.4 MB/s · 4.548 | 41.6 MB/s · 3.785 |
+| bgzip + libdeflate | 1 | 295.3 MB/s · 5.283 · 0.90× · -2% | 243.4 MB/s · 3.986 · 0.88× · ±0% | 256.6 MB/s · 4.020 · 1.02× · ±0% | 184.6 MB/s · 4.254 · 1.16× · +1.4% | 212.2 MB/s · 3.472 · 0.88× · +0.9% |
+| bgzip + libdeflate | 5 | 102.0 MB/s · 5.850 · 1.00× · ±0% | 91.1 MB/s · 4.849 · 0.95× · +1.1% | 135.2 MB/s · 4.238 · 0.90× · ±0% | 114.8 MB/s · 4.666 · 1.07× · +1.1% | 80.4 MB/s · 3.786 · 1.01× · -1.1% |
+| bgzip + libdeflate | 9 | 3.0 MB/s · 6.296 · 17.72× · -6% | 3.0 MB/s · 5.390 · 14.91× · -7% | 4.8 MB/s · 4.359 · 16.53× · -2% | 2.9 MB/s · 4.928 · 32.91× · -8% | 5.3 MB/s · 4.032 · 7.86× · -6% |
+| bgzip + zlib-ng | 1 | 369.5 MB/s · 3.712 · 0.72× · +40% | 268.9 MB/s · 2.688 · 0.79× · +48% | 345.7 MB/s · 3.191 · 0.76× · +26% | 230.3 MB/s · 2.921 · 0.93× · +48% | 235.2 MB/s · 2.415 · 0.79× · +45% |
+| bgzip + zlib-ng | 5 | 115.6 MB/s · 5.758 · 0.88× · +1.2% | 99.7 MB/s · 4.667 · 0.87× · +5% | 141.5 MB/s · 4.197 · 0.86× · +0.8% | 112.3 MB/s · 4.501 · 1.10× · +5% | 90.0 MB/s · 3.660 · 0.90× · +2% |
+| bgzip + zlib-ng | 9 | 32.2 MB/s · 5.944 · 1.67× · ±0% | 37.5 MB/s · 4.777 · 1.18× · +5% | 66.6 MB/s · 4.202 · 1.19× · +2% | 52.2 MB/s · 4.300 · 1.81× · +6% | 12.3 MB/s · 3.745 · 3.38× · +1.1% |
 
 ## Decompression
 
@@ -186,6 +186,10 @@ Each cell: MB/s of decoded output; peer cells add their time relative to zipir (
 
 ## Presets against every peer level
 
+For each zipir preset, the levels of each peer whose ratios bracket it (the level just below and just above), with their speed; geometric means over the files the presets are designed and judged on. Peer levels come from runs of every level of each peer on these files (`named-zlib-ng+igzip+libdeflate-gzip-all`, `named-bgzip-libdeflate+bgzip-zlib-ng-all`); zipir comes from this report's run.
+
+### gzip
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="figures/frontier-gzip-dark.svg">
@@ -194,15 +198,29 @@ Each cell: MB/s of decoded output; peer cells add their time relative to zipir (
   </picture>
 </p>
 
-Geometric means over the three files of the figure. For each zipir preset, the levels of each peer whose ratios bracket it (the level just below and just above), with their speed:
-
-| zipir preset | MB/s | Ratio | zlib-ng levels around its ratio | igzip levels around its ratio | libdeflate CLI levels around its ratio |
+| zipir preset | MB/s | Ratio | zlib-ng levels around its ratio | ISA-L igzip levels around its ratio | libdeflate CLI (full buffer) levels around its ratio |
 | --- | ---: | ---: | --- | --- | --- |
-| fast | 323.5 | 3.182 | 1: 248 MB/s, 2.392<br>2: 148 MB/s, 3.257 | 1: 389 MB/s, 3.141<br>2: 371 MB/s, 3.205 | 1: 213 MB/s, 3.343 |
-| even | 90.2 | 3.542 | 5: 88 MB/s, 3.520<br>6: 67 MB/s, 3.550 | 3: 169 MB/s, 3.232 | 5: 97 MB/s, 3.540<br>6: 79 MB/s, 3.576 |
-| dense | 36.1 | 3.622 | 8: 17 MB/s, 3.619 | 3: 169 MB/s, 3.232 | 7: 54 MB/s, 3.611<br>8: 28 MB/s, 3.663 |
+| fast | 332.8 | 3.183 | 1: 248 MB/s, 2.392<br>2: 148 MB/s, 3.257 | 1: 389 MB/s, 3.141<br>2: 371 MB/s, 3.205 | 1: 213 MB/s, 3.343 |
+| even | 95.6 | 3.543 | 5: 88 MB/s, 3.520<br>6: 67 MB/s, 3.550 | 3: 169 MB/s, 3.232 | 5: 97 MB/s, 3.540<br>6: 79 MB/s, 3.576 |
+| dense | 37.5 | 3.622 | 8: 17 MB/s, 3.619 | 3: 169 MB/s, 3.232 | 7: 54 MB/s, 3.611<br>8: 28 MB/s, 3.663 |
 
-Peer levels come from `named-zlib-ng+igzip+libdeflate-gzip-all`, a run of every level of each peer on these files (10 rounds per batch); zipir comes from this report's run. libdeflate's CLI reads the whole file into memory (77 to 83 MiB here), so it shows what ratio is reachable, not a streaming rival.
+### BGZF
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="figures/frontier-bgzf-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="figures/frontier-bgzf-light.svg">
+    <img src="figures/frontier-bgzf-light.svg" alt="BGZF compression: zipir presets against every peer level" width="100%">
+  </picture>
+</p>
+
+| zipir preset | MB/s | Ratio | bgzip + libdeflate levels around its ratio | bgzip + zlib-ng levels around its ratio |
+| --- | ---: | ---: | --- | --- |
+| fast | 226.3 | 4.163 | 1: 238 MB/s, 4.163<br>2: 160 MB/s, 4.277 | 2: 173 MB/s, 4.063<br>3: 138 MB/s, 4.258 |
+| even | 101.3 | 4.633 | 5: 104 MB/s, 4.628<br>6: 80 MB/s, 4.683 | 7: 61 MB/s, 4.617<br>8: 31 MB/s, 4.648 |
+| dense | 59.5 | 4.653 | 5: 104 MB/s, 4.628<br>6: 80 MB/s, 4.683 | 8: 31 MB/s, 4.648 |
+
+On gzip, libdeflate's CLI reads the whole file into memory (77 to 83 MiB here), so it shows what ratio is reachable, not a streaming rival. On BGZF, `bgzip` compresses one 64 KiB block at a time with either library, so both are streaming rivals there.
 
 ## Memory
 
@@ -216,7 +234,7 @@ Peer levels come from `named-zlib-ng+igzip+libdeflate-gzip-all`, a run of every 
 
 | Tool | Decompression peak RSS (MiB) | Compression peak RSS (MiB) |
 | --- | ---: | ---: |
-| **zipir** | 0.61 to 0.62 | 0.54 to 0.61 |
+| **zipir** | 0.61 to 0.62 | 0.55 to 0.61 |
 | zlib-ng | 1.6 to 2.1 | 1.6 to 2.1 |
 | ISA-L igzip | 2.9 to 3.7 | 2.9 to 3.6 |
 | Zig std | 0.61 to 0.62 | 0.65 to 0.65 |
@@ -229,39 +247,39 @@ CPU cycles and instructions per plaintext byte for zipir on the medium files, fr
 
 | Path | Input | Cycles / byte | Instructions / byte | IPC | MB/s |
 | --- | --- | ---: | ---: | ---: | ---: |
-| gzip compress 1 | PRIDE XML, 48.0 MB | 7.77 | 18.15 | 2.33 | 428.0 |
-| gzip compress 5 | PRIDE XML, 48.0 MB | 27.44 | 62.16 | 2.27 | 127.4 |
-| gzip compress 9 | PRIDE XML, 48.0 MB | 48.35 | 110.46 | 2.28 | 73.1 |
-| gzip compress 1 | FASTQ, 57.2 MB | 13.60 | 31.33 | 2.30 | 257.6 |
-| gzip compress 5 | FASTQ, 57.2 MB | 55.60 | 122.02 | 2.19 | 64.8 |
-| gzip compress 9 | FASTQ, 57.2 MB | 216.99 | 484.44 | 2.23 | 16.8 |
+| gzip compress 1 | PRIDE XML, 48.0 MB | 7.70 | 18.16 | 2.36 | 443.4 |
+| gzip compress 5 | PRIDE XML, 48.0 MB | 25.95 | 60.63 | 2.34 | 138.2 |
+| gzip compress 9 | PRIDE XML, 48.0 MB | 47.05 | 106.03 | 2.25 | 77.0 |
+| gzip compress 1 | FASTQ, 57.2 MB | 13.46 | 31.35 | 2.33 | 261.6 |
+| gzip compress 5 | FASTQ, 57.2 MB | 54.35 | 120.52 | 2.22 | 66.8 |
+| gzip compress 9 | FASTQ, 57.2 MB | 213.02 | 461.90 | 2.17 | 17.2 |
 | gzip decompress | Silesia tar, 211.9 MB | 5.14 | 13.90 | 2.70 | 697.2 |
 | gzip decompress | PRIDE XML, 48.0 MB | 3.79 | 10.37 | 2.74 | 937.3 |
 | gzip decompress | FASTQ, 57.2 MB | 6.59 | 16.77 | 2.54 | 543.8 |
-| zlib compress 1 | PRIDE XML, 48.0 MB | 7.59 | 18.03 | 2.37 | 450.9 |
-| zlib compress 5 | PRIDE XML, 48.0 MB | 28.10 | 62.65 | 2.23 | 128.1 |
-| zlib compress 9 | PRIDE XML, 48.0 MB | 48.61 | 110.73 | 2.28 | 74.7 |
-| zlib compress 1 | FASTQ, 57.2 MB | 13.38 | 31.35 | 2.34 | 262.7 |
-| zlib compress 5 | FASTQ, 57.2 MB | 56.78 | 123.68 | 2.18 | 63.9 |
-| zlib compress 9 | FASTQ, 57.2 MB | 215.23 | 477.29 | 2.22 | 16.9 |
+| zlib compress 1 | PRIDE XML, 48.0 MB | 7.49 | 17.91 | 2.39 | 457.4 |
+| zlib compress 5 | PRIDE XML, 48.0 MB | 26.46 | 60.87 | 2.30 | 136.1 |
+| zlib compress 9 | PRIDE XML, 48.0 MB | 46.95 | 108.63 | 2.31 | 77.4 |
+| zlib compress 1 | FASTQ, 57.2 MB | 13.24 | 31.14 | 2.35 | 267.9 |
+| zlib compress 5 | FASTQ, 57.2 MB | 55.31 | 121.77 | 2.20 | 65.9 |
+| zlib compress 9 | FASTQ, 57.2 MB | 213.21 | 475.26 | 2.23 | 17.2 |
 | zlib decompress | Silesia tar, 211.9 MB | 4.93 | 14.09 | 2.86 | 726.4 |
 | zlib decompress | PRIDE XML, 48.0 MB | 3.44 | 10.31 | 3.00 | 1027.8 |
 | zlib decompress | FASTQ, 57.2 MB | 6.27 | 16.36 | 2.61 | 568.7 |
-| raw DEFLATE compress 1 | PRIDE XML, 48.0 MB | 7.45 | 17.61 | 2.36 | 457.1 |
-| raw DEFLATE compress 5 | PRIDE XML, 48.0 MB | 28.21 | 62.12 | 2.20 | 127.7 |
-| raw DEFLATE compress 9 | PRIDE XML, 48.0 MB | 47.81 | 109.62 | 2.29 | 76.0 |
-| raw DEFLATE compress 1 | FASTQ, 57.2 MB | 13.17 | 30.83 | 2.34 | 267.2 |
-| raw DEFLATE compress 5 | FASTQ, 57.2 MB | 56.99 | 123.03 | 2.16 | 63.9 |
-| raw DEFLATE compress 9 | FASTQ, 57.2 MB | 214.74 | 508.76 | 2.37 | 17.1 |
+| raw DEFLATE compress 1 | PRIDE XML, 48.0 MB | 7.44 | 17.62 | 2.37 | 459.6 |
+| raw DEFLATE compress 5 | PRIDE XML, 48.0 MB | 26.43 | 60.58 | 2.29 | 136.1 |
+| raw DEFLATE compress 9 | PRIDE XML, 48.0 MB | 46.99 | 108.34 | 2.31 | 77.3 |
+| raw DEFLATE compress 1 | FASTQ, 57.2 MB | 13.14 | 30.85 | 2.35 | 263.1 |
+| raw DEFLATE compress 5 | FASTQ, 57.2 MB | 55.47 | 121.48 | 2.19 | 64.3 |
+| raw DEFLATE compress 9 | FASTQ, 57.2 MB | 212.91 | 474.97 | 2.23 | 16.9 |
 | raw DEFLATE decompress | Silesia tar, 211.9 MB | 4.81 | 13.80 | 2.87 | 746.3 |
 | raw DEFLATE decompress | PRIDE XML, 48.0 MB | 3.40 | 10.02 | 2.95 | 1040.0 |
 | raw DEFLATE decompress | FASTQ, 57.2 MB | 6.27 | 16.07 | 2.56 | 566.8 |
-| BGZF compress 1 | PRIDE XML, 48.0 MB | 7.93 | 18.72 | 2.36 | 429.4 |
-| BGZF compress 5 | PRIDE XML, 48.0 MB | 26.93 | 64.15 | 2.38 | 133.4 |
-| BGZF compress 9 | PRIDE XML, 48.0 MB | 47.31 | 119.63 | 2.53 | 76.7 |
-| BGZF compress 1 | BAM, 76.2 MB | 8.22 | 16.04 | 1.95 | 419.0 |
-| BGZF compress 5 | BAM, 76.2 MB | 29.35 | 62.85 | 2.14 | 122.7 |
-| BGZF compress 9 | BAM, 76.2 MB | 71.24 | 173.50 | 2.44 | 51.2 |
+| BGZF compress 1 | PRIDE XML, 48.0 MB | 13.38 | 30.71 | 2.30 | 262.2 |
+| BGZF compress 5 | PRIDE XML, 48.0 MB | 29.53 | 71.84 | 2.43 | 121.6 |
+| BGZF compress 9 | PRIDE XML, 48.0 MB | 45.69 | 114.13 | 2.50 | 79.3 |
+| BGZF compress 1 | BAM, 76.2 MB | 13.29 | 25.01 | 1.88 | 265.0 |
+| BGZF compress 5 | BAM, 76.2 MB | 35.57 | 78.97 | 2.22 | 101.6 |
+| BGZF compress 9 | BAM, 76.2 MB | 67.49 | 164.07 | 2.43 | 54.0 |
 | BGZF decompress | Silesia tar, 211.9 MB | 5.53 | 15.75 | 2.85 | 647.3 |
 | BGZF decompress | PRIDE XML, 48.0 MB | 3.98 | 11.87 | 2.99 | 892.9 |
 | BGZF decompress | BAM, 76.2 MB | 3.47 | 8.40 | 2.43 | 1030.5 |
@@ -326,9 +344,9 @@ The gzip, zlib, and raw DEFLATE rows of a category compress the same plaintext; 
 - **Correctness before timing.** Every tool was qualified on these files before it was timed: decoded bytes match an independent reference (GNU gzip, Python zlib, or a BGZF block walker that shares no code with zipir), and compressed output decodes back to the input with the reference decoder and with the tool itself. During the run, each compressor's output was decoded again and compared with the input.
 - **Same inputs.** Every tool in a batch reads the same file; compression reads the plaintext from the page cache.
 - **One thread.** Every tool runs single-threaded (`bgzip -@1`, no ISA-L threads); zipir is single-threaded by design.
-- **zipir compression re-timed alone.** zipir's compression rows come from zipir-only runs (`named-zipir-gzip+zipir-zlib+zipir-deflate+zipir-bgzf-lanes`, `named-zipir-gzip-lanes`, `named-zipir-zlib-lanes`, `named-zipir-deflate-lanes`, `named-zipir-bgzf-lanes`, zipir `fc81d5201bab`, CPU 13; batches disturbed by other jobs re-timed in the later runs); every peer row and zipir's decompression rows come from `prime-lanes` (zipir `ff8e9e87ddb6`, whose decoder is unchanged since; CPU 4). So zipir's compression was not timed in the same rounds as the peers: load that differed between the two runs shifts zipir against every peer. A control batch timed zipir and zlib-ng together afterwards on the same core (gzip, FASTQ and PRIDE XML medium, 10 rounds): zipir's time relative to zlib-ng there agrees with the spliced rows within -1.0% to +1.7%.
+- **zipir compression re-timed alone.** zipir's compression rows come from zipir-only runs (`named-zipir-gzip+zipir-zlib+zipir-deflate+zipir-bgzf-lanes`, zipir `5f25547b826e`, CPU 13; batches disturbed by other jobs re-timed in the later runs); every peer row and zipir's decompression rows come from `prime-lanes` (zipir `ff8e9e87ddb6`, whose decoder is unchanged since; CPU 4). So zipir's compression was not timed in the same rounds as the peers: load that differed between the two runs shifts zipir against every peer. A control batch timed zipir and zlib-ng together afterwards on the same core (gzip, FASTQ and PRIDE XML medium, 10 rounds): zipir's time relative to zlib-ng there agrees with the spliced rows within -2.1% to -0.7%.
 - **Disturbed batches.** Other work on the machine can slow a block of rounds for every tool in a batch, which widens the spread of the 25 rounds. A batch where any tool's middle half of rounds spreads more than 6% (third quartile over first) is re-timed. In the 44 batches of this report the largest spread is 5.4%; none exceeds 6%.
-- **Consistency.** zipir's results on the same stream in different containers must agree: raw DEFLATE against zlib decode of the same DEFLATE stream, and raw DEFLATE against zlib and gzip compression of the same plaintext (their checksums cost a few percent). This catches a batch slowed as a whole, which keeps a tight spread. Largest difference in this run: 6.8% over 36 pairs.
+- **Consistency.** zipir's results on the same stream in different containers must agree: raw DEFLATE against zlib decode of the same DEFLATE stream, and raw DEFLATE against zlib and gzip compression of the same plaintext (their checksums cost a few percent). This catches a batch slowed as a whole, which keeps a tight spread. Largest difference in this run: 3.9% over 36 pairs.
 - **Re-timing.** Batches that failed either check were re-timed with `tools/bench.sh --force` before this report was generated; the tables show the re-timed values.
 
 ## Tools and versions
@@ -358,4 +376,4 @@ The gzip, zlib, and raw DEFLATE rows of a category compress the same plaintext; 
 
 - [`measurements.tsv`](measurements.tsv): every timed row (file, tool, level, time quartiles, peak RSS, sizes, ratios against zipir, CPU cycles and instructions).
 - [`summary.tsv`](summary.tsv): the values behind the summary figure and table.
-- Generated by [`bench/report.py`](../report.py) from the `prime-lanes-fc81d52b` run of [`tools/bench.sh`](../../tools/README.md).
+- Generated by [`bench/report.py`](../report.py) from the `prime-lanes-5f25547` run of [`tools/bench.sh`](../../tools/README.md).
