@@ -255,8 +255,8 @@ def speed_phrase(ratio, short=False):
     if abs(ratio - 1) < 0.02:
         return 'same speed'
     if ratio < 1:
-        return f'{1 / ratio:.2f}\u00d7 faster' if short else f'{1 / ratio:.2f}x faster than zipir'
-    return f'zipir {ratio:.2f}\u00d7 faster' if short else f'zipir {ratio:.2f}x faster'
+        return f'{1 / ratio:.2f}x faster' if short else f'{1 / ratio:.2f}x faster than zipir'
+    return f'zipir {ratio:.2f}x faster' if short else f'zipir {ratio:.2f}x faster'
 
 
 def size_phrase(size):
@@ -319,7 +319,7 @@ def figure_summary(summary, meta, theme, path):
             svg.line(left, cy + 7, w - 28, cy + 7, 'grid')
             continue
         s = item
-        label = FORMAT_NAME[s['format']] + (f' \u00b7 level {LANE_LEVEL[s["lane"]]}' if s['lane'] else '')
+        label = FORMAT_NAME[s['format']] + (f', level {LANE_LEVEL[s["lane"]]}' if s['lane'] else '')
         svg.text(left + 12, cy + 4, label, 13, 'ink2')
         f, e = s['fastest'], s['equal']
         same = e is not None and (e['tool'], e['level']) == (f['tool'], f['level'])
@@ -329,9 +329,9 @@ def figure_summary(summary, meta, theme, path):
                        tip=f'{FAMILY_NAME[e["family"]]} {e["level"]}: {speed_phrase(e["time"])}, {size_phrase(e["size"])}')
         svg.marker(x(f['time']), cy, f['family'], tip=f'{FAMILY_NAME[f["family"]]}: {speed_phrase(f["time"])}')
         lvl = f' {f["level"]}' if f['level'] != '-' else ''
-        first = f'{FAMILY_NAME[f["family"]]}{lvl} \u00b7 {speed_phrase(f["time"], True)}'
+        first = f'{FAMILY_NAME[f["family"]]}{lvl}, {speed_phrase(f["time"], True)}'
         if s['op'] == 'compress':
-            first += f' \u00b7 {size_phrase(f["size"])}'
+            first += f', {size_phrase(f["size"])}'
         svg.text(col1, cy + 4, first, 12, 'ink')
         if s['op'] == 'compress':
             if e is None:
@@ -339,7 +339,7 @@ def figure_summary(summary, meta, theme, path):
             elif same:
                 second = 'same peer'
             else:
-                second = f'{FAMILY_NAME[e["family"]]} {e["level"]} \u00b7 {speed_phrase(e["time"], True)}'
+                second = f'{FAMILY_NAME[e["family"]]} {e["level"]}, {speed_phrase(e["time"], True)}'
             svg.text(col2, cy + 4, second, 12, 'ink2')
     ly = plot_bottom + 70
     zipir_key = (lambda px, py: svg.line(px + 6, py - 9, px + 6, py + 3, 'zipir', 2), 'zipir = 1.0')
@@ -752,8 +752,8 @@ def write_readme(target, rows, summary, meta, out):
     L.append('')
     L.append(picture('tradeoff-bgzf', 'BGZF compression speed against compression ratio'))
     L.append('')
-    L.append('Each cell: MB/s \u00b7 compression ratio. Peer cells add their time relative to zipir at the same level '
-             '(below 1\u00d7 is faster) and their output size relative to zipir\'s (+ is larger).')
+    L.append('Each cell: MB/s, compression ratio. Peer cells add their time relative to zipir at the same level '
+             '(below 1x is faster) and their output size relative to zipir\'s (+ is larger).')
     L.append('')
     for fmt in FORMATS:
         folded = fmt in ('zlib', 'deflate')
@@ -774,7 +774,7 @@ def write_readme(target, rows, summary, meta, out):
     L.append('')
     L.append(picture('decode', 'Decompression throughput on the medium files'))
     L.append('')
-    L.append('Each cell: MB/s of decoded output; peer cells add their time relative to zipir (below 1\u00d7 is faster).')
+    L.append('Each cell: MB/s of decoded output; peer cells add their time relative to zipir (below 1x is faster).')
     L.append('')
     for fmt in FORMATS:
         L.append(f'### {FORMAT_NAME[fmt]} decompression')
@@ -1031,8 +1031,8 @@ def compression_table(rows, fmt):
                 if r is None:
                     cells.append('')
                     continue
-                rel = '' if fam == 'zipir' else f' \u00b7 {r["time_vs_zipir"]:.2f}\u00d7 \u00b7 {size_delta(r["size_vs_zipir"])}'
-                cells.append(f'{r["mbs"]:.1f} MB/s \u00b7 {r["ratio"]:.3f}{rel}')
+                rel = '' if fam == 'zipir' else f', {r["time_vs_zipir"]:.2f}x, {size_delta(r["size_vs_zipir"])}'
+                cells.append(f'{r["mbs"]:.1f} MB/s, {r["ratio"]:.3f}{rel}')
             out.append(cells)
     return md_table(header, out)
 
@@ -1053,7 +1053,7 @@ def decode_table(rows, fmt):
         cells = [FAMILY_NAME[fam] if fam != 'zipir' else '**zipir**']
         for k in inputs:
             r = next((r for r in sel if r['family'] == fam and (r['category'], r['class']) == k), None)
-            cells.append('' if r is None else f'{r["mbs"]:.0f} MB/s' + ('' if fam == 'zipir' else f' \u00b7 {r["time_vs_zipir"]:.2f}\u00d7'))
+            cells.append('' if r is None else f'{r["mbs"]:.0f} MB/s' + ('' if fam == 'zipir' else f', {r["time_vs_zipir"]:.2f}x'))
         out.append(cells)
     return md_table(header, out)
 
@@ -1104,7 +1104,7 @@ def write_tsv(rows, summary, meta, out):
             'rss_vs_zipir', 'spread_pct', 'cycles', 'instructions']
     with open(out / 'measurements.tsv', 'w') as f:
         f.write(f'# zipir {meta["commit"]}; {meta["cpu"]}; {meta["kernel"]}; generated by bench/report.py from '
-                f'tools/.local/bench/{meta["run"]}\n')
+                f'run {meta["run"]}\n')
         f.write('\t'.join(cols) + '\n')
         for r in sorted(rows, key=lambda r: (r['format'], r['op'], r['category'], r['class'], r['tool'], r['level'])):
             vals = []

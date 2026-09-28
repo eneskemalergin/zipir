@@ -3,7 +3,7 @@
 <div align="center">
   <img src="assets/logo-readme.svg" alt="Zipir logo" width="170">
   <!-- <h1>ZIPIR</h1> -->
-  <p><strong>Native Zig gzip compression and bounded streaming gzip/zlib decompression.</strong></p>
+  <p><strong>Native Zig streaming compression and decompression for gzip, zlib, raw DEFLATE, BGZF, and tar streams.</strong></p>
   <p>
     <img src="https://img.shields.io/badge/version-0.1.2-2C8EBB?style=flat-square" alt="Version 0.1.2">
     <a href="https://ziglang.org/download/"><img src="https://img.shields.io/badge/Zig-0.16.0-F7A41D?style=flat-square&amp;logo=zig&amp;logoColor=white" alt="Zig 0.16.0"></a>
@@ -39,24 +39,25 @@ The library has no external dependencies, does not create threads, and does not 
 
 ## Supported codecs
 
-| Format    | Compress | Decompress | Note                   |
-| --------- | -------- | ---------- | ---------------------- |
-| Gzip      | Yes      | Yes        | n/a                    |
-| zlib      | No       | Yes        | only decoder (for now) |
-| ZIP       | No       | No         | Possible future format |
-| Zstandard | No       | No         | Possible future format |
-| LZ4       | No       | No         | Possible future format |
-| XZ        | No       | No         | Possible future format |
-| bzip2     | No       | No         | Possible future format |
+| Format      | Compress | Decompress | Note                       |
+| ----------- | -------- | ---------- | -------------------------- |
+| gzip        | Yes      | Yes        | Concatenated members       |
+| zlib        | Yes      | Yes        | n/a                        |
+| raw DEFLATE | Yes      | Yes        | No header or check         |
+| BGZF        | Yes      | Yes        | Seeking and `.gzi` indexes |
+| Zstandard   | No       | No         | Possible future format     |
+| LZ4         | No       | No         | Possible future format     |
+| XZ          | No       | No         | Possible future format     |
+| bzip2       | No       | No         | Possible future format     |
 
 The future rows are possibilities, not a delivery order or a promise to support every format. Zipir will stay focused on formats that fit its Zig-first, bounded-streaming goals.
 
-- Gzip compression with fast, balanced, and dense presets.
+- Compression with three presets for every format: `fast`, `even` (the default), and `dense`.
 - Streaming gzip decompression with header checks, CRC32, ISIZE, and concatenated members.
-- Streaming zlib decompression with RFC 1950 header checks, Adler-32, trailing-data policy, and an output limit.
+- Streaming zlib and raw DEFLATE decompression with a trailing-data policy and an output limit; zlib adds RFC 1950 header checks and Adler-32.
+- BGZF with block-size checks, seeking by virtual offset or through a `.gzi` index, and block-level coding.
+- tar stream reading and writing (ustar, pax, GNU) that pairs with any compressor or decompressor.
 - Caller-owned `std.Io.Reader` and `std.Io.Writer` interfaces with reusable bounded workspaces.
-
-Raw DEFLATE and zlib compression are not implemented yet.
 
 > [!NOTE]
 > `zipir` will slowly build its accelerators in the form of hand-rolled SIMD tested on specific architecture. Currently I cannot promise a full and comprehensive support. I am building things that specifically suits my needs and will target my computer and my os first. I always keep in mind portability, and compatibility but for the work for actually pushing performance they are extremely time consuming to build for across a wide range of cpu, os archtectures. So I wanted to mention I will always keep fallbacks so the there won't be missing functionality, but speed and memory optimizations might be missing. My first target is `linux, x86-64, axv2`. I have test environments for various others but they will have to come later.
