@@ -111,7 +111,7 @@ const EncodeTree = struct {
             self.lens[@intCast(keys[0] & 511)] = 1;
             return self.canonical();
         }
-        std.sort.pdq(u64, keys[0..n], {}, std.sort.asc(u64));
+        sortKeys(keys[0..n]);
         var a: [288]u32 = undefined;
         for (keys[0..n], 0..) |k, i| a[i] = @intCast(k >> 9);
         // Moffat and Katajainen, "In-place calculation of minimum-redundancy codes": a[i] ends as the code
@@ -186,6 +186,39 @@ const EncodeTree = struct {
             }
         }
         return self.canonical();
+    }
+
+    // Ascending keys (frequency above the symbol). Many keys, as in a literal tree, are sorted by frequency with
+    // three stable 6-bit counting passes: keys arrive in symbol order and are unique, so the order is exactly the
+    // comparison sort's, without its mispredicted compares (41% of tree building on MS, 2026-09-28).
+    fn sortKeys(keys: []u64) void {
+        var top: u64 = 0;
+        for (keys) |k| top |= k;
+        if (keys.len < 64 or top >> 9 >= 1 << 18) return std.sort.pdq(u64, keys, {}, std.sort.asc(u64));
+        var other: [288]u64 = undefined;
+        var from = keys;
+        var to: []u64 = other[0..keys.len];
+        inline for (0..3) |pass| {
+            const shift = 9 + 6 * pass;
+            var start: [64]u16 = @splat(0);
+            for (from) |k| start[@intCast((k >> shift) & 63)] += 1;
+            var sum: u16 = 0;
+            for (&start) |*c| {
+                const here = c.*;
+                c.* = sum;
+                sum += here;
+            }
+            for (from) |k| {
+                const b: usize = @intCast((k >> shift) & 63);
+                to[start[b]] = k;
+                start[b] += 1;
+            }
+            const swap = from;
+            from = to;
+            to = swap;
+        }
+        // Three passes end in `other`.
+        @memcpy(keys, from);
     }
 
     fn canonical(self: *EncodeTree) bool {
@@ -1287,5 +1320,33 @@ test "[property] - [deflate encoder]: bit output matches scalar packing at write
             try std.testing.expectEqualSlices(u8, &(@as([8]u8, @splat(0xa5))), storage[0..8]);
             for (storage[8 + capacity ..]) |value| try std.testing.expectEqual(@as(u8, 0xa5), value);
         }
+    }
+}
+
+test "[property] - [deflate encoder]: tree key sorting matches the comparison sort" {
+    var random = std.Random.DefaultPrng.init(2809);
+    var keys: [288]u64 = undefined;
+    var expected: [288]u64 = undefined;
+    for (0..400) |round| {
+        const n = 1 + random.random().uintLessThan(usize, 288);
+        // Small, repeated, and near-limit frequencies; some rounds exceed 18 bits and take the fallback.
+        const top: u64 = switch (round % 4) {
+            0 => 4,
+            1 => 300,
+            2 => (1 << 18) - 1,
+            else => 1 << 20,
+        };
+        for (keys[0..n], 0..) |*k, symbol| k.* = random.random().uintAtMost(u64, top) << 9 | symbol;
+        random.random().shuffle(u64, keys[0..n]);
+        // Keys arrive in symbol order in `build`; restore it, then compare both sorts.
+        std.sort.pdq(u64, keys[0..n], {}, struct {
+            fn bySymbol(_: void, x: u64, y: u64) bool {
+                return x & 511 < y & 511;
+            }
+        }.bySymbol);
+        @memcpy(expected[0..n], keys[0..n]);
+        std.sort.pdq(u64, expected[0..n], {}, std.sort.asc(u64));
+        EncodeTree.sortKeys(keys[0..n]);
+        try std.testing.expectEqualSlices(u64, expected[0..n], keys[0..n]);
     }
 }
