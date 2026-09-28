@@ -14,7 +14,7 @@ fn block(out: []u8, plain: []const u8, extra: []const u8, bsize_delta: i32) ![]u
     var reader = std.Io.Reader.fixed(plain);
     var writer = std.Io.Writer.fixed(&member_buffer);
     var encoder: zipir.Compressor(.gzip) = undefined;
-    _ = try encoder.compress(&reader, &writer, .{});
+    _ = try support.compress(&encoder, &reader, &writer, .{});
     const body = writer.buffered()[10..];
     const xlen = extra.len + 6;
     const size = 12 + xlen + body.len;
@@ -134,7 +134,7 @@ test "[failure] - [bgzf reader]: structure, size, and end-of-file errors are doc
     var member_writer = std.Io.Writer.fixed(&gzip_member);
     const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
     defer std.testing.allocator.destroy(encoder);
-    _ = try encoder.compress(&plain_reader, &member_writer, .{});
+    _ = try support.compress(encoder, &plain_reader, &member_writer, .{});
     try std.testing.expectError(error.NotBgzf, decode(reader, member_writer.buffered(), 3, .{}, "A"));
     for (1..f.starts[1]) |cut| try std.testing.expectError(error.Truncated, decode(reader, f.stream()[0..cut], 11, .{}, plain));
     var trailing: [140010]u8 = undefined;
@@ -321,12 +321,12 @@ test "[property] - [bgzf reader]: bounded bit flips and truncations end in succe
 
 // --- Writing ---
 
-fn compress(writer: *bgzf.Writer, plain: []const u8, options: bgzf.WriterOptions, chunk: usize, out: []u8) ![]u8 {
+fn compress(writer: *bgzf.Compressor, plain: []const u8, options: bgzf.CompressOptions, chunk: usize, out: []u8) ![]u8 {
     var buffer: [16]u8 = undefined;
     var source = support.Source.init(plain, &buffer, chunk);
     var sink = std.Io.Writer.fixed(out);
-    writer.start(&sink, options);
-    try writer.write(&source.reader);
+    writer.init(&sink, options);
+    _ = try source.reader.streamRemaining(&writer.writer);
     const totals = try writer.finish();
     try std.testing.expectEqual(@as(u64, plain.len), totals.uncompressed);
     try std.testing.expectEqual(@as(u64, sink.end), totals.compressed);
@@ -342,7 +342,7 @@ fn blockSizes(stream: []const u8, sizes: []u32) ![]u32 {
 }
 
 test "[edge] - [bgzf writer]: empty input is exactly the EOF marker, and a full random block fits" {
-    const writer = try std.testing.allocator.create(bgzf.Writer);
+    const writer = try std.testing.allocator.create(bgzf.Compressor);
     defer std.testing.allocator.destroy(writer);
     var out: [140000]u8 = undefined;
     try std.testing.expectEqualSlices(u8, EOF, try compress(writer, "", .{}, 1, &out));
@@ -358,7 +358,7 @@ test "[edge] - [bgzf writer]: empty input is exactly the EOF marker, and a full 
 }
 
 test "[property] - [bgzf writer]: output decodes with the BGZF and gzip readers at every level and block edge" {
-    const writer = try std.testing.allocator.create(bgzf.Writer);
+    const writer = try std.testing.allocator.create(bgzf.Compressor);
     defer std.testing.allocator.destroy(writer);
     const reader = try std.testing.allocator.create(bgzf.Decompressor);
     defer std.testing.allocator.destroy(reader);
@@ -381,7 +381,7 @@ test "[property] - [bgzf writer]: output decodes with the BGZF and gzip readers 
 }
 
 test "[property] - [bgzf writer]: splitter plus block encoder writes exactly what the writer writes" {
-    const writer = try std.testing.allocator.create(bgzf.Writer);
+    const writer = try std.testing.allocator.create(bgzf.Compressor);
     defer std.testing.allocator.destroy(writer);
     const encoder = try std.testing.allocator.create(bgzf.BlockEncoder);
     defer std.testing.allocator.destroy(encoder);
@@ -438,31 +438,31 @@ test "[unit] - [bgzf splitter]: line mode gives header lines their own blocks an
 }
 
 test "[failure] - [bgzf writer]: flush ends a block early and write failures propagate" {
-    const writer = try std.testing.allocator.create(bgzf.Writer);
+    const writer = try std.testing.allocator.create(bgzf.Compressor);
     defer std.testing.allocator.destroy(writer);
     var out: [4096]u8 = undefined;
     var sink = std.Io.Writer.fixed(&out);
-    writer.start(&sink, .{});
+    writer.init(&sink, .{});
     var first = std.Io.Reader.fixed("record one;");
-    try writer.write(&first);
-    try writer.flush();
+    _ = try first.streamRemaining(&writer.writer);
+    try writer.writer.flush();
     var second = std.Io.Reader.fixed("record two;");
-    try writer.write(&second);
+    _ = try second.streamRemaining(&writer.writer);
     _ = try writer.finish();
     var sizes: [4]u32 = undefined;
     try std.testing.expectEqualSlices(u32, &.{ 11, 11, 0 }, try blockSizes(sink.buffered(), &sizes));
     var small: [20]u8 = undefined;
     var failing = std.Io.Writer.fixed(&small);
-    writer.start(&failing, .{});
+    writer.init(&failing, .{});
     var input = std.Io.Reader.fixed("does not fit in twenty bytes once compressed");
-    try writer.write(&input);
+    _ = try input.streamRemaining(&writer.writer);
     try std.testing.expectError(error.WriteFailed, writer.finish());
 }
 
 // --- Indexes ---
 
 test "[property] - [bgzf index]: entries built by scan and while writing agree and follow htslib's rule" {
-    const writer = try std.testing.allocator.create(bgzf.Writer);
+    const writer = try std.testing.allocator.create(bgzf.Compressor);
     defer std.testing.allocator.destroy(writer);
     const plain = try std.testing.allocator.alloc(u8, 200000);
     defer std.testing.allocator.free(plain);
@@ -472,9 +472,9 @@ test "[property] - [bgzf index]: entries built by scan and while writing agree a
     var written_storage: [8]bgzf.IndexEntry = undefined;
     var written: bgzf.IndexBuilder = .init(&written_storage);
     var sink = std.Io.Writer.fixed(out);
-    writer.start(&sink, .{ .index = &written });
+    writer.init(&sink, .{ .index = &written });
     var source = std.Io.Reader.fixed(plain);
-    try writer.write(&source);
+    _ = try source.streamRemaining(&writer.writer);
     _ = try writer.finish();
     const expected = [_]bgzf.IndexEntry{ .{ .coffset = 0, .uoffset = 65280 }, .{ .coffset = 0, .uoffset = 130560 }, .{ .coffset = 0, .uoffset = 195840 } };
     try std.testing.expectEqual(expected.len, written.len);
@@ -522,7 +522,7 @@ test "[failure] - [bgzf index]: a written index reads back, and damaged indexes 
 
 test "[property] - [bgzf reader]: reads at uncompressed offsets through a full, sparse, or empty index match the full output" {
     const io = std.testing.io;
-    const writer = try std.testing.allocator.create(bgzf.Writer);
+    const writer = try std.testing.allocator.create(bgzf.Compressor);
     defer std.testing.allocator.destroy(writer);
     const decoder = try std.testing.allocator.create(bgzf.Decompressor);
     defer std.testing.allocator.destroy(decoder);
@@ -535,9 +535,9 @@ test "[property] - [bgzf reader]: reads at uncompressed offsets through a full, 
     var storage: [8]bgzf.IndexEntry = undefined;
     var index: bgzf.IndexBuilder = .init(&storage);
     var sink = std.Io.Writer.fixed(out);
-    writer.start(&sink, .{ .split = .lines, .index = &index, .level = .fast });
+    writer.init(&sink, .{ .split = .lines, .index = &index, .level = .fast });
     var source = std.Io.Reader.fixed(plain);
-    try writer.write(&source);
+    _ = try source.streamRemaining(&writer.writer);
     _ = try writer.finish();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

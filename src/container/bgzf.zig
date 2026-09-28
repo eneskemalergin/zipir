@@ -333,75 +333,135 @@ comptime {
     std.debug.assert(@sizeOf(BlockEncoder) == 428584);
 }
 
-pub const WriterOptions = struct {
+pub const CompressOptions = struct {
     level: engine.Level = .even,
     split: Split = .fill,
     index: ?*IndexBuilder = null,
 };
 
-pub const WriteError = error{ ReadFailed, WriteFailed, IndexFull };
+pub const CompressError = error{ WriteFailed, IndexFull };
 
 pub const Totals = struct { uncompressed: u64, compressed: u64 };
 
-/// Use: `start`, then `write` any number of times, then `finish`. Input is staged in two blocks'
-/// worth of memory so that `.lines` sees as far ahead as `bgzip` does.
-/// No allocation occurs. One active stream per workspace; `start` begins a new one at any time.
-pub const Writer = struct {
-    encoder: BlockEncoder = .{},
-    staging: [BlockSplitter.LOOKAHEAD]u8 = undefined,
-    block: [MAX_BLOCK]u8 = undefined,
-    staged: usize = 0,
-    splitter: BlockSplitter = .init(.fill),
-    level: engine.Level = .even,
-    index: ?*IndexBuilder = null,
-    out: *std.Io.Writer = undefined,
-    compressed: u64 = 0,
-    uncompressed: u64 = 0,
+/// Writes BGZF: `init(output, options)` starts it in place, plain bytes go to `writer` in any sizes (block
+/// boundaries depend only on the bytes), `flush` ends the open block so the next byte starts one (a record
+/// boundary; the output writer is not flushed), and `finish` writes the rest and the EOF marker. `err` tells why
+/// `writer` failed: `IndexFull`, or `WriteFailed` from the output writer. Input is staged in two blocks' worth
+/// of memory so that `.lines` sees as far ahead as `bgzip` does, plus 32 KiB so a contiguous request of up to
+/// 32 KiB always fits. No allocation occurs.
+pub const Compressor = struct {
+    writer: std.Io.Writer,
+    err: ?CompressError,
+    encoder: BlockEncoder,
+    staging: [BlockSplitter.LOOKAHEAD + engine.RING]u8,
+    block: [MAX_BLOCK]u8,
+    splitter: BlockSplitter,
+    level: engine.Level,
+    index: ?*IndexBuilder,
+    out: *std.Io.Writer,
+    compressed: u64,
+    uncompressed: u64,
 
-    pub fn start(self: *Writer, out: *std.Io.Writer, options: WriterOptions) void {
-        self.staged = 0;
+    const vtable: std.Io.Writer.VTable = .{
+        .drain = drain,
+        .flush = flush,
+        .rebase = rebase,
+    };
+
+    /// Starts a stream into `output`, resetting everything. The workspace must stay at this address while
+    /// `writer` is used: the writer's buffer is inside it.
+    pub fn init(self: *Compressor, output: *std.Io.Writer, options: CompressOptions) void {
+        self.writer = .{ .vtable = &vtable, .buffer = &self.staging, .end = 0 };
+        self.err = null;
         self.splitter = .init(options.split);
         self.level = options.level;
         self.index = options.index;
-        self.out = out;
+        self.out = output;
         self.compressed = 0;
         self.uncompressed = 0;
     }
 
-    /// Consumes the reader to its end: blocks whose boundaries are decided are written, the rest stays staged.
-    pub fn write(self: *Writer, reader: *std.Io.Reader) WriteError!void {
-        while (true) {
-            const room = self.staging.len - self.staged;
-            const n = try reader.readSliceShort(self.staging[self.staged..]);
-            self.staged += n;
-            while (self.splitter.next(self.staging[0..self.staged], false)) |len| try self.emit(len);
-            // A short read is the end of this reader's input.
-            if (n < room) return;
-        }
-    }
-
-    /// Ends the current block early, so that the next byte starts a block (a record boundary).
-    pub fn flush(self: *Writer) WriteError!void {
-        while (self.splitter.next(self.staging[0..self.staged], true)) |len| try self.emit(len);
-        self.splitter.reset();
-    }
-
-    /// The staged bytes and the EOF marker are written; caller flushes the underlying writer.
-    pub fn finish(self: *Writer) WriteError!Totals {
-        try self.flush();
-        try self.out.writeAll(&EOF_MARKER);
+    /// Writes what is staged and the EOF marker; the writer then fails until `init`. The caller flushes the
+    /// output writer.
+    pub fn finish(self: *Compressor) std.Io.Writer.Error!Totals {
+        if (self.err != null) return error.WriteFailed;
+        errdefer self.writer = .failing;
+        try self.endBlock();
+        self.out.writeAll(&EOF_MARKER) catch return self.fail(error.WriteFailed);
         self.compressed += EOF_MARKER.len;
+        self.writer = .failing;
         return .{ .uncompressed = self.uncompressed, .compressed = self.compressed };
     }
 
-    fn emit(self: *Writer, len: usize) WriteError!void {
-        const size = self.encoder.compressBlock(self.staging[0..len], &self.block, self.level);
-        try self.out.writeAll(self.block[0..size]);
-        if (self.index) |index| try index.add(self.compressed, @intCast(len));
-        self.compressed += size;
-        self.uncompressed += len;
-        @memmove(self.staging[0 .. self.staged - len], self.staging[len..self.staged]);
-        self.staged -= len;
+    fn parent(w: *std.Io.Writer) *Compressor {
+        return @alignCast(@fieldParentPtr("writer", w));
+    }
+
+    fn fail(self: *Compressor, err: CompressError) error{WriteFailed} {
+        self.err = err;
+        self.writer = .failing;
+        return error.WriteFailed;
+    }
+
+    // Writes every block whose boundary is decided: with a full lookahead, or all of it when `at_end`.
+    fn emitReady(self: *Compressor, comptime at_end: bool) std.Io.Writer.Error!void {
+        const w = &self.writer;
+        while (at_end or w.end >= BlockSplitter.LOOKAHEAD) {
+            const len = self.splitter.next(self.staging[0..w.end], at_end) orelse return;
+            const size = self.encoder.compressBlock(self.staging[0..len], &self.block, self.level);
+            self.out.writeAll(self.block[0..size]) catch return self.fail(error.WriteFailed);
+            if (self.index) |index| index.add(self.compressed, @intCast(len)) catch |err| return self.fail(err);
+            self.compressed += size;
+            self.uncompressed += len;
+            @memmove(self.staging[0 .. w.end - len], self.staging[len..w.end]);
+            w.end -= len;
+        }
+    }
+
+    fn endBlock(self: *Compressor) std.Io.Writer.Error!void {
+        try self.emitReady(true);
+        self.splitter.reset();
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self = parent(w);
+        var consumed: usize = 0;
+        copy: {
+            for (data[0 .. data.len - 1]) |bytes| {
+                const n = take(w, bytes);
+                consumed += n;
+                if (n < bytes.len) break :copy;
+            }
+            const pattern = data[data.len - 1];
+            for (0..splat) |_| {
+                const n = take(w, pattern);
+                consumed += n;
+                if (n < pattern.len) break :copy;
+            }
+        }
+        try self.emitReady(false);
+        return consumed;
+    }
+
+    fn take(w: *std.Io.Writer, bytes: []const u8) usize {
+        const n = @min(bytes.len, w.buffer.len - w.end);
+        @memcpy(w.buffer[w.end..][0..n], bytes[0..n]);
+        w.end += n;
+        return n;
+    }
+
+    fn rebase(w: *std.Io.Writer, preserve: usize, capacity: usize) std.Io.Writer.Error!void {
+        const self = parent(w);
+        if (w.buffer.len - w.end >= capacity) return;
+        // Room comes only from writing whole blocks, whose lengths are not known ahead: preserving bytes
+        // through that is not offered.
+        if (preserve != 0 or w.end < BlockSplitter.LOOKAHEAD) return error.WriteFailed;
+        try self.emitReady(false);
+        if (w.buffer.len - w.end < capacity) return error.WriteFailed;
+    }
+
+    fn flush(w: *std.Io.Writer) std.Io.Writer.Error!void {
+        return parent(w).endBlock();
     }
 };
 

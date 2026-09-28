@@ -124,7 +124,7 @@ test "[integration] - [tar reader]: an archive written through the gzip decoder 
     var compressed: [PAX.len]u8 = undefined;
     var plain = std.Io.Reader.fixed(PAX);
     var sink: std.Io.Writer = .fixed(&compressed);
-    _ = try compressor.compress(&plain, &sink, .{});
+    _ = try support.compress(compressor, &plain, &sink, .{});
     var storage: [8192]u8 = undefined;
     const direct = try transcribe(PAX, PAX.len, &storage);
     var name: [256]u8 = undefined;
@@ -296,7 +296,7 @@ test "[failure] - [tar reader]: a visitor's error stops the stream and is return
     var compressed: [GNU.len]u8 = undefined;
     var plain = std.Io.Reader.fixed(GNU);
     var sink: std.Io.Writer = .fixed(&compressed);
-    _ = try compressor.compress(&plain, &sink, .{});
+    _ = try support.compress(compressor, &plain, &sink, .{});
     var name: [256]u8 = undefined;
     var link: [256]u8 = undefined;
     var storage: [8192]u8 = undefined;
@@ -437,7 +437,7 @@ test "[integration] - [tar writer]: the gzip compressor reads an archive the gzi
     var writer: tar.Writer(Files) = .init(&source, &buffer, .{});
     var compressed: [16384]u8 = undefined;
     var sink: std.Io.Writer = .fixed(&compressed);
-    _ = try compressor.compress(&writer.reader, &sink, .{});
+    _ = try support.compress(compressor, &writer.reader, &sink, .{});
     var plain: [16384]u8 = undefined;
     var direct: std.Io.Writer = .fixed(&plain);
     var gz = std.Io.Reader.fixed(sink.buffered());
@@ -505,7 +505,7 @@ test "[failure] - [tar writer]: a short source, a long name, an unsupported kind
     var broken: Files = .{ .files = &files, .fail_at = 3 };
     var broken_writer: tar.Writer(Files) = .init(&broken, &.{}, .{});
     var sink: std.Io.Writer = .fixed(&out);
-    try std.testing.expectError(error.ReadFailed, compressor.compress(&broken_writer.reader, &sink, .{}));
+    try std.testing.expectError(error.ReadFailed, support.compress(compressor, &broken_writer.reader, &sink, .{}));
     try std.testing.expectError(error.SourceBroke, broken_writer.finish());
 }
 

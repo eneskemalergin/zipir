@@ -306,9 +306,9 @@ test "[integration] - [gzip compressor]: empty and repeated calls produce indepe
     var bytes: [empty.len + one.len]u8 = undefined;
     var writer = std.Io.Writer.fixed(&bytes);
     var reader = std.Io.Reader.fixed("");
-    try std.testing.expectEqual(@as(u64, 0), try encoder.compress(&reader, &writer, .{}));
+    try std.testing.expectEqual(@as(u64, 0), try support.compress(encoder, &reader, &writer, .{}));
     reader = .fixed("A");
-    try std.testing.expectEqual(@as(u64, 1), try encoder.compress(&reader, &writer, .{}));
+    try std.testing.expectEqual(@as(u64, 1), try support.compress(encoder, &reader, &writer, .{}));
     try std.testing.expectEqualSlices(u8, empty ++ one, writer.buffered());
     reader = .fixed(writer.buffered());
     var output: [1]u8 = undefined;
@@ -331,12 +331,12 @@ test "[property] - [gzip compressor]: reused workspaces match fresh output acros
     for ([_]zipir.gzip.CompressOptions{ .{ .level = .fast }, .{ .level = .dense }, .{ .level = .fast }, .{}, .{ .level = .dense } }) |options| {
         var reader = std.Io.Reader.fixed(&plain);
         var writer = std.Io.Writer.fixed(&expected);
-        _ = try fresh.compress(&reader, &writer, options);
+        _ = try support.compress(fresh, &reader, &writer, options);
         const want = writer.buffered();
         fresh.* = undefined;
         reader = .fixed(&plain);
         writer = .fixed(&actual);
-        _ = try encoder.compress(&reader, &writer, options);
+        _ = try support.compress(encoder, &reader, &writer, options);
         try std.testing.expectEqualSlices(u8, want, writer.buffered());
     }
 }
@@ -474,14 +474,14 @@ test "[failure] - [gzip compressor]: I/O errors propagate and workspace resets" 
         source.fail_at = fail;
         var scratch: [29]u8 = undefined;
         var sink = support.Sink{ .output = &scratch };
-        try std.testing.expectError(error.ReadFailed, encoder.compress(&source.reader, &sink.writer, .{ .level = .dense }));
+        try std.testing.expectError(error.ReadFailed, support.compress(encoder, &source.reader, &sink.writer, .{ .level = .dense }));
         _ = try encodeRoundtrip(encoder, "reused after read failure", .{ .level = .dense }, 1, 17);
     }
     for ([_]usize{ 0, 10, 16, 500, 65555 }) |fail| {
         var source = std.Io.Reader.fixed(&plain);
         var scratch: [29]u8 = undefined;
         var sink = support.Sink{ .output = &scratch, .fail_at = fail };
-        try std.testing.expectError(error.WriteFailed, encoder.compress(&source, &sink.writer, .{ .level = .fast }));
+        try std.testing.expectError(error.WriteFailed, support.compress(encoder, &source, &sink.writer, .{ .level = .fast }));
         if (fail == 0) try std.testing.expectEqual(@as(usize, 0), source.seek);
         // fast writes one block per two 32 KiB windows, so at most two windows and the lookahead byte are read.
         if (fail <= 500) try std.testing.expect(source.seek <= 65537);

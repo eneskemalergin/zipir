@@ -325,7 +325,7 @@ test "[edge] - [zlib compressor]: empty input writes the level header, an empty 
         var bytes: [case[1].len]u8 = undefined;
         var writer = std.Io.Writer.fixed(&bytes);
         var reader = std.Io.Reader.fixed("");
-        try std.testing.expectEqual(@as(u64, 0), try encoder.compress(&reader, &writer, case[0]));
+        try std.testing.expectEqual(@as(u64, 0), try support.compress(encoder, &reader, &writer, case[0]));
         try std.testing.expectEqualSlices(u8, case[1], writer.buffered());
     }
 }
@@ -351,7 +351,7 @@ test "[property] - [zlib compressor]: payload equals the gzip payload across blo
             const stream = try encodeRoundtrip(encoder, plain[0..n], options, 997, 17, encoded);
             var reader = std.Io.Reader.fixed(plain[0..n]);
             var writer = std.Io.Writer.fixed(&gzip_bytes);
-            _ = try gzip_encoder.compress(&reader, &writer, options);
+            _ = try support.compress(gzip_encoder, &reader, &writer, options);
             const member = writer.buffered();
             try std.testing.expectEqualSlices(u8, member[10 .. member.len - 8], stream[2 .. stream.len - 4]);
             const output = try std.testing.allocator.alloc(u8, n);
@@ -375,14 +375,14 @@ test "[failure] - [zlib compressor]: I/O errors propagate and the workspace comp
         source.fail_at = fail;
         var scratch: [29]u8 = undefined;
         var sink = support.Sink{ .output = &scratch };
-        try std.testing.expectError(error.ReadFailed, encoder.compress(&source.reader, &sink.writer, .{ .level = .dense }));
+        try std.testing.expectError(error.ReadFailed, support.compress(encoder, &source.reader, &sink.writer, .{ .level = .dense }));
         _ = try encodeRoundtrip(encoder, "reused after read failure", .{ .level = .dense }, 1, 17, &encoded);
     }
     for ([_]usize{ 0, 1, 2, 500, 65543 }) |fail| {
         var source = std.Io.Reader.fixed(&plain);
         var scratch: [29]u8 = undefined;
         var sink = support.Sink{ .output = &scratch, .fail_at = fail };
-        try std.testing.expectError(error.WriteFailed, encoder.compress(&source, &sink.writer, .{ .level = .fast }));
+        try std.testing.expectError(error.WriteFailed, support.compress(encoder, &source, &sink.writer, .{ .level = .fast }));
         _ = try encodeRoundtrip(encoder, "reused after write failure", .{ .level = .fast }, 1, 17, &encoded);
     }
 }

@@ -28,7 +28,7 @@ fn compress(allocator: std.mem.Allocator, comptime format: Format, plain: []cons
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     var input = std.Io.Reader.fixed(plain);
-    _ = try encoder.compress(&input, &out.writer, .{});
+    _ = try support.compress(encoder, &input, &out.writer, .{});
     return out.toOwnedSlice();
 }
 
@@ -255,13 +255,13 @@ test "[failure] - [reader]: max_header_bytes bounds the optional gzip header" {
 }
 
 fn compressBgzf(allocator: std.mem.Allocator, plain: []const u8) ![]u8 {
-    const writer = try allocator.create(zipir.bgzf.Writer);
+    const writer = try allocator.create(zipir.bgzf.Compressor);
     defer allocator.destroy(writer);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
     var input = std.Io.Reader.fixed(plain);
-    writer.start(&out.writer, .{ .split = .lines, .level = .fast });
-    try writer.write(&input);
+    writer.init(&out.writer, .{ .split = .lines, .level = .fast });
+    _ = try input.streamRemaining(&writer.writer);
     _ = try writer.finish();
     return out.toOwnedSlice();
 }

@@ -3,6 +3,7 @@
 const std = @import("std");
 const engine = @import("../deflate/deflate.zig");
 const inflate = @import("inflate.zig");
+const compress = @import("compress.zig");
 
 pub const Error = engine.Error || error{ InputBufferTooSmall, TrailingData };
 
@@ -44,22 +45,19 @@ pub const CompressError = engine.EncodeError;
 
 pub const CompressOptions = engine.CompressOptions;
 
-/// Writes no integrity check: a reader detects corruption only when it breaks the DEFLATE structure.
-/// Reusable without initialization, including after errors. No allocation occurs during compression.
-/// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
-pub const Compressor = struct {
-    encoder: engine.Encoder = .{},
+/// Writes one raw DEFLATE stream, with no integrity check: a reader detects corruption only when it breaks the
+/// DEFLATE structure. `init(output, options)` starts it in place, plain bytes go to `writer`, and `finish` writes
+/// the last block. No allocation occurs.
+pub const Compressor = compress.Deflate(struct {
+    pub const Check = NoCheck;
 
-    /// Reads through EOF and writes one stream. Caller flushes writer; failures may leave partial output.
-    /// Reader capacity may be zero. A failed call cannot be resumed.
-    pub fn compress(self: *Compressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: CompressOptions) CompressError!u64 {
-        var check: NoCheck = .{};
-        return self.encoder.encodeStream(NoCheck, reader, writer, &check, options.level);
-    }
-};
+    pub fn header(_: *std.Io.Writer, _: engine.Level) std.Io.Writer.Error!void {}
+
+    pub fn trailer(_: *std.Io.Writer, _: *Check, _: u64) std.Io.Writer.Error!void {}
+});
 
 comptime {
-    std.debug.assert(@sizeOf(Compressor) == 428584);
+    std.debug.assert(@sizeOf(Compressor) == 428624);
 }
 
 const NoCheck = struct {

@@ -70,7 +70,9 @@ fn compressPath(comptime codec_format: zipir.Format, io: Io, paths: adapter.Path
     var out_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
     var out_writer = out_file.writerStreaming(io, &out_buf);
 
-    _ = try compressor.compress(&in_reader.interface, &out_writer.interface, .{ .level = level });
+    try compressor.init(&out_writer.interface, .{ .level = level });
+    _ = try in_reader.interface.streamRemaining(&compressor.writer);
+    _ = try compressor.finish();
     try out_writer.interface.flush();
 }
 
@@ -98,10 +100,10 @@ fn decompressPath(comptime codec_format: zipir.Format, io: Io, paths: adapter.Pa
 
 // The CLI's split rule: whole blocks for binary input, blocks ending at line breaks for text (bgzip's default).
 fn compressBgzf(io: Io, paths: adapter.Paths) !void {
-    const level = std.enums.fromInt(@FieldType(zipir.bgzf.WriterOptions, "level"), paths.level) orelse
+    const level = std.enums.fromInt(@FieldType(zipir.bgzf.CompressOptions, "level"), paths.level) orelse
         return error.InvalidArguments;
-    const writer = try std.heap.page_allocator.create(zipir.bgzf.Writer);
-    defer std.heap.page_allocator.destroy(writer);
+    const compressor = try std.heap.page_allocator.create(zipir.bgzf.Compressor);
+    defer std.heap.page_allocator.destroy(compressor);
 
     const in_file = try adapter.openIn(io, paths.in_path);
     defer adapter.closeIfOwned(io, in_file, paths.in_path);
@@ -118,9 +120,9 @@ fn compressBgzf(io: Io, paths: adapter.Paths) !void {
     var out_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
     var out_writer = out_file.writerStreaming(io, &out_buf);
 
-    writer.start(&out_writer.interface, .{ .level = level, .split = split });
-    try writer.write(&in_reader.interface);
-    _ = try writer.finish();
+    compressor.init(&out_writer.interface, .{ .level = level, .split = split });
+    _ = in_reader.interface.streamRemaining(&compressor.writer) catch |err| return compressor.err orelse err;
+    _ = compressor.finish() catch |err| return compressor.err orelse err;
     try out_writer.interface.flush();
 }
 

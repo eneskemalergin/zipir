@@ -74,7 +74,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
-    for ([_][]const u8{ "tests/gzip.zig", "tests/zlib.zig", "tests/deflate.zig", "tests/bgzf.zig", "tests/tar.zig", "tests/reader.zig" }) |suite| {
+    for ([_][]const u8{ "tests/gzip.zig", "tests/zlib.zig", "tests/deflate.zig", "tests/bgzf.zig", "tests/tar.zig", "tests/reader.zig", "tests/writer.zig" }) |suite| {
         const contracts = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path(suite),

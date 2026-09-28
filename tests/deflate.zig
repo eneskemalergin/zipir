@@ -28,7 +28,7 @@ test "[edge] - [raw deflate]: empty input is one empty final fixed block at ever
         var bytes: [2]u8 = undefined;
         var writer = std.Io.Writer.fixed(&bytes);
         var reader = std.Io.Reader.fixed("");
-        try std.testing.expectEqual(@as(u64, 0), try encoder.compress(&reader, &writer, options));
+        try std.testing.expectEqual(@as(u64, 0), try support.compress(encoder, &reader, &writer, options));
         try std.testing.expectEqualSlices(u8, "\x03\x00", writer.buffered());
     }
     try decode(decoder, "\x03\x00", "", 1, .{});
@@ -55,7 +55,7 @@ test "[property] - [raw deflate]: output equals the gzip payload and decodes wit
             const stream = try support.encodeRoundtrip(deflate, encoder, .raw, plain[0..n], options, 997, 17, raw);
             var reader = std.Io.Reader.fixed(plain[0..n]);
             var gzip_writer = std.Io.Writer.fixed(member);
-            _ = try gzip_encoder.compress(&reader, &gzip_writer, options);
+            _ = try support.compress(gzip_encoder, &reader, &gzip_writer, options);
             try std.testing.expectEqualSlices(u8, gzip_writer.buffered()[10 .. gzip_writer.buffered().len - 8], stream);
             try decode(decoder, stream, plain[0..n], 257, .{});
         }
@@ -107,7 +107,7 @@ test "[failure] - [raw deflate decoder]: every prefix is truncated, and limits a
     var raw: [6000]u8 = undefined;
     var writer = std.Io.Writer.fixed(&raw);
     var reader = std.Io.Reader.fixed(&plain);
-    _ = try encoder.compress(&reader, &writer, .{});
+    _ = try support.compress(encoder, &reader, &writer, .{});
     const stream = writer.buffered();
     var scratch: [64]u8 = undefined;
     var buffer: [17]u8 = undefined;

@@ -145,7 +145,9 @@ fn run(io: std.Io, process_args: std.process.Args) !u8 {
             inline else => |selected| {
                 const encoder = try allocator.create(zipir.Compressor(selected));
                 defer allocator.destroy(encoder);
-                _ = try encoder.compress(&reader.interface, &stdout.interface, compress_options);
+                try encoder.init(&stdout.interface, compress_options);
+                try squeeze(&reader.interface, &encoder.writer);
+                _ = try encoder.finish();
             },
         }
         try stdout.interface.flush();
@@ -178,6 +180,11 @@ fn pump(decoder: anytype, input: *std.Io.Reader, out: *std.Io.Writer, options: s
         error.ReadFailed => decoder.err.?,
         error.WriteFailed => error.WriteFailed,
     };
+}
+
+// Writes all of `input` into a compressor's writer.
+fn squeeze(input: *std.Io.Reader, writer: *std.Io.Writer) !void {
+    _ = try input.streamRemaining(writer);
 }
 
 // What `--format` names or `auto` detects: a codec, BGZF (gzip read with its structure checks), or a
@@ -236,7 +243,7 @@ fn isBgzf(reader: *std.Io.Reader) !bool {
     return false;
 }
 
-fn compressBgzf(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, out: *std.Io.Writer, level: @FieldType(zipir.bgzf.WriterOptions, "level"), binary: bool) !void {
+fn compressBgzf(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, out: *std.Io.Writer, level: @FieldType(zipir.bgzf.CompressOptions, "level"), binary: bool) !void {
     var buffer: [65536]u8 = undefined;
     var reader = file.readerStreaming(io, &buffer);
     const head = reader.interface.peekGreedy(buffer.len) catch |err| switch (err) {
@@ -244,11 +251,11 @@ fn compressBgzf(io: std.Io, allocator: std.mem.Allocator, file: std.Io.File, out
         error.ReadFailed => return err,
     };
     const split: zipir.bgzf.Split = if (binary or std.mem.indexOfScalar(u8, head, 0) != null) .fill else .lines;
-    const writer = try allocator.create(zipir.bgzf.Writer);
-    defer allocator.destroy(writer);
-    writer.start(out, .{ .level = level, .split = split });
-    try writer.write(&reader.interface);
-    _ = try writer.finish();
+    const encoder = try allocator.create(zipir.bgzf.Compressor);
+    defer allocator.destroy(encoder);
+    encoder.init(out, .{ .level = level, .split = split });
+    squeeze(&reader.interface, &encoder.writer) catch |err| return encoder.err orelse err;
+    _ = encoder.finish() catch |err| return encoder.err orelse err;
 }
 
 // Two scans of FILE (the first counts the entries), then FILE.gzi, created exclusively.
@@ -495,15 +502,17 @@ fn writeArchive(allocator: std.mem.Allocator, archive: *std.Io.Reader, output: I
             inline else => |known| {
                 const encoder = try allocator.create(zipir.Compressor(known));
                 defer allocator.destroy(encoder);
-                _ = try encoder.compress(archive, stdout, .{ .level = level });
+                try encoder.init(stdout, .{ .level = level });
+                try squeeze(archive, &encoder.writer);
+                _ = try encoder.finish();
             },
         },
         .bgzf => {
-            const writer = try allocator.create(zipir.bgzf.Writer);
-            defer allocator.destroy(writer);
-            writer.start(stdout, .{ .level = level });
-            try writer.write(archive);
-            _ = try writer.finish();
+            const encoder = try allocator.create(zipir.bgzf.Compressor);
+            defer allocator.destroy(encoder);
+            encoder.init(stdout, .{ .level = level });
+            squeeze(archive, &encoder.writer) catch |err| return encoder.err orelse err;
+            _ = encoder.finish() catch |err| return encoder.err orelse err;
         },
         .plain => _ = try archive.streamRemaining(stdout),
     }

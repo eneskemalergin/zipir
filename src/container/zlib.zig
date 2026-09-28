@@ -4,6 +4,7 @@ const std = @import("std");
 const engine = @import("../deflate/deflate.zig");
 const adler32 = @import("../kernel/adler32.zig");
 const inflate = @import("inflate.zig");
+const compress = @import("compress.zig");
 
 pub const Error = engine.Error || error{
     InputBufferTooSmall,
@@ -56,26 +57,24 @@ pub const CompressError = engine.EncodeError;
 
 pub const CompressOptions = engine.CompressOptions;
 
-/// Reusable without initialization, including after errors. No allocation occurs during compression.
-/// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
-pub const Compressor = struct {
-    encoder: engine.Encoder = .{},
+/// Writes one zlib stream: `init(output, options)` writes the header and starts it in place, plain bytes go to
+/// `writer`, and `finish` writes the last block and the Adler-32. No allocation occurs.
+pub const Compressor = compress.Deflate(struct {
+    pub const Check = adler32.Adler32;
 
-    /// Reads through EOF and writes one stream. Caller flushes writer; failures may leave partial output.
-    /// Reader capacity may be zero. A failed call cannot be resumed.
-    pub fn compress(self: *Compressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: CompressOptions) CompressError!u64 {
-        try writer.writeAll(&headerFor(options.level));
-        var check: adler32.Adler32 = .init();
-        const size = try self.encoder.encodeStream(adler32.Adler32, reader, writer, &check, options.level);
-        var trailer: [4]u8 = undefined;
-        std.mem.writeInt(u32, &trailer, check.final(), .big);
-        try writer.writeAll(&trailer);
-        return size;
+    pub fn header(output: *std.Io.Writer, level: engine.Level) std.Io.Writer.Error!void {
+        return output.writeAll(&headerFor(level));
     }
-};
+
+    pub fn trailer(output: *std.Io.Writer, check: *Check, _: u64) std.Io.Writer.Error!void {
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bytes, check.final(), .big);
+        return output.writeAll(&bytes);
+    }
+});
 
 comptime {
-    std.debug.assert(@sizeOf(Compressor) == 428584);
+    std.debug.assert(@sizeOf(Compressor) == 428624);
 }
 
 // CMF 0x78 is DEFLATE with a 32 KiB window; FLEVEL follows zlib's level convention (fastest, fast, default, maximum).

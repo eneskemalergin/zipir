@@ -4,6 +4,7 @@ const std = @import("std");
 const engine = @import("../deflate/deflate.zig");
 const crc = @import("../kernel/crc32.zig");
 const inflate = @import("inflate.zig");
+const compress = @import("compress.zig");
 
 pub const Error = engine.Error || error{
     InputBufferTooSmall,
@@ -70,27 +71,25 @@ pub const CompressError = engine.EncodeError;
 
 pub const CompressOptions = engine.CompressOptions;
 
-/// Reusable without initialization, including after errors. No allocation occurs during compression.
-/// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
-pub const Compressor = struct {
-    encoder: engine.Encoder = .{},
+/// Writes one gzip member: `init(output, options)` writes the header and starts it in place, plain bytes go to
+/// `writer`, and `finish` writes the last block and the trailer. No allocation occurs.
+pub const Compressor = compress.Deflate(struct {
+    pub const Check = crc.Crc32;
 
-    /// Reads through EOF and writes one member. Caller flushes writer; failures may leave partial output.
-    /// Reader capacity may be zero. A failed call cannot be resumed.
-    pub fn compress(self: *Compressor, reader: *std.Io.Reader, writer: *std.Io.Writer, options: CompressOptions) CompressError!u64 {
-        try writeHeader(writer, "");
-        var check: crc.Crc32 = .init();
-        const size = try self.encoder.encodeStream(crc.Crc32, reader, writer, &check, options.level);
-        var trailer: [8]u8 = undefined;
-        std.mem.writeInt(u32, trailer[0..4], check.final(), .little);
-        std.mem.writeInt(u32, trailer[4..8], @truncate(size), .little);
-        try writer.writeAll(&trailer);
-        return size;
+    pub fn header(output: *std.Io.Writer, _: engine.Level) std.Io.Writer.Error!void {
+        return writeHeader(output, "");
     }
-};
+
+    pub fn trailer(output: *std.Io.Writer, check: *Check, size: u64) std.Io.Writer.Error!void {
+        var bytes: [8]u8 = undefined;
+        std.mem.writeInt(u32, bytes[0..4], check.final(), .little);
+        std.mem.writeInt(u32, bytes[4..8], @truncate(size), .little);
+        return output.writeAll(&bytes);
+    }
+});
 
 comptime {
-    std.debug.assert(@sizeOf(Compressor) == 428584);
+    std.debug.assert(@sizeOf(Compressor) == 428624);
 }
 
 // Shared with BGZF. `Visitor` is `void` (plain gzip) or provides

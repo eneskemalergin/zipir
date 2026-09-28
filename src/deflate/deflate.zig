@@ -1099,7 +1099,7 @@ fn fastHash(v: u32) usize {
     return (v *% 0x1e35a7bd) >> 17;
 }
 
-pub const EncodeError = error{ ReadFailed, WriteFailed };
+pub const EncodeError = std.Io.Writer.Error;
 
 pub const CompressOptions = struct {
     level: Level = .even,
@@ -1129,33 +1129,22 @@ pub const Encoder = struct {
     first_dist: [30]u32 = undefined,
     first_tokens: usize = 0,
 
-    /// A whole stream read from `reader`.
-    pub fn encodeStream(self: *Encoder, comptime Check: type, reader: *std.Io.Reader, writer: *std.Io.Writer, check: *Check, level: Level) EncodeError!u64 {
-        self.begin(writer, level, false);
-        var carried: usize = 0;
-        while (true) {
-            // A window plus one byte: the extra byte proves the window is not the last.
-            const n = carried + try reader.readSliceShort(self.space()[carried .. RING + 1]);
-            const last = n <= RING;
-            try self.step(Check, check, if (last) n else RING, if (last) 0 else n - RING, last, false);
-            if (last) break;
-            carried = n - RING;
-        }
-        try self.finish();
-        return self.size;
-    }
-
     /// One BGZF block (at most 65280 bytes): the same presets with settings for a cold 64 KiB block
     /// (PHASE2.md): fast keeps two candidates per hash bucket and even searches deeper.
     pub fn encodeBlock(self: *Encoder, comptime Check: type, input: []const u8, writer: *std.Io.Writer, check: *Check, level: Level) EncodeError!void {
         std.debug.assert(input.len <= 2 * RING);
-        self.begin(writer, level, true);
+        return self.encodeSlice(Check, input, writer, check, level, true);
+    }
+
+    /// A whole stream of `input`, a window at a time.
+    fn encodeSlice(self: *Encoder, comptime Check: type, input: []const u8, writer: *std.Io.Writer, check: *Check, level: Level, comptime block: bool) EncodeError!void {
+        self.begin(writer, level, block);
         var at: usize = 0;
         while (true) {
             const n = @min(input.len - at, RING + 1);
             @memcpy(self.window[self.history..][0..n], input[at..][0..n]);
             const last = n <= RING;
-            try self.step(Check, check, if (last) n else RING, if (last) 0 else 1, last, true);
+            try self.step(Check, check, if (last) n else RING, if (last) 0 else 1, last, last, block);
             if (last) break;
             at += RING;
         }
@@ -1189,9 +1178,10 @@ pub const Encoder = struct {
     }
 
     /// Codes `space()[0..n]` as the next window: `n` is 32 KiB except in the last. The `carried` bytes after it
-    /// (at most 32 KiB) begin the next window.
-    pub fn step(self: *Encoder, comptime Check: type, check: *Check, n: usize, carried: usize, last: bool, comptime block: bool) EncodeError!void {
-        std.debug.assert(n <= RING and (last or n == RING) and carried <= RING);
+    /// (at most 32 KiB) begin the next window. `last` ends the run of windows (a pending pair is coded); `final`
+    /// marks its last block as the stream's last (false for a flush).
+    pub fn step(self: *Encoder, comptime Check: type, check: *Check, n: usize, carried: usize, last: bool, final: bool, comptime block: bool) EncodeError!void {
+        std.debug.assert(n <= RING and (last or n == RING) and carried <= RING and (last or !final));
         var bits: BitWriter = .{ .writer = self.out, .value = self.bit_value, .count = self.bit_count };
         defer {
             self.bit_value = bits.value;
@@ -1225,7 +1215,7 @@ pub const Encoder = struct {
             if (!last and !self.pending) {
                 self.pending = true;
             } else {
-                _ = try self.emit(&bits, self.window[if (self.pending) 0 else history..end], last);
+                _ = try self.emit(&bits, self.window[if (self.pending) 0 else history..end], final);
                 self.pending = false;
             }
         } else if (level == .fast) {
@@ -1236,10 +1226,10 @@ pub const Encoder = struct {
                 self.first_tokens = self.icf_count;
                 self.pending = true;
             } else if (self.pending) {
-                _ = try self.emitPair(&bits, end, last, &self.first_lit, &self.first_dist, self.first_tokens);
+                _ = try self.emitPair(&bits, end, final, &self.first_lit, &self.first_dist, self.first_tokens);
                 self.pending = false;
             } else {
-                _ = try self.emit(&bits, self.window[history..end], last);
+                _ = try self.emit(&bits, self.window[history..end], final);
             }
         } else {
             if (level == .even) self.parse(history, end, level, self.skip_search, !self.pending, 5, block) else self.parse(history, end, level, self.skip_search, !self.pending, 4, block);
@@ -1251,10 +1241,10 @@ pub const Encoder = struct {
                 self.first_tokens = self.icf_count;
                 self.pending = true;
             } else if (self.pending) {
-                self.skip_search = try self.emitPair(&bits, end, last, &self.first_lit, &self.first_dist, self.first_tokens);
+                self.skip_search = try self.emitPair(&bits, end, final, &self.first_lit, &self.first_dist, self.first_tokens);
                 self.pending = false;
             } else {
-                self.skip_search = try self.emit(&bits, self.window[history..end], last);
+                self.skip_search = try self.emit(&bits, self.window[history..end], final);
             }
         }
         if (last) return;
@@ -1273,6 +1263,20 @@ pub const Encoder = struct {
         try bits.alignByte();
         self.bit_value = 0;
         self.bit_count = 0;
+    }
+
+    /// After a run ended by a non-final `step`: an empty stored block brings the output to a byte boundary, so
+    /// every byte so far can be decoded, and the next window starts a new history (a full flush).
+    pub fn sync(self: *Encoder) EncodeError!void {
+        var bits: BitWriter = .{ .writer = self.out, .value = self.bit_value, .count = self.bit_count };
+        try bits.put(0, 3);
+        try bits.alignByte();
+        try bits.put(0, 16);
+        try bits.put(0xffff, 16);
+        try bits.drain();
+        const size = self.size;
+        self.begin(self.out, self.level, false);
+        self.size = size;
     }
 
     fn headsFor(self: *Encoder, level: Level) []u16 {
@@ -2180,10 +2184,9 @@ test "[property] - [deflate decoder]: paused decoding returns the stream at ever
     const compressed = try allocator.alloc(u8, plain.len + plain.len / 8 + 1024);
     defer allocator.free(compressed);
     for ([_]Level{ .fast, .even, .dense }) |level| {
-        var plain_reader = std.Io.Reader.fixed(plain);
         var writer = std.Io.Writer.fixed(compressed);
         var encode_check: TestCheck = .{};
-        _ = try encoder.encodeStream(TestCheck, &plain_reader, &writer, &encode_check, level);
+        try encoder.encodeSlice(TestCheck, plain, &writer, &encode_check, level, false);
         for ([_]usize{ 1, 7, 4093, 65536, 1 << 20 }) |size| {
             if (size == 1 and level != .even) continue;
             var reader = std.Io.Reader.fixed(writer.buffered());
@@ -2219,10 +2222,9 @@ test "[edge] - [deflate decoder]: streams whose last code ends at the end of inp
     var plain: [3000]u8 = undefined;
     for (&plain, 0..) |*b, i| b.* = "ACGT"[(i * i + i / 7) % 4];
     var dynamic: [4000]u8 = undefined;
-    var plain_reader = std.Io.Reader.fixed(&plain);
     var dynamic_writer = std.Io.Writer.fixed(&dynamic);
     var encode_check: TestCheck = .{};
-    _ = try encoder.encodeStream(TestCheck, &plain_reader, &dynamic_writer, &encode_check, .even);
+    try encoder.encodeSlice(TestCheck, &plain, &dynamic_writer, &encode_check, .even, false);
     const cases = .{ .{ "\x73\x04\x00", "A" }, .{ dynamic_writer.buffered(), &plain } };
     inline for (cases) |case| {
         var reader = std.Io.Reader.fixed(case[0]);
@@ -2424,14 +2426,12 @@ test "[property] - [deflate encoder]: output does not depend on stale chain entr
         for (&stale.previous, 0..) |*slot, i| slot.* = @truncate(i *% 40503 +% 17);
         // Two streams in a row on each workspace: the second starts with the first one's chains.
         for ([_]usize{ input.len, RING / 3 }) |len| {
-            var want_reader = std.Io.Reader.fixed(input[0..len]);
             var want_writer = std.Io.Writer.fixed(&expected);
             var want_check: NoCheck = .{};
-            _ = try clean.encodeStream(NoCheck, &want_reader, &want_writer, &want_check, level);
-            var got_reader = std.Io.Reader.fixed(input[0..len]);
+            try clean.encodeSlice(NoCheck, input[0..len], &want_writer, &want_check, level, false);
             var got_writer = std.Io.Writer.fixed(&actual);
             var got_check: NoCheck = .{};
-            _ = try stale.encodeStream(NoCheck, &got_reader, &got_writer, &got_check, level);
+            try stale.encodeSlice(NoCheck, input[0..len], &got_writer, &got_check, level, false);
             try std.testing.expectEqualSlices(u8, want_writer.buffered(), got_writer.buffered());
         }
     }
