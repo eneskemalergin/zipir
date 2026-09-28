@@ -239,12 +239,7 @@ pub const Decoder = struct {
     buffer: [RING + BATCH]u8 = undefined,
 
     pub fn session(self: *Decoder, comptime Check: type, writer: *std.Io.Writer, limits: Limits) Session(Check) {
-        return .{
-            .decoder = self,
-            .out = self.buffer[0 .. RING + @as(usize, @intCast(@min(BATCH, limits.max_output_bytes)))],
-            .writer = writer,
-            .max_output_bytes = limits.max_output_bytes,
-        };
+        return .{ .decoder = self, .writer = writer, .max_output_bytes = limits.max_output_bytes };
     }
 };
 
@@ -252,162 +247,225 @@ comptime {
     std.debug.assert(@sizeOf(Decoder) == 196608);
 }
 
+/// Why `Session.run` returned: the stream's final block ended, or the buffer has no room left.
+pub const Stop = enum { end, full };
+
+const Block = enum { header, stored, fixed, dynamic, end };
+
+/// Decodes DEFLATE streams into `Decoder.buffer`, pausing when the buffer is full. `buffer[0..out_pos]` is
+/// decoded output; the owner reads it, then `rebase` keeps what is unread plus 32 KiB of history and frees
+/// the rest. Bits, block state, and a match cut short by a full buffer carry over to the next `run`.
 pub fn Session(comptime Check: type) type {
     return struct {
         const Self = @This();
 
-        br: ?*BitReader = null,
-        check: ?*Check = null,
         decoder: *Decoder,
-        out: []u8,
-        writer: *std.Io.Writer,
-        out_pos: usize = RING,
-        produced: u64 = 0,
-        check_pos: usize = RING,
+        br: *BitReader = undefined,
+        check: *Check = undefined,
+        // Whole-stream decoding (`stream`, `finish`) writes here.
+        writer: ?*std.Io.Writer = null,
+        out: []u8 = &.{},
+        out_pos: usize = 0,
+        // Bytes decoded before `buffer[0]`: `position` is `base + out_pos`.
+        base: u64 = 0,
+        check_pos: usize = 0,
+        // Bytes before `seek` have been written to `writer`.
+        seek: usize = 0,
         stream_start: u64 = 0,
         max_output_bytes: u64,
         // Output cap for each stream (a BGZF block holds at most 65536 bytes), applied with max_output_bytes.
         stream_limit: u64 = std.math.maxInt(u64),
+        block: Block = .end,
+        final: bool = false,
+        stored_left: usize = 0,
+        match_distance: usize = 0,
+        match_left: usize = 0,
 
-        pub fn stream(self: *Self, br: *BitReader, check: *Check) Error!u64 {
+        /// Starts a stream at the current position; `run` then decodes it.
+        pub fn begin(self: *Self, br: *BitReader, check: *Check) void {
             self.br = br;
             self.check = check;
-            defer self.check = null;
-            const start = self.position();
-            self.stream_start = start;
-            self.out = self.decoder.buffer[0..self.batchEnd()];
+            self.stream_start = self.position();
             self.check_pos = self.out_pos;
-            var bfinal: u32 = 0;
-            while (bfinal == 0) {
-                bfinal = try br.get(1);
-                const btype = try br.get(2);
-                switch (btype) {
-                    0 => {
-                        br.alignByte();
-                        const len = try br.get(16);
-                        const nlen = try br.get(16);
-                        if (len != (~nlen & 0xffff)) return error.BadStored;
-                        var left: usize = len;
-                        while (left != 0) {
-                            if (br.i == br.src.len and !try br.window(1)) return error.Truncated;
-                            const n = @min(left, br.src.len - br.i);
-                            const bytes = try br.getBytes(n);
-                            if (bfinal != 0) try self.emitSlice(bytes, false) else try self.emitSlice(bytes, true);
-                            left -= n;
-                        }
-                    },
-                    1 => try decodeHuff(Check, self, &FIXED_TABLES.lit, &FIXED_TABLES.dist),
-                    2 => {
-                        const hlit = try br.get(5) + 257;
-                        const hdist = try br.get(5) + 1;
-                        const hclen = try br.get(4) + 4;
-                        if (hlit > 286 or hdist > 32 or hclen > 19) return error.BadHuffman;
-                        var clens: [19]u4 = .{0} ** 19;
-                        var ci: u32 = 0;
-                        while (ci < hclen) : (ci += 1) {
-                            clens[CLEN_ORDER[ci]] = @intCast(try br.get(3));
-                        }
-                        var clen_first: [1 << 7]Entry = undefined;
-                        try fillFirst(clen_first[0..], 7, clens[0..19], clenKind, clenPayload, false);
-                        var all_lens: [318]u4 = .{0} ** 318;
-                        const total_lens: usize = hlit + hdist;
-                        try readDynLens(br, clen_first[0..], all_lens[0..total_lens]);
-                        var lit_lens: [288]u4 = .{0} ** 288;
-                        @memcpy(lit_lens[0..hlit], all_lens[0..hlit]);
-                        var dist_lens: [32]u4 = .{0} ** 32;
-                        @memcpy(dist_lens[0..hdist], all_lens[hlit..total_lens]);
-                        if (lit_lens[256] == 0) return error.BadHuffman;
-                        try fillTwoLevel(&self.decoder.tables.lit_first, &self.decoder.tables.lit_spill, 10, &lit_lens, litKind, litPayload, true);
-                        try fillTwoLevel(&self.decoder.tables.dist_first, &self.decoder.tables.dist_spill, 9, &dist_lens, distKind, distPayload, true);
-                        try decodeHuff(Check, self, &self.decoder.tables.lit_first, &self.decoder.tables.dist_first);
-                    },
-                    else => return error.BadBlock,
-                }
-            }
+            self.block = .header;
+            self.final = false;
+            self.match_left = 0;
+            self.limit();
+        }
+
+        /// Decodes until the stream ends or the buffer is full; new bytes are in the check when it returns.
+        pub fn run(self: *Self) Error!Stop {
+            const stop = try self.decode();
             self.catchup();
-            return self.position() - start;
+            // A pause can come right after a 64-bit refill; the fast loop's refill needs fewer than 64 bits held.
+            if (stop == .full) self.br.putBack();
+            return stop;
         }
 
+        /// Frees room: keeps `buffer[keep_from..out_pos]` and at least 32 KiB of history before `out_pos`,
+        /// moved to the front. Returns how far bytes moved, which the owner subtracts from its offsets.
+        pub fn rebase(self: *Self, keep_from: usize) usize {
+            const from = @min(keep_from, self.out_pos -| RING);
+            if (from != 0) {
+                const kept = self.out_pos - from;
+                @memmove(self.decoder.buffer[0..kept], self.decoder.buffer[from..self.out_pos]);
+                self.base += from;
+                self.out_pos = kept;
+                self.check_pos -= from;
+            }
+            self.limit();
+            return from;
+        }
+
+        /// Decodes one whole stream into `writer`.
+        pub fn stream(self: *Self, br: *BitReader, check: *Check) Error!u64 {
+            self.begin(br, check);
+            while (try self.run() == .full) try self.flush();
+            return self.position() - self.stream_start;
+        }
+
+        /// Writes what `stream` left buffered; the result is every byte decoded.
         pub fn finish(self: *Self) Error!u64 {
-            try self.flush(false);
-            return self.produced;
+            try self.flush();
+            return self.position();
         }
 
-        fn position(self: *const Self) u64 {
-            return self.produced + (self.out_pos - RING);
+        pub fn position(self: *const Self) u64 {
+            return self.base + self.out_pos;
         }
 
-        fn batchEnd(self: *const Self) usize {
-            const stream_room = (self.stream_start +| self.stream_limit) - self.produced;
-            return RING + @as(usize, @intCast(@min(BATCH, self.max_output_bytes - self.produced, stream_room)));
+        fn flush(self: *Self) Error!void {
+            if (self.out_pos > self.seek) try self.writer.?.writeAll(self.decoder.buffer[self.seek..self.out_pos]);
+            self.seek = self.out_pos;
+            self.seek -= self.rebase(self.seek);
+        }
+
+        // `out` ends where the output limits stop this stream, or at the end of the buffer.
+        fn limit(self: *Self) void {
+            const at = self.position();
+            const allowed = @min(self.max_output_bytes - at, (self.stream_start +| self.stream_limit) - at);
+            const room = self.decoder.buffer.len - self.out_pos;
+            self.out = self.decoder.buffer[0 .. self.out_pos + @as(usize, @intCast(@min(room, allowed)))];
+        }
+
+        // No room: a limit (not the buffer's end) is what stopped decoding.
+        fn full(self: *const Self) Error!Stop {
+            if (self.out.len < self.decoder.buffer.len) return error.OutputLimitExceeded;
+            return .full;
+        }
+
+        fn decode(self: *Self) Error!Stop {
+            const br = self.br;
+            if (self.match_left != 0 and !self.copyMatch()) return self.full();
+            while (true) switch (self.block) {
+                .header => {
+                    if (self.final) {
+                        self.block = .end;
+                        return .end;
+                    }
+                    self.final = try br.get(1) != 0;
+                    switch (try br.get(2)) {
+                        0 => {
+                            br.alignByte();
+                            const len = try br.get(16);
+                            const nlen = try br.get(16);
+                            if (len != (~nlen & 0xffff)) return error.BadStored;
+                            self.stored_left = len;
+                            self.block = .stored;
+                        },
+                        1 => self.block = .fixed,
+                        2 => {
+                            try self.readTables();
+                            self.block = .dynamic;
+                        },
+                        else => return error.BadBlock,
+                    }
+                },
+                .stored => {
+                    while (self.stored_left != 0) {
+                        if (self.out_pos == self.out.len) return self.full();
+                        if (br.i == br.src.len and !try br.window(1)) return error.Truncated;
+                        const n = @min(self.stored_left, br.src.len - br.i, self.out.len - self.out_pos);
+                        self.put(try br.getBytes(n));
+                        self.stored_left -= n;
+                    }
+                    self.block = .header;
+                },
+                .fixed => switch (try decodeHuff(Check, self, &FIXED_TABLES.lit, &FIXED_TABLES.dist)) {
+                    .end => self.block = .header,
+                    .full => return self.full(),
+                },
+                .dynamic => switch (try decodeHuff(Check, self, &self.decoder.tables.lit_first, &self.decoder.tables.dist_first)) {
+                    .end => self.block = .header,
+                    .full => return self.full(),
+                },
+                .end => return .end,
+            };
+        }
+
+        fn readTables(self: *Self) Error!void {
+            const br = self.br;
+            const hlit = try br.get(5) + 257;
+            const hdist = try br.get(5) + 1;
+            const hclen = try br.get(4) + 4;
+            if (hlit > 286 or hdist > 32 or hclen > 19) return error.BadHuffman;
+            var clens: [19]u4 = .{0} ** 19;
+            var ci: u32 = 0;
+            while (ci < hclen) : (ci += 1) {
+                clens[CLEN_ORDER[ci]] = @intCast(try br.get(3));
+            }
+            var clen_first: [1 << 7]Entry = undefined;
+            try fillFirst(clen_first[0..], 7, clens[0..19], clenKind, clenPayload, false);
+            var all_lens: [318]u4 = .{0} ** 318;
+            const total_lens: usize = hlit + hdist;
+            try readDynLens(br, clen_first[0..], all_lens[0..total_lens]);
+            var lit_lens: [288]u4 = .{0} ** 288;
+            @memcpy(lit_lens[0..hlit], all_lens[0..hlit]);
+            var dist_lens: [32]u4 = .{0} ** 32;
+            @memcpy(dist_lens[0..hdist], all_lens[hlit..total_lens]);
+            if (lit_lens[256] == 0) return error.BadHuffman;
+            try fillTwoLevel(&self.decoder.tables.lit_first, &self.decoder.tables.lit_spill, 10, &lit_lens, litKind, litPayload, true);
+            try fillTwoLevel(&self.decoder.tables.dist_first, &self.decoder.tables.dist_spill, 9, &dist_lens, distKind, distPayload, true);
         }
 
         fn catchup(self: *Self) void {
             if (self.check_pos >= self.out_pos) return;
-            self.check.?.update(self.out[self.check_pos..self.out_pos]);
+            self.check.update(self.out[self.check_pos..self.out_pos]);
             self.check_pos = self.out_pos;
         }
 
-        fn flush(self: *Self, comptime keep_history: bool) !void {
-            const count = self.out_pos - RING;
-            if (count == 0) return;
-            self.catchup();
-            try self.writer.writeAll(self.out[RING..self.out_pos]);
-            if (keep_history) {
-                const history: usize = @intCast(@min(RING, self.position()));
-                @memmove(self.out[RING - history .. RING], self.out[self.out_pos - history .. self.out_pos]);
+        // Stored bytes; the caller made room for all of them.
+        fn put(self: *Self, bytes: []const u8) void {
+            const dest = self.out[self.out_pos..][0..bytes.len];
+            if (comptime @hasDecl(Check, "copyUpdate")) {
+                self.catchup();
+                self.check.copyUpdate(bytes, dest);
+                self.out_pos += bytes.len;
+                self.check_pos = self.out_pos;
+            } else {
+                @memcpy(dest, bytes);
+                self.out_pos += bytes.len;
             }
-            self.produced += count;
-            self.out_pos = RING;
-            self.check_pos = RING;
-            self.out = self.decoder.buffer[0..self.batchEnd()];
-            if (self.br) |br| br.putBack();
         }
 
-        fn room(self: *Self, comptime keep_history: bool) !void {
-            if (self.out_pos < self.out.len) return;
-            try self.flush(keep_history);
-            if (self.out_pos == self.out.len) return error.OutputLimitExceeded;
-        }
-
-        fn emitByte(self: *Self, value: u8) !void {
-            try self.room(true);
-            self.out[self.out_pos] = value;
-            self.out_pos += 1;
-        }
-
-        fn emitMatch(self: *Self, distance: usize, length: usize) !void {
+        fn startMatch(self: *Self, distance: usize, length: usize) Error!bool {
             if (distance == 0 or distance > RING or distance > self.position() - self.stream_start) return error.BadDistance;
-            var left = length;
-            while (left != 0) {
-                try self.room(true);
-                const n = @min(left, self.out.len - self.out_pos);
-                if (distance == 1) {
-                    copy.dist1Broadcast32(self.out[self.out_pos..][0..n], self.out[self.out_pos - 1]);
-                } else {
-                    copy.matchVec16(self.out, self.out_pos, distance, n);
-                }
-                self.out_pos += n;
-                left -= n;
-            }
+            self.match_distance = distance;
+            self.match_left = length;
+            return self.copyMatch();
         }
 
-        fn emitSlice(self: *Self, bytes: []const u8, comptime keep_history: bool) !void {
-            var off: usize = 0;
-            while (off < bytes.len) {
-                try self.room(keep_history);
-                const n = @min(bytes.len - off, self.out.len - self.out_pos);
-                if (comptime @hasDecl(Check, "copyUpdate")) {
-                    self.catchup();
-                    self.check.?.copyUpdate(bytes[off..][0..n], self.out[self.out_pos..][0..n]);
-                    self.out_pos += n;
-                    self.check_pos = self.out_pos;
-                } else {
-                    @memcpy(self.out[self.out_pos..][0..n], bytes[off..][0..n]);
-                    self.out_pos += n;
-                }
-                off += n;
+        // Copies what fits of the pending match; true when none is left.
+        fn copyMatch(self: *Self) bool {
+            const n = @min(self.match_left, self.out.len - self.out_pos);
+            if (self.match_distance == 1) {
+                copy.dist1Broadcast32(self.out[self.out_pos..][0..n], self.out[self.out_pos - 1]);
+            } else {
+                copy.matchVec16(self.out, self.out_pos, self.match_distance, n);
             }
+            self.out_pos += n;
+            self.match_left -= n;
+            return self.match_left == 0;
         }
     };
 }
@@ -662,7 +720,7 @@ fn decodeFast(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
 }
 
 fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry, comptime full_history: bool) !bool {
-    const br = ctx.br.?;
+    const br = ctx.br;
     var bits = br.bits;
     var count = br.nbits;
     var index = br.i;
@@ -678,6 +736,8 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
         ctx.out_pos = op;
     }
     if (output.len - op < 289 or input.len - index < 8) return false;
+    // The refill below shifts by the bit count, which must stay under 64 (a pause puts whole bytes back).
+    std.debug.assert(count < 64);
     const first_word = std.mem.readInt(u64, input[index..][0..8], .little);
     var e = lit[@intCast((bits | (first_word << @intCast(count))) & ((1 << 10) - 1))];
     // Eight-byte reads leave >=16 physical bits after each <=48-bit token.
@@ -731,20 +791,21 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
     return false;
 }
 
-fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) !void {
-    const br = ctx.br.?;
+// `.end` at the end-of-block code; `.full` before a literal or match finds no room, or with a match pending.
+fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) Error!Stop {
+    const br = ctx.br;
     while (true) {
         if (br.src.len - br.i < 8) {
             if (br.nbits >= 10) {
                 const buffered = peekFirst(lit, 10, br.bits);
                 if (buffered.kind == .eob) {
                     br.consume(buffered.nbits);
-                    return;
+                    return .end;
                 }
             }
             _ = try br.window(8);
         }
-        if (try @call(.never_inline, decodeFast, .{ Check, ctx, lit, dist })) return;
+        if (try @call(.never_inline, decodeFast, .{ Check, ctx, lit, dist })) return .end;
         // A stream may end at the end of the input (raw DEFLATE has no trailer), so fewer than 15 bits
         // can remain; a code that is invalid or longer than what remains is then a truncation.
         try br.fill(15);
@@ -754,13 +815,16 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
         switch (e.kind) {
             .eob => {
                 br.consume(e.nbits);
-                return;
+                return .end;
             },
             .lit => {
+                if (ctx.out_pos == ctx.out.len) return .full;
                 br.consume(e.nbits);
-                try ctx.emitByte(@truncate(e.payload));
+                ctx.out[ctx.out_pos] = @truncate(e.payload);
+                ctx.out_pos += 1;
             },
             .len => {
+                if (ctx.out_pos == ctx.out.len) return .full;
                 br.consume(e.nbits);
                 const add = if (e.extra != 0) try br.get(e.extra) else 0;
                 const length: usize = e.payload + add;
@@ -771,7 +835,7 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
                 if (d.kind != .dist) return error.BadSymbol;
                 br.consume(d.nbits);
                 const dadd = if (d.extra != 0) try br.get(d.extra) else 0;
-                try ctx.emitMatch(d.payload + @as(usize, dadd), length);
+                if (!try ctx.startMatch(d.payload + @as(usize, dadd), length)) return .full;
             },
             else => return error.BadSymbol,
         }
@@ -2022,21 +2086,103 @@ test "[edge] - [deflate decoder]: decoded counters stop at the u64 output bound"
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var check: TestCheck = .{};
     var ctx: Session(TestCheck) = .{
-        .br = &br,
-        .check = &check,
         .decoder = decoder,
-        .out = decoder.buffer[0 .. RING + 1],
         .writer = &sink.writer,
-        .produced = std.math.maxInt(u64) - 1,
-        .stream_start = std.math.maxInt(u64) - 1,
+        .base = std.math.maxInt(u64) - 1,
         .max_output_bytes = std.math.maxInt(u64),
     };
-    try ctx.emitByte('A');
+    ctx.begin(&br, &check);
+    try std.testing.expectEqual(@as(usize, 1), ctx.out.len);
+    ctx.put("A");
     try std.testing.expectEqual(std.math.maxInt(u64), ctx.position());
-    try ctx.flush(false);
-    try std.testing.expectEqual(std.math.maxInt(u64), ctx.produced);
-    try std.testing.expectError(error.OutputLimitExceeded, ctx.emitByte('B'));
+    try std.testing.expectEqual(std.math.maxInt(u64), try ctx.finish());
+    try std.testing.expectError(error.OutputLimitExceeded, ctx.full());
     try std.testing.expectEqual(@as(u64, 1), sink.fullCount());
+}
+
+const SumCheck = struct {
+    bytes: u64 = 0,
+    sum: u64 = 0,
+
+    fn update(self: *SumCheck, data: []const u8) void {
+        self.bytes += data.len;
+        for (data, 0..) |b, i| self.sum +%= @as(u64, b) *% (self.bytes - data.len + i + 1);
+    }
+};
+
+// Reads `size` bytes at a time from a paused session, rebasing after each read while bytes stay unread.
+fn pumpSession(session: *Session(SumCheck), size: usize, expected: []const u8) !void {
+    var seek: usize = 0;
+    var got: usize = 0;
+    var stop = try session.run();
+    while (true) {
+        if (seek == session.out_pos) {
+            if (stop == .end) break;
+            seek -= session.rebase(seek);
+            stop = try session.run();
+            continue;
+        }
+        const n = @min(size, session.out_pos - seek);
+        try std.testing.expectEqualSlices(u8, expected[got..][0..n], session.decoder.buffer[seek..][0..n]);
+        got += n;
+        seek += n;
+        if (stop == .full and seek < session.out_pos) {
+            seek -= session.rebase(seek);
+            stop = try session.run();
+        }
+    }
+    try std.testing.expectEqual(expected.len, got);
+}
+
+test "[property] - [deflate decoder]: paused decoding returns the stream at every read size" {
+    const allocator = std.testing.allocator;
+    const decoder = try allocator.create(Decoder);
+    defer allocator.destroy(decoder);
+    const encoder = try allocator.create(Encoder);
+    defer allocator.destroy(encoder);
+    // Text-like runs, long matches across batch ends, and random stretches that become stored blocks.
+    const plain = try allocator.alloc(u8, 420_000);
+    defer allocator.free(plain);
+    var random = std.Random.DefaultPrng.init(41);
+    for (plain, 0..) |*b, i| b.* = switch ((i / 50_000) % 3) {
+        0 => "ACGTTGCA\n"[(i * i / 3 + i / 11) % 9],
+        1 => @truncate(i / 700),
+        else => random.random().int(u8),
+    };
+    var expected: SumCheck = .{};
+    expected.update(plain);
+    const compressed = try allocator.alloc(u8, plain.len + plain.len / 8 + 1024);
+    defer allocator.free(compressed);
+    for ([_]Level{ .fast, .even, .dense }) |level| {
+        var plain_reader = std.Io.Reader.fixed(plain);
+        var writer = std.Io.Writer.fixed(compressed);
+        var encode_check: TestCheck = .{};
+        _ = try encoder.encodeStream(TestCheck, &plain_reader, &writer, &encode_check, level);
+        for ([_]usize{ 1, 7, 4093, 65536, 1 << 20 }) |size| {
+            if (size == 1 and level != .even) continue;
+            var reader = std.Io.Reader.fixed(writer.buffered());
+            var br: BitReader = .{ .reader = &reader };
+            var check: SumCheck = .{};
+            var session: Session(SumCheck) = .{ .decoder = decoder, .max_output_bytes = std.math.maxInt(u64) };
+            session.begin(&br, &check);
+            try pumpSession(&session, size, plain);
+            try std.testing.expectEqual(@as(u64, plain.len), session.position());
+            try std.testing.expectEqual(expected, check);
+        }
+        // An output limit equal to the stream's size is met; one byte less is exceeded.
+        for ([_]u64{ plain.len, plain.len - 1 }) |max| {
+            var reader = std.Io.Reader.fixed(writer.buffered());
+            var br: BitReader = .{ .reader = &reader };
+            var check: SumCheck = .{};
+            var session: Session(SumCheck) = .{ .decoder = decoder, .max_output_bytes = max };
+            session.begin(&br, &check);
+            if (max == plain.len) {
+                try pumpSession(&session, 65536, plain);
+            } else {
+                try std.testing.expectError(error.OutputLimitExceeded, pumpSession(&session, 65536, plain));
+            }
+        }
+    }
 }
 
 test "[edge] - [deflate decoder]: streams whose last code ends at the end of input decode" {
@@ -2062,25 +2208,6 @@ test "[edge] - [deflate decoder]: streams whose last code ends at the end of inp
         try std.testing.expectEqual(@as(u64, case[1].len), try session.stream(&br, &check));
         _ = try session.finish();
         try std.testing.expectEqualSlices(u8, case[1], writer.buffered());
-    }
-}
-
-test "[edge] - [deflate decoder]: a finished or failed stream keeps no pointer to the caller's check" {
-    const decoder = try std.testing.allocator.create(Decoder);
-    defer std.testing.allocator.destroy(decoder);
-    var output: [8]u8 = undefined;
-    for ([_][]const u8{ &.{ 0x01, 0x03, 0x00, 0xfc, 0xff, 'a', 'b', 'c' }, &.{ 0x01, 0x03, 0x00, 0xfc, 0xfe } }) |input| {
-        var reader = std.Io.Reader.fixed(input);
-        var br: BitReader = .{ .reader = &reader };
-        var writer = std.Io.Writer.fixed(&output);
-        var check: TestCheck = .{};
-        var session = decoder.session(TestCheck, &writer, .{});
-        if (input.len == 8) {
-            try std.testing.expectEqual(@as(u64, 3), try session.stream(&br, &check));
-        } else {
-            try std.testing.expectError(error.BadStored, session.stream(&br, &check));
-        }
-        try std.testing.expectEqual(@as(?*TestCheck, null), session.check);
     }
 }
 
@@ -2116,6 +2243,7 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
                 .check = &check,
                 .decoder = decoder,
                 .out = decoder.buffer[0 .. RING + room],
+                .out_pos = RING,
                 .writer = &sink.writer,
                 .max_output_bytes = std.math.maxInt(u64),
             };
@@ -2163,7 +2291,7 @@ test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-
             .decoder = decoder,
             .out = &decoder.buffer,
             .writer = &sink.writer,
-            .produced = RING,
+            .out_pos = RING,
             .max_output_bytes = std.math.maxInt(u64),
         };
         try std.testing.expect(try decodeFastImpl(TestCheck, &ctx, &decoder.tables.lit_first, &decoder.tables.dist_first, true));
