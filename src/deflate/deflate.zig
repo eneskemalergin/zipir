@@ -858,118 +858,98 @@ const BitWriter = struct {
 
 // Over-depth trees fall back to fixed or stored blocks.
 const EncodeTree = struct {
-    const Node = struct { weight: u32, parent: u16 = 0 };
     lens: [288]u4 = @splat(0),
     codes: [288]u16 = undefined,
 
     fn build(self: *EncodeTree, freq: []const u32, max_bits: u4) bool {
-        var nodes: [576]Node = undefined;
-        var heap: [288]u16 = undefined;
-        var size: usize = 0;
+        var keys: [288]u64 = undefined;
+        var n: usize = 0;
         @memset(&self.lens, 0);
         for (freq, 0..) |f, i| {
-            nodes[i] = .{ .weight = f };
             if (f == 0) continue;
-            var j = size;
-            size += 1;
-            while (j != 0) {
-                const parent = (j - 1) / 2;
-                if (nodes[heap[parent]].weight <= f) break;
-                heap[j] = heap[parent];
-                j = parent;
-            }
-            heap[j] = @intCast(i);
-        }
-        if (size == 0) return false;
-        var next: usize = freq.len;
-        while (size > 1) {
-            const a = heap[0];
-            size -= 1;
-            heap[0] = heap[size];
-            sift(&heap, size, &nodes);
-            const b = heap[0];
-            nodes[next] = .{ .weight = nodes[a].weight + nodes[b].weight };
-            nodes[a].parent = @intCast(next);
-            nodes[b].parent = @intCast(next);
-            heap[0] = @intCast(next);
-            sift(&heap, size, &nodes);
-            next += 1;
-        }
-        for (freq, 0..) |f, i| {
-            if (f == 0) continue;
-            var p = i;
-            var depth: u8 = 0;
-            while (nodes[p].parent != 0) {
-                depth += 1;
-                if (depth > max_bits) return self.limit(freq, &nodes, max_bits);
-                p = nodes[p].parent;
-            }
-            self.lens[i] = @intCast(@max(1, depth));
-        }
-        return self.canonical();
-    }
-
-    // JPEG Annex K.3: each step lifts two deepest leaves and splits a shallower one, so the
-    // Kraft sum stays 1 and a shallower leaf always exists while depth exceeds max_bits.
-    noinline fn limit(self: *EncodeTree, freq: []const u32, nodes: *const [576]Node, max_bits: u4) bool {
-        var depths: [288]u16 = @splat(0);
-        var count: [288]u32 = @splat(0);
-        var max_depth: usize = 0;
-        var order: [288]u16 = undefined;
-        var n: usize = 0;
-        for (freq, 0..) |f, i| {
-            if (f == 0) continue;
-            var p = i;
-            var depth: u16 = 0;
-            while (nodes[p].parent != 0) : (p = nodes[p].parent) depth += 1;
-            depths[i] = @max(1, depth);
-            count[depths[i]] += 1;
-            max_depth = @max(max_depth, depths[i]);
-            order[n] = @intCast(i);
+            keys[n] = @as(u64, f) << 9 | i;
             n += 1;
         }
-        var len = max_depth;
+        if (n == 0) return false;
+        if (n == 1) {
+            self.lens[@intCast(keys[0] & 511)] = 1;
+            return self.canonical();
+        }
+        std.sort.pdq(u64, keys[0..n], {}, std.sort.asc(u64));
+        var a: [288]u32 = undefined;
+        for (keys[0..n], 0..) |k, i| a[i] = @intCast(k >> 9);
+        // Moffat and Katajainen, "In-place calculation of minimum-redundancy codes": a[i] ends as the code
+        // length of the i-th least frequent symbol.
+        a[0] += a[1];
+        var root: usize = 0;
+        var leaf: usize = 2;
+        var next: usize = 1;
+        while (next < n - 1) : (next += 1) {
+            if (leaf >= n or a[root] < a[leaf]) {
+                a[next] = a[root];
+                a[root] = @intCast(next);
+                root += 1;
+            } else {
+                a[next] = a[leaf];
+                leaf += 1;
+            }
+            if (leaf >= n or (root < next and a[root] < a[leaf])) {
+                a[next] += a[root];
+                a[root] = @intCast(next);
+                root += 1;
+            } else {
+                a[next] += a[leaf];
+                leaf += 1;
+            }
+        }
+        a[n - 2] = 0;
+        var j: usize = n - 2;
+        while (j > 0) {
+            j -= 1;
+            a[j] = a[a[j]] + 1;
+        }
+        var avail: usize = 1;
+        var used: usize = 0;
+        var depth: u32 = 0;
+        var r: isize = @as(isize, @intCast(n)) - 2;
+        var out: isize = @as(isize, @intCast(n)) - 1;
+        while (avail > 0) {
+            while (r >= 0 and a[@intCast(r)] == depth) {
+                used += 1;
+                r -= 1;
+            }
+            while (avail > used) {
+                a[@intCast(out)] = depth;
+                out -= 1;
+                avail -= 1;
+            }
+            avail = 2 * used;
+            depth += 1;
+            used = 0;
+        }
+        // a[0] is the longest code; limit the depth on the length counts (JPEG Annex K.3), then give the
+        // shortest lengths to the most frequent symbols.
+        var count: [33]u32 = @splat(0);
+        for (a[0..n]) |l| count[l] += 1;
+        var len: usize = a[0];
         while (len > max_bits) : (len -= 1) {
             while (count[len] > 0) {
-                var j = len - 2;
-                while (count[j] == 0) j -= 1;
+                var k = len - 2;
+                while (count[k] == 0) k -= 1;
                 count[len] -= 2;
                 count[len - 1] += 1;
-                count[j + 1] += 2;
-                count[j] -= 1;
+                count[k + 1] += 2;
+                count[k] -= 1;
             }
         }
-        // Shallowest original depth, then highest frequency, receives the shortest new length.
-        for (1..n) |i| {
-            const x = order[i];
-            var j = i;
-            while (j > 0) : (j -= 1) {
-                const y = order[j - 1];
-                if (depths[x] > depths[y] or (depths[x] == depths[y] and freq[x] <= freq[y])) break;
-                order[j] = y;
-            }
-            order[j] = x;
-        }
-        var k: usize = 0;
+        var s: usize = n;
         for (1..@as(usize, max_bits) + 1) |l| {
-            for (order[k..][0..count[l]]) |s| self.lens[s] = @intCast(l);
-            k += count[l];
+            for (0..count[l]) |_| {
+                s -= 1;
+                self.lens[@intCast(keys[s] & 511)] = @intCast(l);
+            }
         }
-        std.debug.assert(k == n);
         return self.canonical();
-    }
-
-    fn sift(heap: *[288]u16, size: usize, nodes: *const [576]Node) void {
-        const value = heap[0];
-        var p: usize = 0;
-        while (p * 2 + 1 < size) {
-            var child = p * 2 + 1;
-            if (child + 1 < size and nodes[heap[child + 1]].weight < nodes[heap[child]].weight) child += 1;
-            if (nodes[value].weight <= nodes[heap[child]].weight) break;
-            heap[p] = heap[child];
-            p = child;
-        }
-        heap[p] = value;
     }
 
     fn canonical(self: *EncodeTree) bool {
@@ -1065,6 +1045,21 @@ const ICF_CAP = RING + 4;
 
 // fast hashes into the first FAST_HASH heads: 2^16 cost it 2% to 5% for 0.1% to 0.5% more ratio.
 const FAST_HASH = 32768;
+
+const LOG2_FRACTION: [256]f64 = blk: {
+    @setEvalBranchQuota(10000);
+    var t: [256]f64 = undefined;
+    for (&t, 0..) |*e, i| e.* = @log2(1.0 + @as(f64, @floatFromInt(i)) / 256.0);
+    break :blk t;
+};
+
+/// log2 of a count to about 0.006: the exponent plus eight fraction bits (for estimates only).
+fn log2Table(x: u32) f64 {
+    if (x == 0) return 0;
+    const e = std.math.log2_int(u32, x);
+    const m: u32 = if (e >= 8) (x >> @intCast(e - 8)) & 0xff else (x << @intCast(8 - e)) & 0xff;
+    return @as(f64, @floatFromInt(e)) + LOG2_FRACTION[m];
+}
 
 fn fastHash(v: u32) usize {
     return (v *% 0x1e35a7bd) >> 17;
@@ -1532,20 +1527,39 @@ pub const Encoder = struct {
         second_lit[256] = 1;
         var second_dist: [30]u32 = undefined;
         for (&second_dist, self.dist_freq, first_dist) |*d, all, first| d.* = all - first;
-        var merged: Plan = undefined;
-        merged.init(&self.lit_freq, &self.dist_freq);
+        const estimate = struct {
+            /// Coded bits under ideal codes plus extra bits, and a header allowance per used symbol (a stand-in
+            /// for building the trees: about 3% of the time on BGZF blocks); capped at the stored size.
+            fn of(lit_freq: *const [286]u32, dist_freq: *const [30]u32, len: usize) f64 {
+                var total: f64 = 0;
+                for (lit_freq) |f| total += @floatFromInt(f);
+                var dist_total: f64 = 0;
+                for (dist_freq) |f| dist_total += @floatFromInt(f);
+                var b: f64 = 17 * 8;
+                const lt = log2Table(@intFromFloat(total));
+                const dt = log2Table(@intFromFloat(dist_total));
+                for (lit_freq, 0..) |f, i| {
+                    if (f == 0) continue;
+                    const x: f64 = @floatFromInt(f);
+                    b += x * (lt - log2Table(f) + @as(f64, if (i >= 257) @floatFromInt(LEN_EXTRA[i - 257]) else 0)) + 4;
+                }
+                for (dist_freq, 0..) |f, i| {
+                    if (f == 0) continue;
+                    const x: f64 = @floatFromInt(f);
+                    b += x * (dt - log2Table(f) + @as(f64, @floatFromInt(DIST_EXTRA[i]))) + 4;
+                }
+                return @min(b, 40 + 8 * @as(f64, @floatFromInt(len)));
+            }
+        }.of;
+        if (estimate(&self.lit_freq, &self.dist_freq, end) <= estimate(first_lit, first_dist, RING) + estimate(&second_lit, &second_dist, end - RING)) {
+            var merged: Plan = undefined;
+            merged.init(&self.lit_freq, &self.dist_freq);
+            return self.emitPlanned(bits, &merged, self.window[0..end], self.icf[0..self.icf_count], last);
+        }
         var first: Plan = undefined;
         first.init(first_lit, first_dist);
         var second: Plan = undefined;
         second.init(&second_lit, &second_dist);
-        const stored_bits = struct {
-            fn of(len: usize) u64 {
-                return 3 + 7 + 32 * ((len + 65534) / 65535) + 8 * @as(u64, len);
-            }
-        }.of;
-        const one = @min(merged.bits(), stored_bits(end));
-        const two = @min(first.bits(), stored_bits(RING)) + @min(second.bits(), stored_bits(end - RING));
-        if (one <= two) return self.emitPlanned(bits, &merged, self.window[0..end], self.icf[0..self.icf_count], last);
         _ = try self.emitPlanned(bits, &first, self.window[0..RING], self.icf[0..first_tokens], false);
         return self.emitPlanned(bits, &second, self.window[RING..end], self.icf[first_tokens..self.icf_count], last);
     }
