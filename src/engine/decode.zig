@@ -646,32 +646,36 @@ fn decodeFast(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
 
 fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry, comptime full_history: bool) !bool {
     const br = ctx.br;
-    var bits = br.bits;
-    var count = br.nbits;
-    var index = br.i;
-    var op = ctx.out_pos;
-    const initial_op = op;
-    const history = ctx.position() - ctx.stream_start;
     const output = ctx.out;
     const input = br.src;
+    if (output.len - ctx.out_pos < 289 or input.len - br.i < 8) return false;
+    // The refill below shifts by the bit count, which must stay under 64 (a pause puts whole bytes back).
+    std.debug.assert(br.nbits < 64);
+    // Moving pointers and stop pointers instead of bases, indexes, and lengths: two fewer live registers, so the
+    // table pointers stay in registers, and each bound is one compare.
+    var bits = br.bits;
+    var count = br.nbits;
+    var in: [*]const u8 = input.ptr + br.i;
+    const in_stop: [*]const u8 = input.ptr + (input.len - 8);
+    var out: [*]u8 = output.ptr + ctx.out_pos;
+    const out_start = out;
+    const out_stop: [*]u8 = output.ptr + (output.len - 289);
+    const history = ctx.position() - ctx.stream_start;
     // Only the low byte of `count` is the bit count: whole raw entries are subtracted from it.
     defer {
         br.bits = bits;
         br.nbits = count & 0xff;
-        br.i = index;
-        ctx.out_pos = op;
+        br.i = @intFromPtr(in) - @intFromPtr(input.ptr);
+        ctx.out_pos = @intFromPtr(out) - @intFromPtr(output.ptr);
     }
-    if (output.len - op < 289 or input.len - index < 8) return false;
-    // The refill below shifts by the bit count, which must stay under 64 (a pause puts whole bytes back).
-    std.debug.assert(count < 64);
-    const first_word = std.mem.readInt(u64, input[index..][0..8], .little);
+    const first_word = std.mem.readInt(u64, in[0..8], .little);
     var e = lit[@intCast((bits | (first_word << @intCast(count))) & ((1 << 10) - 1))];
     // Eight-byte reads leave >=16 physical bits after each <=48-bit token.
     // Wild copies require 289 owned bytes; prefetched entries do not consume bits.
-    while (output.len - op >= 289 and input.len - index >= 8) {
-        const word = std.mem.readInt(u64, input[index..][0..8], .little);
+    while (@intFromPtr(out) <= @intFromPtr(out_stop) and @intFromPtr(in) <= @intFromPtr(in_stop)) {
+        const word = std.mem.readInt(u64, in[0..8], .little);
         bits |= word << @as(u6, @truncate(count));
-        index += 7 - (@as(u8, @truncate(count)) >> 3);
+        in += 7 - (@as(u8, @truncate(count)) >> 3);
         count |= 56;
         if (e.kind == .long) e = lookupLong(e, &ctx.decoder.tables.lit_spill, bits, 10);
         if (e.kind == .invalid or e.kind == .dist) return error.BadSymbol;
@@ -680,8 +684,8 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
         count -%= raw;
         if (e.kind == .eob) return true;
         if (e.kind == .lit) {
-            output[op] = @truncate(e.payload);
-            op += 1;
+            out[0] = @truncate(e.payload);
+            out += 1;
             e = lit[@intCast(bits & ((1 << 10) - 1))];
             continue;
         }
@@ -701,19 +705,21 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
         bits >>= dx;
         count -%= dx;
         const next = lit[@intCast(bits & ((1 << 10) - 1))];
-        if (!full_history and distance > history + (op - initial_op)) return error.BadDistance;
+        const decoded = history + (@intFromPtr(out) - @intFromPtr(out_start));
+        if (!full_history and distance > decoded) return error.BadDistance;
         if (distance >= 32) {
             var j: usize = 0;
             while (j < length) : (j += 32) {
-                const chunk: @Vector(32, u8) = output[op + j - distance ..][0..32].*;
-                output[op + j ..][0..32].* = chunk;
+                const chunk: @Vector(32, u8) = (out + j - distance)[0..32].*;
+                (out + j)[0..32].* = chunk;
             }
-        } else if (full_history or history + (op - initial_op) >= 32) {
-            copy.repeatSmall(output, op, distance, length);
+        } else if (full_history or decoded >= 32) {
+            // 32 bytes of history before `out`, and the 289 owned bytes after it.
+            copy.repeatSmall((out - 32)[0 .. 32 + 289], 32, distance, length);
         } else {
-            copy.matchVec16(output, op, distance, length);
+            copy.matchVec16((out - distance)[0 .. distance + length], distance, distance, length);
         }
-        op += length;
+        out += length;
         e = next;
     }
     return false;
