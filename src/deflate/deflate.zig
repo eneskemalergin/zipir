@@ -1080,10 +1080,8 @@ pub const Encoder = struct {
     window: [2 * RING]u8 = undefined,
     head: [ENCODE_HASH]u16 = undefined,
     previous: [RING]u16 = undefined,
-    tokens: [2 * (RING + RING / 4 + 2)]u8 = undefined,
     lit_freq: [286]u32 = undefined,
     dist_freq: [30]u32 = undefined,
-    token_bytes: usize = undefined,
     // fast: self-contained tokens (see `parseFast`), one block per two windows.
     icf: [ICF_CAP]u32 = undefined,
     icf_count: usize = undefined,
@@ -1132,7 +1130,7 @@ pub const Encoder = struct {
                 if (!last and !pending) {
                     pending = true;
                 } else {
-                    _ = try self.emit(&bits, self.window[if (pending) 0 else history..end], last, true);
+                    _ = try self.emit(&bits, self.window[if (pending) 0 else history..end], last);
                     pending = false;
                 }
             } else {
@@ -1142,13 +1140,13 @@ pub const Encoder = struct {
                     // The first window of a pair: its counts price it as a block of its own later.
                     first_lit = self.lit_freq;
                     first_dist = self.dist_freq;
-                    first_tokens = self.token_bytes;
+                    first_tokens = self.icf_count;
                     pending = true;
                 } else if (pending) {
                     skip_search = try self.emitPair(&bits, end, last, &first_lit, &first_dist, first_tokens);
                     pending = false;
                 } else {
-                    skip_search = try self.emit(&bits, self.window[history..end], last, false);
+                    skip_search = try self.emit(&bits, self.window[history..end], last);
                 }
             }
             if (last) break;
@@ -1345,7 +1343,7 @@ pub const Encoder = struct {
             @memset(&self.lit_freq, 0);
             @memset(&self.dist_freq, 0);
             self.lit_freq[256] = 1;
-            self.token_bytes = 0;
+            self.icf_count = 0;
         }
         std.debug.assert(level != .fast);
         // dense (2026-09-27): a deeper walk, no early stop below the longest match, lazy evaluation up to 32 bytes
@@ -1354,7 +1352,9 @@ pub const Encoder = struct {
         const nice: usize = if (level == .dense) 258 else 96;
         const lazy_below: usize = if (level == .dense) 32 else 16;
         var p = start;
-        var literal_start = start;
+        var n = self.icf_count;
+        // A literal waiting for a second one to share its token.
+        var held: ?u8 = null;
         var pending: Match = .{};
         var pending_hash: usize = 0;
         var pending_pos: usize = 0;
@@ -1379,7 +1379,16 @@ pub const Encoder = struct {
             q = start;
             while (q + 3 <= end) : (q += 4) self.insert(q, self.hash(q, end, key));
             for (0..256) |b| self.lit_freq[b] += total[b];
-            self.addLiterals(end - start);
+            q = start;
+            while (q + 2 <= end) : (q += 2) {
+                self.icf[n] = @as(u32, self.window[q]) | (ICF_LITERAL + @as(u32, self.window[q + 1])) << 10;
+                n += 1;
+            }
+            if (q < end) {
+                self.icf[n] = @as(u32, self.window[q]) | ICF_NONE << 10;
+                n += 1;
+            }
+            self.icf_count = n;
             return;
         }
         while (p < end) {
@@ -1421,12 +1430,16 @@ pub const Encoder = struct {
                 }
             }
             if (m.len >= 3) {
-                self.addLiterals(p - literal_start);
-                std.mem.writeInt(u16, self.tokens[self.token_bytes..][0..2], @as(u16, @intCast(m.dist - 1)) | 0x8000, .little);
-                self.tokens[self.token_bytes + 2] = @intCast(m.len - 3);
-                self.token_bytes += 3;
+                if (held) |byte| {
+                    self.icf[n] = @as(u32, byte) | ICF_NONE << 10;
+                    n += 1;
+                    held = null;
+                }
+                const dc = distCode(m.dist);
+                self.icf[n] = @as(u32, @intCast(254 + m.len)) | @as(u32, @intCast(dc)) << 10 | @as(u32, @intCast(m.dist - DIST_BASE[dc])) << 19;
+                n += 1;
                 self.lit_freq[257 + @as(usize, LEN_CODE[m.len - 3])] += 1;
-                self.dist_freq[distCode(m.dist)] += 1;
+                self.dist_freq[dc] += 1;
                 const stop = p + m.len;
                 p += 1;
                 // A self-overlapping match (runs, short periods) repeats its last `dist` positions: insert the
@@ -1439,19 +1452,23 @@ pub const Encoder = struct {
                 while (p < stop) : (p += 1) {
                     if (p + 3 <= end) self.insert(p, self.hash(p, end, key));
                 }
-                literal_start = p;
             } else {
-                self.lit_freq[self.window[p]] += 1;
+                const byte = self.window[p];
+                self.lit_freq[byte] += 1;
+                if (held) |first| {
+                    self.icf[n] = @as(u32, first) | (ICF_LITERAL + @as(u32, byte)) << 10;
+                    n += 1;
+                    held = null;
+                } else held = byte;
                 p += 1;
             }
         }
-        self.addLiterals(end - literal_start);
-    }
-
-    fn addLiterals(self: *Encoder, n: usize) void {
-        if (n == 0) return;
-        std.mem.writeInt(u16, self.tokens[self.token_bytes..][0..2], @intCast(n - 1), .little);
-        self.token_bytes += 2;
+        if (held) |byte| {
+            self.icf[n] = @as(u32, byte) | ICF_NONE << 10;
+            n += 1;
+        }
+        std.debug.assert(n <= ICF_CAP);
+        self.icf_count = n;
     }
 
     fn cost(lit_freq: *const [286]u32, dist_freq: *const [30]u32, lit: *const EncodeTree, dist: *const EncodeTree) u64 {
@@ -1500,10 +1517,10 @@ pub const Encoder = struct {
         }
     };
 
-    fn emit(self: *const Encoder, bits: *BitWriter, raw: []const u8, last: bool, icf: bool) EncodeError!bool {
+    fn emit(self: *const Encoder, bits: *BitWriter, raw: []const u8, last: bool) EncodeError!bool {
         var plan: Plan = undefined;
         plan.init(&self.lit_freq, &self.dist_freq);
-        return self.emitPlanned(bits, &plan, raw, if (icf) null else self.tokens[0..self.token_bytes], last);
+        return self.emitPlanned(bits, &plan, raw, self.icf[0..self.icf_count], last);
     }
 
     /// A pair of windows (window[0..RING] and window[RING..end], tokens split at `first_tokens`) as one block or
@@ -1528,14 +1545,15 @@ pub const Encoder = struct {
         }.of;
         const one = @min(merged.bits(), stored_bits(end));
         const two = @min(first.bits(), stored_bits(RING)) + @min(second.bits(), stored_bits(end - RING));
-        if (one <= two) return self.emitPlanned(bits, &merged, self.window[0..end], self.tokens[0..self.token_bytes], last);
-        _ = try self.emitPlanned(bits, &first, self.window[0..RING], self.tokens[0..first_tokens], false);
-        return self.emitPlanned(bits, &second, self.window[RING..end], self.tokens[first_tokens..self.token_bytes], last);
+        if (one <= two) return self.emitPlanned(bits, &merged, self.window[0..end], self.icf[0..self.icf_count], last);
+        _ = try self.emitPlanned(bits, &first, self.window[0..RING], self.icf[0..first_tokens], false);
+        return self.emitPlanned(bits, &second, self.window[RING..end], self.icf[first_tokens..self.icf_count], last);
     }
 
-    /// Writes one block of `raw` as planned (or stored when smaller): the byte tokens `tokens`, or fast's tokens when
-    /// `tokens` is null. Returns whether the block was stored.
-    fn emitPlanned(self: *const Encoder, bits: *BitWriter, plan: *const Plan, raw: []const u8, tokens: ?[]const u8, last: bool) EncodeError!bool {
+    /// Writes one block of `raw` as planned (or stored when smaller) from its `tokens`. Returns whether the block was
+    /// stored.
+    fn emitPlanned(self: *const Encoder, bits: *BitWriter, plan: *const Plan, raw: []const u8, tokens: []const u32, last: bool) EncodeError!bool {
+        _ = self;
         const stored = 3 + ((8 - ((@as(usize, bits.count) + 3) & 7)) & 7) + 32 + raw.len * 8;
         if (stored < plan.fixed and stored <= plan.dynamic) {
             // A block of two windows is one byte more than a stored block holds.
@@ -1565,16 +1583,16 @@ pub const Encoder = struct {
                 try bits.symbol(&plan.code, sym);
                 try bits.put(e, w);
             }
-            if (tokens) |t| try emitTokens(t, bits, raw, &plan.lit, &plan.dist) else try self.emitIcf(bits, &plan.lit, &plan.dist);
+            try emitIcf(tokens, bits, &plan.lit, &plan.dist);
         } else {
             try bits.put(2 | @as(u32, @intFromBool(last)), 3);
-            if (tokens) |t| try emitTokens(t, bits, raw, &FIXED_LIT, &FIXED_DIST) else try self.emitIcf(bits, &FIXED_LIT, &FIXED_DIST);
+            try emitIcf(tokens, bits, &FIXED_LIT, &FIXED_DIST);
         }
         try bits.drain();
         return false;
     }
 
-    fn emitIcf(self: *const Encoder, bits: *BitWriter, lit: *const EncodeTree, dist: *const EncodeTree) EncodeError!void {
+    fn emitIcf(tokens: []const u32, bits: *BitWriter, lit: *const EncodeTree, dist: *const EncodeTree) EncodeError!void {
         // First symbol: code | length << 32, a match's length extra bits merged into the code.
         var first: [513]u64 = undefined;
         for (first[0..256], 0..) |*e, s| e.* = lit.codes[s] | (@as(u64, lit.lens[s]) << 32);
@@ -1603,9 +1621,9 @@ pub const Encoder = struct {
             std.debug.assert(count <= 7);
             // Two tokens per step: one add and one store when they fit in 56 bits together (the common case),
             // which halves the chain of dependent bit-buffer updates.
-            while (i + 2 <= self.icf_count and buf.len - pos >= 16) : (i += 2) {
-                const c0 = icfCode(self.icf[i], &first, &second);
-                const c1 = icfCode(self.icf[i + 1], &first, &second);
+            while (i + 2 <= tokens.len and buf.len - pos >= 16) : (i += 2) {
+                const c0 = icfCode(tokens[i], &first, &second);
+                const c1 = icfCode(tokens[i + 1], &first, &second);
                 if (c0.len + c1.len <= 56) {
                     value |= (c0.bits | (c1.bits << @intCast(c0.len))) << @intCast(count);
                     count += c0.len + c1.len;
@@ -1624,8 +1642,8 @@ pub const Encoder = struct {
                 value >>= @intCast(count & 56);
                 count &= 7;
             }
-            while (i < self.icf_count and buf.len - pos >= 8) : (i += 1) {
-                const code = icfCode(self.icf[i], &first, &second);
+            while (i < tokens.len and buf.len - pos >= 8) : (i += 1) {
+                const code = icfCode(tokens[i], &first, &second);
                 value |= code.bits << @intCast(count);
                 count += code.len;
                 std.mem.writeInt(u64, buf[pos..][0..8], value, .little);
@@ -1636,9 +1654,9 @@ pub const Encoder = struct {
             w.end = pos;
             bits.value = value;
             bits.count = count;
-            if (i == self.icf_count) break;
+            if (i == tokens.len) break;
             // Under 8 bytes of room: one token through the writer, which drains its buffer.
-            const code = icfCode(self.icf[i], &first, &second);
+            const code = icfCode(tokens[i], &first, &second);
             i += 1;
             // `put` takes at most 16 bits; the bits above `len` are zero.
             try bits.put(@as(u16, @truncate(code.bits)), @intCast(@min(code.len, 16)));
@@ -1661,108 +1679,10 @@ pub const Encoder = struct {
         const b_bits = (b & 0xffffffff) | (@as(u64, t >> 19) << b_len);
         return .{ .bits = (a & 0xffffffff) | (b_bits << a_len), .len = @as(u32, a_len) + b_len + @as(u32, @intCast(b >> 40)) };
     }
-
-    fn emitTokens(tokens: []const u8, bits: *BitWriter, raw: []const u8, lit: *const EncodeTree, dist: *const EncodeTree) EncodeError!void {
-        var lit_tab: [256]u64 = undefined;
-        for (&lit_tab, 0..) |*e, s| e.* = lit.codes[s] | (@as(u64, lit.lens[s]) << 32);
-        var len_tab: [256]u64 = undefined;
-        for (&len_tab, 0..) |*e, v| {
-            const l = LEN_CODE[v];
-            const code_len: u6 = lit.lens[257 + @as(usize, l)];
-            const extra = @as(u64, v) + 3 - LEN_BASE[l];
-            e.* = (lit.codes[257 + @as(usize, l)] | (extra << code_len)) | (@as(u64, code_len + LEN_EXTRA[l]) << 32);
-        }
-        var dist_tab: [30]u64 = undefined;
-        for (&dist_tab, 0..) |*e, c| e.* = dist.codes[c] | (@as(u64, dist.lens[c]) << 32);
-        try bits.drain();
-        var t: usize = 0;
-        var p: usize = 0;
-        var lit_end: usize = 0;
-        const w = bits.writer;
-        while (true) {
-            // Bit buffer and output position in registers; one unconditional 8-byte store per step (at most
-            // three literals or one match, so at most 55 bits are pending) while 8 bytes of room remain.
-            const buf = w.buffer;
-            var pos = w.end;
-            var value = bits.value;
-            var count: u32 = bits.count;
-            std.debug.assert(count <= 7);
-            while (buf.len - pos >= 8) {
-                if (p + 3 <= lit_end) {
-                    const e0 = lit_tab[raw[p]];
-                    const e1 = lit_tab[raw[p + 1]];
-                    const e2 = lit_tab[raw[p + 2]];
-                    value |= (e0 & 0xffffffff) << @intCast(count);
-                    count += @intCast(e0 >> 32);
-                    value |= (e1 & 0xffffffff) << @intCast(count);
-                    count += @intCast(e1 >> 32);
-                    value |= (e2 & 0xffffffff) << @intCast(count);
-                    count += @intCast(e2 >> 32);
-                    p += 3;
-                } else if (p < lit_end) {
-                    const e = lit_tab[raw[p]];
-                    value |= (e & 0xffffffff) << @intCast(count);
-                    count += @intCast(e >> 32);
-                    p += 1;
-                } else if (t < tokens.len) {
-                    const word = std.mem.readInt(u16, tokens[t..][0..2], .little);
-                    t += 2;
-                    if (word & 0x8000 == 0) {
-                        lit_end = p + @as(usize, word) + 1;
-                        continue;
-                    }
-                    const v = tokens[t];
-                    t += 1;
-                    const d = @as(usize, word & 0x7fff) + 1;
-                    const dc = distCode(d);
-                    const e0 = len_tab[v];
-                    const e1 = dist_tab[dc];
-                    value |= (e0 & 0xffffffff) << @intCast(count);
-                    count += @intCast(e0 >> 32);
-                    value |= (e1 & 0xffffffff) << @intCast(count);
-                    count += @intCast(e1 >> 32);
-                    value |= @as(u64, d - DIST_BASE[dc]) << @intCast(count);
-                    count += DIST_EXTRA[dc];
-                    p += @as(usize, v) + 3;
-                } else break;
-                std.mem.writeInt(u64, buf[pos..][0..8], value, .little);
-                pos += count >> 3;
-                value >>= @intCast(count & 56);
-                count &= 7;
-            }
-            w.end = pos;
-            bits.value = value;
-            bits.count = count;
-            if (p >= lit_end and t >= tokens.len) break;
-            // Under 8 bytes of room: one step through the writer, which drains its buffer.
-            if (p < lit_end) {
-                bits.add(lit_tab[raw[p]]);
-                p += 1;
-            } else {
-                const word = std.mem.readInt(u16, tokens[t..][0..2], .little);
-                t += 2;
-                if (word & 0x8000 == 0) {
-                    lit_end = p + @as(usize, word) + 1;
-                    continue;
-                }
-                const v = tokens[t];
-                t += 1;
-                const d = @as(usize, word & 0x7fff) + 1;
-                const dc = distCode(d);
-                bits.add(len_tab[v]);
-                bits.add(dist_tab[dc]);
-                bits.add(@as(u64, d - DIST_BASE[dc]) | (@as(u64, DIST_EXTRA[dc]) << 32));
-                p += @as(usize, v) + 3;
-            }
-            try bits.drain();
-        }
-        std.debug.assert(p == raw.len);
-        try bits.symbol(lit, 256);
-    }
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Encoder) == 476440);
+    std.debug.assert(@sizeOf(Encoder) == 394504);
 }
 
 const TestCheck = struct {

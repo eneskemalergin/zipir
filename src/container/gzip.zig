@@ -57,7 +57,7 @@ pub const Compressor = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Compressor) == 476440);
+    std.debug.assert(@sizeOf(Compressor) == 394504);
 }
 
 // Shared with BGZF. `Visitor` is `void` (plain gzip) or provides
