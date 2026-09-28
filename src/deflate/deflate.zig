@@ -1105,7 +1105,9 @@ pub const Encoder = struct {
         var size: u64 = 0;
         var lookahead: [1]u8 = undefined;
         var carried: usize = 0;
-        var skip_search = false;
+        // A BGZF block learns nothing from the block before it: its first window starts with the search provisionally
+        // off, so `hasEarlyMatch` (on a clean table) and the entropy check decide from the block itself.
+        var skip_search = block;
         // Windows go in pairs: the first is parsed and kept; after the slide it is the history half, so the pair's
         // bytes are window[0..end]. fast makes one block per pair; even and dense make one block or two,
         // whichever codes smaller (`emitPair`).
