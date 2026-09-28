@@ -58,6 +58,7 @@ const Fixture = struct {
 
 fn standard() !*Fixture {
     const f = try std.testing.allocator.create(Fixture);
+    errdefer std.testing.allocator.destroy(f);
     f.* = .{};
     var text: [60000]u8 = undefined;
     for (&text, 0..) |*b, i| b.* = "ACGT\n"[(i * 7 + i / 13) % 5];
