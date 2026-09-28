@@ -14,10 +14,6 @@ pub const DecompressOptions = struct {
     trailing_data: TrailingData = .reject,
 };
 
-pub const Limits = struct {
-    max_output_bytes: u64 = std.math.maxInt(u64),
-};
-
 // --- Huffman codes ---
 
 const CLEN_ORDER = [_]u8{ 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
@@ -238,10 +234,6 @@ const Tables = struct {
 pub const Decoder = struct {
     tables: Tables = undefined,
     buffer: [RING + BATCH]u8 = undefined,
-
-    pub fn session(self: *Decoder, comptime Check: type, writer: *std.Io.Writer, limits: Limits) Session(Check) {
-        return .{ .decoder = self, .writer = writer, .max_output_bytes = limits.max_output_bytes };
-    }
 };
 
 comptime {
@@ -263,15 +255,11 @@ pub fn Session(comptime Check: type) type {
         decoder: *Decoder,
         br: *BitReader = undefined,
         check: *Check = undefined,
-        // Whole-stream decoding (`stream`, `finish`) writes here.
-        writer: ?*std.Io.Writer = null,
         out: []u8 = &.{},
         out_pos: usize = 0,
         // Bytes decoded before `buffer[0]`: `position` is `base + out_pos`.
         base: u64 = 0,
         check_pos: usize = 0,
-        // Bytes before `seek` have been written to `writer`.
-        seek: usize = 0,
         stream_start: u64 = 0,
         max_output_bytes: u64,
         // Output cap for each stream (a BGZF block holds at most 65536 bytes), applied with max_output_bytes.
@@ -318,27 +306,8 @@ pub fn Session(comptime Check: type) type {
             return from;
         }
 
-        /// Decodes one whole stream into `writer`.
-        pub fn stream(self: *Self, br: *BitReader, check: *Check) Error!u64 {
-            self.begin(br, check);
-            while (try self.run() == .full) try self.flush();
-            return self.position() - self.stream_start;
-        }
-
-        /// Writes what `stream` left buffered; the result is every byte decoded.
-        pub fn finish(self: *Self) Error!u64 {
-            try self.flush();
-            return self.position();
-        }
-
         pub fn position(self: *const Self) u64 {
             return self.base + self.out_pos;
-        }
-
-        fn flush(self: *Self) Error!void {
-            if (self.out_pos > self.seek) try self.writer.?.writeAll(self.decoder.buffer[self.seek..self.out_pos]);
-            self.seek = self.out_pos;
-            self.seek -= self.rebase(self.seek);
         }
 
         // `out` ends where the output limits stop this stream, or at the end of the buffer.
@@ -2084,11 +2053,9 @@ test "[edge] - [deflate decoder]: decoded counters stop at the u64 output bound"
     defer std.testing.allocator.destroy(decoder);
     var reader = std.Io.Reader.fixed("");
     var br: BitReader = .{ .reader = &reader };
-    var sink: std.Io.Writer.Discarding = .init(&.{});
     var check: TestCheck = .{};
     var ctx: Session(TestCheck) = .{
         .decoder = decoder,
-        .writer = &sink.writer,
         .base = std.math.maxInt(u64) - 1,
         .max_output_bytes = std.math.maxInt(u64),
     };
@@ -2096,9 +2063,9 @@ test "[edge] - [deflate decoder]: decoded counters stop at the u64 output bound"
     try std.testing.expectEqual(@as(usize, 1), ctx.out.len);
     ctx.put("A");
     try std.testing.expectEqual(std.math.maxInt(u64), ctx.position());
-    try std.testing.expectEqual(std.math.maxInt(u64), try ctx.finish());
+    _ = ctx.rebase(ctx.out_pos);
+    try std.testing.expectEqual(std.math.maxInt(u64), ctx.position());
     try std.testing.expectError(error.OutputLimitExceeded, ctx.full());
-    try std.testing.expectEqual(@as(u64, 1), sink.fullCount());
 }
 
 const SumCheck = struct {
@@ -2199,23 +2166,20 @@ test "[edge] - [deflate decoder]: streams whose last code ends at the end of inp
     var encode_check: TestCheck = .{};
     _ = try encoder.encodeStream(TestCheck, &plain_reader, &dynamic_writer, &encode_check, .even);
     const cases = .{ .{ "\x73\x04\x00", "A" }, .{ dynamic_writer.buffered(), &plain } };
-    var output: [3000]u8 = undefined;
     inline for (cases) |case| {
         var reader = std.Io.Reader.fixed(case[0]);
         var br: BitReader = .{ .reader = &reader };
-        var writer = std.Io.Writer.fixed(&output);
         var check: TestCheck = .{};
-        var session = decoder.session(TestCheck, &writer, .{});
-        try std.testing.expectEqual(@as(u64, case[1].len), try session.stream(&br, &check));
-        _ = try session.finish();
-        try std.testing.expectEqualSlices(u8, case[1], writer.buffered());
+        var session: Session(TestCheck) = .{ .decoder = decoder, .max_output_bytes = std.math.maxInt(u64) };
+        session.begin(&br, &check);
+        try std.testing.expectEqual(Stop.end, try session.run());
+        try std.testing.expectEqualSlices(u8, case[1], decoder.buffer[0..session.out_pos]);
     }
 }
 
 test "[property] - [deflate decoder]: fast literals consume exact bits within output room" {
     const decoder = try std.testing.allocator.create(Decoder);
     defer std.testing.allocator.destroy(decoder);
-    var sink: std.Io.Writer.Discarding = .init(&.{});
     for (0..65) |length| {
         var input: [128]u8 = @splat(0);
         var plain: [64]u8 = undefined;
@@ -2245,7 +2209,6 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
                 .decoder = decoder,
                 .out = decoder.buffer[0 .. RING + room],
                 .out_pos = RING,
-                .writer = &sink.writer,
                 .max_output_bytes = std.math.maxInt(u64),
             };
             const ended = try decodeFastImpl(TestCheck, &ctx, &FIXED_TABLES.lit, &FIXED_TABLES.dist, false);
@@ -2273,7 +2236,6 @@ test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-
     decoder.tables.dist_spill[0] = .{ .nbits = 15, .kind = .dist, .extra = 13, .payload = 24577 };
     decoder.tables.lit_first[1] = .{ .nbits = 1, .kind = .eob, .payload = 0 };
     for (decoder.buffer[0..RING], 0..) |*byte, i| byte.* = @truncate(i * 73 + i / 256);
-    var sink: std.Io.Writer.Discarding = .init(&.{});
     for ([_]u4{ 10, 11 }) |literal_width| {
         const literal: Entry = .{ .nbits = literal_width, .kind = .lit, .payload = 'A' };
         decoder.tables.lit_first[512] = if (literal_width == 10) literal else .{ .nbits = 10, .kind = .long, .extra = 1, .payload = 32 };
@@ -2291,7 +2253,6 @@ test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-
             .check = &check,
             .decoder = decoder,
             .out = &decoder.buffer,
-            .writer = &sink.writer,
             .out_pos = RING,
             .max_output_bytes = std.math.maxInt(u64),
         };

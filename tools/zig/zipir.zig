@@ -125,8 +125,8 @@ fn compressBgzf(io: Io, paths: adapter.Paths) !void {
 }
 
 fn decompressBgzf(io: Io, paths: adapter.Paths) !void {
-    const reader = try std.heap.page_allocator.create(zipir.bgzf.Reader);
-    defer std.heap.page_allocator.destroy(reader);
+    const decoder = try std.heap.page_allocator.create(zipir.bgzf.Decompressor);
+    defer std.heap.page_allocator.destroy(decoder);
 
     const in_file = try adapter.openIn(io, paths.in_path);
     defer adapter.closeIfOwned(io, in_file, paths.in_path);
@@ -138,6 +138,10 @@ fn decompressBgzf(io: Io, paths: adapter.Paths) !void {
     var out_buf: [adapter.IO_BUFFER_LEN]u8 = undefined;
     var out_writer = out_file.writerStreaming(io, &out_buf);
 
-    _ = try reader.decompress(&in_reader.interface, &out_writer.interface, .{});
+    decoder.init(&in_reader.interface, .{});
+    _ = decoder.reader.streamRemaining(&out_writer.interface) catch |err| return switch (err) {
+        error.ReadFailed => decoder.err.?,
+        error.WriteFailed => error.WriteFailed,
+    };
     try out_writer.interface.flush();
 }

@@ -287,11 +287,11 @@ fn bgzfIndex(io: std.Io, allocator: std.mem.Allocator, args: []const [:0]const u
 }
 
 fn decompressBgzf(io: std.Io, allocator: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io.Writer, max_output_bytes: u64, verify: bool) !void {
-    const decoder = try allocator.create(zipir.bgzf.Reader);
+    const decoder = try allocator.create(zipir.bgzf.Decompressor);
     defer allocator.destroy(decoder);
-    const summary = try decoder.decompress(reader, writer, .{ .max_output_bytes = max_output_bytes, .require_eof_marker = verify });
+    try pump(decoder, reader, writer, .{ .max_output_bytes = max_output_bytes, .require_eof_marker = verify });
     try writer.flush();
-    if (summary.eof_marker) return;
+    if (decoder.container.eof_marker) return;
     var buffer: [128]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(io, &buffer);
     try stderr.interface.writeAll("zipir: warning: EOF marker is absent. The input may be truncated\n");

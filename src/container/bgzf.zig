@@ -4,6 +4,7 @@ const std = @import("std");
 const engine = @import("../deflate/deflate.zig");
 const crc = @import("../kernel/crc32.zig");
 const gzip = @import("gzip.zig");
+const inflate = @import("inflate.zig");
 
 pub const Error = gzip.Error || error{ NotBgzf, BadBlockSize, BlockSizeMismatch, BlockTooLarge, MissingEofMarker, BadVirtualOffset, BadIndex };
 
@@ -22,13 +23,11 @@ pub const ScanOptions = struct {
     require_eof_marker: bool = false,
 };
 
-pub const ReaderOptions = struct {
+pub const Options = struct {
     max_output_bytes: u64 = std.math.maxInt(u64),
     trailing_data: engine.TrailingData = .reject,
     require_eof_marker: bool = false,
 };
-
-pub const Summary = struct { bytes: u64, blocks: u64, eof_marker: bool };
 
 /// Reader capacity must be >=16; with a positional `std.Io.File.Reader`, block bodies are skipped by seeking.
 pub fn scan(reader: *std.Io.Reader, options: ScanOptions) Scanner {
@@ -108,99 +107,69 @@ pub const Scanner = struct {
     }
 };
 
-/// Reusable without initialization, including after errors. No allocation occurs during decode.
-/// Assumes reader, writer and workspace storage do not overlap; overlap is not checked. One active call per workspace.
-pub const Reader = struct {
-    decoder: engine.Decoder = .{},
+/// Decodes BGZF blocks; a block's bytes become readable only after its size fields, CRC-32, and ISIZE are
+/// checked, and every block's decoded size is capped at 65536 whatever its ISIZE claims. `init(input, options)`
+/// starts it in place; `reader` gives the decoded bytes and `err` the reason for a `ReadFailed`;
+/// `container.blocks` and `container.eof_marker` tell what was read. Over a `std.Io.File.Reader`, `seek` moves
+/// to a virtual offset and `seekUncompressed` to an uncompressed one through `.gzi` entries. Input reader
+/// capacity must be >=28, the EOF marker's length. A peek of up to 64 KiB always fits. No allocation occurs.
+pub const Decompressor = inflate.Inflate(Blocks);
 
-    /// Reader capacity must be >=28, the EOF marker's length, so the marker is compared byte for byte.
-    /// Caller flushes writer. Output is provisional until success. Every block's decoded size is capped at
-    /// 65536 whatever its ISIZE claims.
-    pub fn decompress(self: *Reader, reader: *std.Io.Reader, writer: *std.Io.Writer, options: ReaderOptions) Error!Summary {
-        if (reader.buffer.len < EOF_MARKER.len) return error.InputBufferTooSmall;
-        var br: engine.BitReader = .{ .reader = reader };
-        defer br.release();
-        var session = self.decoder.session(crc.Crc32, writer, .{ .max_output_bytes = options.max_output_bytes });
-        session.stream_limit = MAX_BLOCK;
-        var summary: Summary = .{ .bytes = 0, .blocks = 0, .eof_marker = false };
-        while (true) {
-            _ = try br.window(2);
-            if (br.src.len == 0 and summary.blocks != 0) break;
-            if (br.src.len < 2 or br.src[0] != 0x1f or br.src[1] != 0x8b) {
-                if (summary.blocks != 0) {
-                    if (options.trailing_data == .leave) break;
-                    return error.TrailingData;
-                }
+const Blocks = struct {
+    pub const Check = crc.Crc32;
+    pub const Error = bgzf.Error;
+    pub const Options = bgzf.Options;
+    pub const min_input_buffer = EOF_MARKER.len;
+    pub const stream_limit = MAX_BLOCK;
+
+    options: bgzf.Options,
+    /// Blocks read so far.
+    blocks: u64 = 0,
+    /// Whether the last block read is the 28-byte EOF marker.
+    eof_marker: bool = false,
+    // After a seek, a first block that is not one is `BadVirtualOffset`.
+    seeking: bool = false,
+    first_size: u64 = 0,
+    head: Head = undefined,
+
+    pub fn init(options: bgzf.Options) Blocks {
+        return .{ .options = options };
+    }
+
+    pub fn begin(self: *Blocks, br: *engine.BitReader) bgzf.Error!bool {
+        _ = try br.window(2);
+        if (br.src.len < 2 or br.src[0] != 0x1f or br.src[1] != 0x8b) {
+            if (self.blocks == 0) {
+                if (self.seeking) return error.BadVirtualOffset;
                 if (br.src.len < 2) return error.Truncated;
                 return error.NotBgzf;
             }
-            const block = try readBlock(&br, &session, options.max_output_bytes - summary.bytes);
-            summary.bytes += block.size;
-            summary.blocks += 1;
-            summary.eof_marker = block.eof_marker;
+            if (br.src.len != 0 and self.options.trailing_data == .reject) return error.TrailingData;
+            if (self.options.require_eof_marker and !self.eof_marker) return error.MissingEofMarker;
+            return false;
         }
-        if (options.require_eof_marker and !summary.eof_marker) return error.MissingEofMarker;
-        _ = try session.finish();
-        return summary;
+        self.head = blockHeader(br) catch |err| {
+            if (self.seeking and self.blocks == 0 and isHeaderError(err)) return error.BadVirtualOffset;
+            return err;
+        };
+        return true;
     }
 
-    /// `offset.coffset` must be a block start. `offset.uoffset` decoded bytes of that block are skipped, then
-    /// up to `length` bytes are written, continuing into later blocks; fewer only at the end of the data.
-    /// Decoding stops after the block that completes the range, so later blocks are not checked.
-    /// Reader capacity must be >=28. Caller flushes writer.
-    pub fn readAt(self: *Reader, source: *std.Io.File.Reader, offset: VirtualOffset, writer: *std.Io.Writer, length: u64) Error!u64 {
-        return self.readFrom(source, offset.coffset, offset.uoffset, true, writer, length);
+    pub fn end(self: *Blocks, br: *engine.BitReader, check: *Check, size: u64) bgzf.Error!void {
+        try blockTrailer(br, self.head, check.final(), size);
+        if (self.blocks == 0) self.first_size = size;
+        self.blocks += 1;
+        self.eof_marker = self.head.marker;
     }
 
-    /// `entries` come from `IndexReader`, which checked them; the entry at or before `uoffset` gives the block
-    /// to start from; a sparse index is fine, as the skip then spans blocks. Otherwise as `readAt`.
-    pub fn readAtUncompressed(self: *Reader, source: *std.Io.File.Reader, entries: []const IndexEntry, uoffset: u64, writer: *std.Io.Writer, length: u64) Error!u64 {
-        var start: IndexEntry = .{ .coffset = 0, .uoffset = 0 };
-        var low: usize = 0;
-        var high: usize = entries.len;
-        while (low < high) {
-            const mid = low + (high - low) / 2;
-            if (entries[mid].uoffset <= uoffset) low = mid + 1 else high = mid;
-        }
-        if (low != 0) start = entries[low - 1];
-        return self.readFrom(source, start.coffset, uoffset - start.uoffset, false, writer, length);
-    }
-
-    // `skip_in_block`: the skip must end within the first block, as a virtual offset's does.
-    fn readFrom(self: *Reader, source: *std.Io.File.Reader, coffset: u64, skip: u64, skip_in_block: bool, writer: *std.Io.Writer, length: u64) Error!u64 {
-        if (source.interface.buffer.len < EOF_MARKER.len) return error.InputBufferTooSmall;
-        if (length == 0) return 0;
-        source.seekTo(coffset) catch return error.ReadFailed;
-        var window: Window = .{ .inner = writer, .skip = skip, .left = length };
-        var br: engine.BitReader = .{ .reader = &source.interface };
-        defer br.release();
-        var session = self.decoder.session(crc.Crc32, &window.writer, .{});
-        session.stream_limit = MAX_BLOCK;
-        var first = true;
-        var decoded: u64 = 0;
-        while (decoded < skip +| length) {
-            _ = try br.window(2);
-            if (br.src.len < 2 or br.src[0] != 0x1f or br.src[1] != 0x8b) {
-                if (first) return error.BadVirtualOffset;
-                if (br.src.len == 0) break;
-                return error.TrailingData;
-            }
-            const block = readBlock(&br, &session, std.math.maxInt(u64)) catch |err| {
-                if (first and isHeaderError(err)) return error.BadVirtualOffset;
-                return err;
-            };
-            if (first and skip_in_block and block.size < skip) return error.BadVirtualOffset;
-            first = false;
-            decoded += block.size;
-        }
-        _ = try session.finish();
-        return length - window.left;
+    // A block that outgrows 65536 bytes is `BlockTooLarge` unless the caller's output limit is what stopped it.
+    pub fn streamError(self: *const Blocks, err: bgzf.Error, start: u64) bgzf.Error {
+        if (err == error.OutputLimitExceeded and self.options.max_output_bytes - start > MAX_BLOCK) return error.BlockTooLarge;
+        return err;
     }
 };
 
-comptime {
-    std.debug.assert(@sizeOf(Reader) == 196608);
-}
+const bgzf = @This();
 
 /// Reusable without initialization, including after errors. No allocation occurs during decode.
 pub const BlockDecoder = struct {
@@ -211,13 +180,17 @@ pub const BlockDecoder = struct {
         if (block.len < EOF_MARKER.len) return error.BadBlockSize;
         var reader = std.Io.Reader.fixed(block);
         var br: engine.BitReader = .{ .reader = &reader };
-        var writer = std.Io.Writer.fixed(out);
-        var session = self.decoder.session(crc.Crc32, &writer, .{});
-        session.stream_limit = MAX_BLOCK;
-        const decoded = try readBlock(&br, &session, std.math.maxInt(u64));
-        _ = try session.finish();
-        if (decoded.block_size != block.len) return error.BlockSizeMismatch;
-        return decoded.size;
+        const head = try blockHeader(&br);
+        var check: crc.Crc32 = .init();
+        var session: engine.Session(crc.Crc32) = .{ .decoder = &self.decoder, .max_output_bytes = std.math.maxInt(u64), .stream_limit = MAX_BLOCK };
+        session.begin(&br, &check);
+        // The buffer holds more than a block, so the cap ends a block that is too large first.
+        if (try mapBlockError(session.run()) != .end) unreachable;
+        const size = session.out_pos;
+        try blockTrailer(&br, head, check.final(), size);
+        if (head.block_size != block.len) return error.BlockSizeMismatch;
+        @memcpy(out[0..size], self.decoder.buffer[0..size]);
+        return size;
     }
 };
 
@@ -533,7 +506,11 @@ fn isHeaderError(err: Error) bool {
     };
 }
 
-const Decoded = struct { size: u64, block_size: u64, eof_marker: bool };
+const Head = struct { start: u64, block_size: u64, marker: bool };
+
+fn mapBlockError(result: engine.Error!engine.Stop) Error!engine.Stop {
+    return result catch |err| if (err == error.OutputLimitExceeded) error.BlockTooLarge else err;
+}
 
 const BlockVisitor = struct {
     bsize: ?u16 = null,
@@ -546,9 +523,8 @@ const BlockVisitor = struct {
     }
 };
 
-// `room` is what the caller's output limit still allows: a block that outgrows 65536 bytes is
-// `BlockTooLarge` unless the caller's limit is what stopped it.
-fn readBlock(br: *engine.BitReader, session: *engine.Session(crc.Crc32), room: u64) Error!Decoded {
+// Reads a block's gzip header, which must carry the `BC` subfield giving the block's size.
+fn blockHeader(br: *engine.BitReader) Error!Head {
     const start = br.consumed();
     const marker = blk: {
         if (br.src.len - br.i < EOF_MARKER.len and !try br.window(EOF_MARKER.len)) break :blk false;
@@ -558,38 +534,11 @@ fn readBlock(br: *engine.BitReader, session: *engine.Session(crc.Crc32), room: u
     try gzip.parseHeader(br, BlockVisitor, &visitor, std.math.maxInt(u64));
     const block_size = @as(u64, visitor.bsize orelse return error.NotBgzf) + 1;
     if (block_size < br.consumed() - start + 2 + 8) return error.BadBlockSize;
-    var check: crc.Crc32 = .init();
-    const size = session.stream(br, &check) catch |err| switch (err) {
-        error.OutputLimitExceeded => return if (room > MAX_BLOCK) error.BlockTooLarge else error.OutputLimitExceeded,
-        else => |e| return e,
-    };
-    if (br.consumed() - start + 8 != block_size) return error.BlockSizeMismatch;
-    try gzip.readTrailer(br, check.final(), size);
-    return .{ .size = size, .block_size = block_size, .eof_marker = marker };
+    return .{ .start = start, .block_size = block_size, .marker = marker };
 }
 
-// Drops the first `skip` bytes, passes on at most `left`, and drops the rest.
-const Window = struct {
-    writer: std.Io.Writer = .{ .vtable = &.{ .drain = drain }, .buffer = &.{} },
-    inner: *std.Io.Writer,
-    skip: u64,
-    left: u64,
-
-    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
-        const self: *Window = @alignCast(@fieldParentPtr("writer", w));
-        var total: usize = 0;
-        for (data, 0..) |bytes, i| {
-            for (0..if (i + 1 == data.len) splat else 1) |_| {
-                total += bytes.len;
-                var rest = bytes;
-                const skipped: usize = @intCast(@min(self.skip, rest.len));
-                self.skip -= skipped;
-                rest = rest[skipped..];
-                const n: usize = @intCast(@min(self.left, rest.len));
-                try self.inner.writeAll(rest[0..n]);
-                self.left -= n;
-            }
-        }
-        return total;
-    }
-};
+// After the block's DEFLATE data: its end must be where `BC` said, then CRC-32 and ISIZE.
+fn blockTrailer(br: *engine.BitReader, head: Head, crc_value: u32, size: u64) Error!void {
+    if (br.consumed() - head.start + 8 != head.block_size) return error.BlockSizeMismatch;
+    try gzip.readTrailer(br, crc_value, size);
+}

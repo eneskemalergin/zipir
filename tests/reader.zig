@@ -253,3 +253,70 @@ test "[failure] - [reader]: max_header_bytes bounds the optional gzip header" {
     input = std.Io.Reader.fixed(&member);
     try std.testing.expectError(error.HeaderTooLong, support.decompress(decoder, &input, &discard.writer, .{ .max_header_bytes = 99 }));
 }
+
+fn compressBgzf(allocator: std.mem.Allocator, plain: []const u8) ![]u8 {
+    const writer = try allocator.create(zipir.bgzf.Writer);
+    defer allocator.destroy(writer);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    var input = std.Io.Reader.fixed(plain);
+    writer.start(&out.writer, .{ .split = .lines, .level = .fast });
+    try writer.write(&input);
+    _ = try writer.finish();
+    return out.toOwnedSlice();
+}
+
+test "[integration] - [reader]: BGZF reads in every pattern, and peeks of 64 KiB always fit" {
+    const allocator = std.testing.allocator;
+    const plain = try makePlain(allocator);
+    defer allocator.free(plain);
+    const stream = try compressBgzf(allocator, plain);
+    defer allocator.free(stream);
+    const decoder = try allocator.create(zipir.bgzf.Decompressor);
+    defer allocator.destroy(decoder);
+    const patterns = [_]Pattern{ .borrow, .{ .copy = 7 }, .{ .copy = 65536 }, .lines, .{ .skip = 333_333 }, .{ .limited = 1000 } };
+    for (patterns) |pattern| {
+        var input: [4096]u8 = undefined;
+        var source = support.Source.init(stream, &input, 4096);
+        decoder.init(&source.reader, .{ .require_eof_marker = true });
+        try readAll(&decoder.reader, pattern, plain);
+        try std.testing.expect(decoder.container.eof_marker);
+    }
+    var input = std.Io.Reader.fixed(stream);
+    decoder.init(&input, .{});
+    const r = &decoder.reader;
+    var at: usize = 0;
+    while (at + 65536 <= plain.len) {
+        try std.testing.expectEqualSlices(u8, plain[at..][0..65536], try r.peek(65536));
+        const step = 65536 - 3 * (at % 1000);
+        r.toss(step);
+        at += step;
+    }
+}
+
+test "[failure] - [reader]: a damaged BGZF block's bytes are never readable" {
+    const allocator = std.testing.allocator;
+    const plain = try makePlain(allocator);
+    defer allocator.free(plain);
+    const stream = try compressBgzf(allocator, plain);
+    defer allocator.free(stream);
+    // The third block's CRC-32: blocks are found with the scanner.
+    var fixed = std.Io.Reader.fixed(stream);
+    var scanner = zipir.bgzf.scan(&fixed, .{});
+    var third: zipir.bgzf.Block = undefined;
+    var before: u64 = 0;
+    for (0..3) |k| {
+        third = (try scanner.next()).?;
+        if (k < 2) before += third.data_size;
+    }
+    stream[@intCast(third.coffset + third.size - 8)] ^= 1;
+    const decoder = try allocator.create(zipir.bgzf.Decompressor);
+    defer allocator.destroy(decoder);
+    var input = std.Io.Reader.fixed(stream);
+    decoder.init(&input, .{});
+    var sink: std.Io.Writer.Allocating = .init(allocator);
+    defer sink.deinit();
+    try std.testing.expectError(error.ReadFailed, decoder.reader.streamRemaining(&sink.writer));
+    try std.testing.expect(decoder.err.? == error.CrcMismatch);
+    try std.testing.expectEqualSlices(u8, plain[0..@intCast(before)], sink.written());
+}
