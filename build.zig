@@ -1,6 +1,10 @@
-//! Build zipir. `BACKENDS` lists every CPU-specific kernel; they are wired here and nowhere else.
+//! Build zipir. `BACKENDS` lists every CPU-specific kernel; they are wired here and nowhere else. `zig build source`
+//! writes the package that dependents fetch: every `.paths` entry of `build.zig.zon`, archived by zipir's own
+//! `tar create` (owner 0, time 0, directory contents sorted), so the same tree gives the same bytes on every host.
 
 const std = @import("std");
+
+const PACKAGE = @import("build.zig.zon");
 
 const KernelBackend = enum { dispatch, portable };
 const Mode = enum { direct, object, absent };
@@ -96,6 +100,16 @@ pub fn build(b: *std.Build) void {
     });
     cli_tests.root_module.addOptions("options", cli_options);
     test_step.dependOn(&b.addRunArtifact(cli_tests).step);
+
+    const pack = b.addRunArtifact(exe);
+    pack.setCwd(b.path("."));
+    pack.addArgs(&.{ "tar", "create", "--format", "gzip", "--" });
+    inline for (PACKAGE.paths) |path| pack.addArg(path);
+    pack.has_side_effects = true;
+    const archive_name = b.fmt("zipir-{s}-source.tar.gz", .{PACKAGE.version});
+    const archive = pack.captureStdOut(.{ .basename = archive_name });
+    const install_archive = b.addInstallFileWithDir(archive, .prefix, archive_name);
+    b.step("source", "Write the source package dependents fetch").dependOn(&install_archive.step);
 }
 
 fn backendMode(target: std.Build.ResolvedTarget, features: []const std.Target.x86.Feature) Mode {
