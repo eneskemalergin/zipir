@@ -33,7 +33,7 @@ Each push to `main` or `dev` and each pull request runs one graph. A quick job c
 
 `zig build source` writes `zipir-VERSION-source.tar.gz`: every path in `build.zig.zon`'s `.paths`, archived by zipir's own tar writer so the same tree gives the same bytes.
 
-A release is a tag `vX.Y.Z` on `main`'s head. The tag must match the version in `build.zig.zon` and `src/root.zig` and have a `CHANGELOG.md` entry. The release workflow runs the whole CI graph on the tagged commit without caches, packages and smoke-tests a binary on each system, and publishes the source package, the four binaries, `SHA256SUMS`, and build attestations with the changelog entry as notes.
+A release is a tag `vX.Y.Z` on `main`'s head; nothing else starts one. The tag must match the version in `build.zig.zon` and `src/root.zig` and have a `CHANGELOG.md` entry, and `main`'s own CI run on that commit must have passed. The release workflow then runs the whole CI graph again on the tagged commit without caches, and any failure stops it before anything is published. It packages and smoke-tests a binary on each system, and publishes the source package, the four binaries, `SHA256SUMS`, and build attestations with the changelog entry as notes.
 
 ## Conventions
 

@@ -11,11 +11,63 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The full CI graph on the tagged commit, without caches: tests on every lane, the source package fetched and
-  # tested, and each lane's release binary packaged and smoke-tested. The tag must match the version and have a
-  # CHANGELOG.md entry.
+  # Before any build: the tag names the version and its CHANGELOG.md entry, it is main's head, and main's own CI
+  # run on that commit passed (waited for if it is still running). A bad tag fails here in seconds.
+  gate:
+    name: Release gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the tag, version, and notes
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag must be vX.Y.Z: $TAG" >&2; exit 1; }
+          version=$(bash .github/scripts/release.sh version)
+          test "$TAG" = "v$version" || { echo "tag $TAG does not match version $version" >&2; exit 1; }
+          bash .github/scripts/release.sh notes "$TAG" > /dev/null
+
+      - name: Check the tag is main's head
+        run: |
+          set -euo pipefail
+          main=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          test "$GITHUB_SHA" = "$main" || { echo "tag $TAG is not main's head ($main)" >&2; exit 1; }
+
+      - name: Require main's CI to pass on the tagged commit
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 1500))
+          while :; do
+            run=$(gh run list --workflow ci.yml --branch main --event push --commit "$GITHUB_SHA" --limit 1 \
+              --json status,conclusion,url --jq '.[0] // empty | [.status, .conclusion, .url] | @tsv')
+            if [[ -n "$run" ]]; then
+              IFS=$'\t' read -r status conclusion url <<< "$run"
+              if [[ "$status" == completed ]]; then
+                test "$conclusion" = success || { echo "CI on main concluded $conclusion: $url" >&2; exit 1; }
+                echo "CI on main passed: $url"
+                break
+              fi
+            fi
+            ((SECONDS < deadline)) || { echo "CI on main has not passed for $GITHUB_SHA: ${run:-no run}" >&2; exit 1; }
+            sleep 30
+          done
+
+  # The full CI graph again on the tagged commit, without caches: tests on every lane, the source package fetched and
+  # tested, and each lane's release binary packaged and smoke-tested. Any failure stops the release.
   verify:
     name: Verify release
+    needs: gate
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
@@ -24,7 +76,7 @@ jobs:
 
   publish:
     name: Publish release
-    needs: verify
+    needs: [gate, verify]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -41,16 +93,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check the tag
+      - name: Check the tag still names the verified commit
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag must be vX.Y.Z: $TAG" >&2; exit 1; }
-          test "$TAG" = "v$VERSION"
-          main=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
-          test "$GITHUB_SHA" = "$main" || { echo "tag $TAG is not main's head ($main)" >&2; exit 1; }
+          tagged=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          test "$tagged" = "$GITHUB_SHA" || { echo "tag $TAG moved to $tagged during the release" >&2; exit 1; }
 
       - name: Download the tested packages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
