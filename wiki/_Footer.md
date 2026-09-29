@@ -1,0 +1,1 @@
+[Repository](https://github.com/eneskemalergin/zipir) | [Home](Home) | [Getting started](Getting-Started) | [API reference](API) | [Benchmarks](Benchmarking) | [Changelog](https://github.com/eneskemalergin/zipir/blob/main/CHANGELOG.md) | [MIT License](https://github.com/eneskemalergin/zipir/blob/main/LICENSE)
