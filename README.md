@@ -60,7 +60,9 @@ The future rows are possibilities, not a delivery order or a promise to support 
 - Caller-owned `std.Io.Reader` and `std.Io.Writer` interfaces with reusable bounded workspaces.
 
 > [!NOTE]
-> `zipir` will slowly build its accelerators in the form of hand-rolled SIMD tested on specific architecture. Currently I cannot promise a full and comprehensive support. I am building things that specifically suits my needs and will target my computer and my os first. I always keep in mind portability, and compatibility but for the work for actually pushing performance they are extremely time consuming to build for across a wide range of cpu, os archtectures. So I wanted to mention I will always keep fallbacks so the there won't be missing functionality, but speed and memory optimizations might be missing. My first target is `linux, x86-64, axv2`. I have test environments for various others but they will have to come later.
+> zipir supports Linux and macOS on x86-64 and ARM64, and CI tests all four. Windows is not supported. I would like to support it properly, but keeping native Windows builds reliable takes more time than I can justify, and I would rather say so than publish something I cannot support well. WSL with the Linux build may work; I have not tested it.
+>
+> Acceleration is x86-64 first. The CRC-32 (PCLMUL) and Adler-32 (AVX2) kernels are chosen at run time, and every speed number I publish is from Linux x86-64 with AVX2. On ARM64, CRC-32 uses the ARMv8 CRC instruction when the build targets a CPU that has it; the rest runs on the portable path. Every accelerated kernel keeps a portable fallback, so no feature depends on the CPU, only speed does.
 
 ## Quick start
 
