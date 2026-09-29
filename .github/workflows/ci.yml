@@ -5,12 +5,22 @@ on:
     branches: [main, dev]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release:
+        description: Run every check without caches and keep the tested release archives
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: The version build.zig.zon and src/root.zig declare
+        value: ${{ jobs.checks.outputs.version }}
 
 permissions: {}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !inputs.release }}
 
 env:
   ZIG_VERSION: 0.16.0
@@ -20,7 +30,8 @@ defaults:
     shell: bash
 
 jobs:
-  # Seconds on one runner: decides what the rest of the graph must run, and fails fast on format and scripts.
+  # Seconds on one runner: decides what the rest of the graph must run, and fails fast on format, scripts, and
+  # a version that build.zig.zon and src/root.zig disagree on.
   checks:
     name: Source checks
     runs-on: ubuntu-24.04
@@ -30,6 +41,7 @@ jobs:
     outputs:
       tests: ${{ steps.changes.outputs.tests }}
       workflows: ${{ steps.changes.outputs.workflows }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,38 +49,55 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
+      # Without a base commit in the shallow clone (a new branch, a multi-commit push), everything runs.
       - name: Select checks
         id: changes
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          RELEASE: ${{ inputs.release || false }}
         run: |
           set -euo pipefail
           tests=true
           workflows=true
-          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch && -n "$BASE" ]] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+          if [[ "$RELEASE" != true && "$GITHUB_EVENT_NAME" != workflow_dispatch && -n "$BASE" ]] &&
+            git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             tests=false
             workflows=false
             while IFS= read -r -d '' path; do
               case "$path" in
                 .github/*) tests=true; workflows=true ;;
-                *.md|LICENSE|assets/*|bench/*) ;;
+                *.md|LICENSE|assets/*|bench/*|wiki/*) ;;
                 *) tests=true ;;
               esac
             done < <(git diff --no-renames --name-only -z "$BASE" HEAD)
           fi
           printf 'tests=%s\nworkflows=%s\n' "$tests" "$workflows" >> "$GITHUB_OUTPUT"
 
+      - name: Check version and release notes
+        id: version
+        env:
+          RELEASE: ${{ inputs.release || false }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(bash .github/scripts/release.sh version)
+          if [[ "$RELEASE" == true ]]; then
+            bash .github/scripts/release.sh notes "$TAG" > /dev/null
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: ${{ env.ZIG_VERSION }}
           cache-key: checks
+          use-cache: ${{ !inputs.release }}
 
       - name: Check format and scripts
         run: |
           set -euo pipefail
           test "$(zig version)" = "$ZIG_VERSION"
-          zig fmt --check src tests build.zig tools/build.zig tools/zig
+          zig fmt --check src tests build.zig tools/build.zig tools/zig integration
           while IFS= read -r -d '' script; do
             bash -n "$script"
             shellcheck -x "$script"
@@ -104,9 +133,9 @@ jobs:
           annotations: true
           version: v1.30.1
 
-  # One native runner per supported OS and architecture (Linux and macOS); each builds the CLI its tests run, so no separate
-  # cross-compile job repeats that work. Debug everywhere for safety checks; the extra lanes run only where
-  # they test something the others cannot.
+  # One native runner per supported OS and architecture (Linux and macOS); each builds the CLI its tests run, so no
+  # separate cross-compile job repeats that work. Debug everywhere for safety checks; the extra lanes run only where
+  # they test something the others cannot. In a release run, each lane also packages and smoke-tests its binary.
   test:
     name: Test (${{ matrix.name }})
     needs: checks
@@ -121,14 +150,18 @@ jobs:
         include:
           - name: Linux x86_64
             runner: ubuntu-24.04
+            system: linux-x86_64
             extra: true
           - name: Linux aarch64
             runner: ubuntu-24.04-arm
+            system: linux-aarch64
             ship: true
           - name: macOS aarch64
             runner: macos-15
+            system: macos-aarch64
           - name: macOS x86_64
             runner: macos-15-intel
+            system: macos-x86_64
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -140,28 +173,89 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
           cache-key: ${{ matrix.name }}
+          use-cache: ${{ !inputs.release }}
 
       - name: Test (Debug)
         run: zig build test --summary all
 
-      # x86_64 only: the portable fallback of every kernel, and the object path a baseline build dispatches through.
+      - name: Test from an outside package
+        working-directory: integration/package-consumer
+        run: zig build test --summary all
+
+      # x86_64 only: the portable fallback of every kernel, and the object path a baseline build dispatches through,
+      # also inside a dependent's build.
       - name: Test portable kernels
         if: matrix.extra
         run: zig build test -Dkernel-backend=portable --summary all
 
       - name: Test baseline dispatch
         if: matrix.extra
-        run: zig build test -Dcpu=baseline --summary all
+        run: |
+          set -euo pipefail
+          zig build test -Dcpu=baseline --summary all
+          (cd integration/package-consumer && zig build test -Dcpu=baseline --summary all)
 
       # Ship mode on both Linux architectures: the fast decode loop's unchecked pointer walk runs as released.
       - name: Test ReleaseFast
         if: matrix.extra || matrix.ship
         run: zig build test -Doptimize=ReleaseFast --summary all
 
+      - name: Package and smoke-test the release binary
+        if: inputs.release
+        env:
+          SYSTEM: ${{ matrix.system }}
+        run: bash .github/scripts/release.sh package "$SYSTEM" "$RUNNER_TEMP/release"
+
+      - name: Keep the tested release binary
+        if: inputs.release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.system }}
+          path: ${{ runner.temp }}/release/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  # The package dependents fetch: built from .paths, compared with the tracked files, fetched into a fresh consumer
+  # (never a checkout), and tested there.
+  source:
+    name: Source package
+    needs: checks
+    if: needs.checks.outputs.tests == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          cache-key: source
+          use-cache: ${{ !inputs.release }}
+
+      - name: Build, fetch, and test the source package
+        run: bash .github/scripts/release.sh package source "$RUNNER_TEMP/release"
+
+      - name: Keep the tested source package
+        if: inputs.release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-source
+          path: ${{ runner.temp }}/release/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
   result:
     name: CI result
     if: always()
-    needs: [checks, workflows, test]
+    needs: [checks, workflows, test, source]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     permissions: {}
@@ -169,6 +263,7 @@ jobs:
       CHECKS: ${{ needs.checks.result }}
       TESTS_NEEDED: ${{ needs.checks.outputs.tests }}
       TESTS: ${{ needs.test.result }}
+      SOURCE: ${{ needs.source.result }}
       WORKFLOWS_NEEDED: ${{ needs.checks.outputs.workflows }}
       WORKFLOWS: ${{ needs.workflows.result }}
     steps:
@@ -176,7 +271,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$CHECKS" = success
-          for pair in "$TESTS_NEEDED:$TESTS" "$WORKFLOWS_NEEDED:$WORKFLOWS"; do
+          for pair in "$TESTS_NEEDED:$TESTS" "$TESTS_NEEDED:$SOURCE" "$WORKFLOWS_NEEDED:$WORKFLOWS"; do
             case "$pair" in
               true:success|false:skipped) ;;
               *) printf 'Required check did not pass: %s\n' "$pair" >&2; exit 1 ;;
