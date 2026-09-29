@@ -137,7 +137,7 @@ pub const BlockDecoder = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BlockDecoder) == 196608);
+    std.debug.assert(@sizeOf(BlockDecoder) == 171544);
 }
 
 pub const Split = enum { fill, lines };

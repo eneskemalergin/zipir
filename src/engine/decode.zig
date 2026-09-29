@@ -167,11 +167,14 @@ pub const BitReader = struct {
 
 const BATCH = 131072;
 
+const LIT_SPILL_MAX = 308;
+const DIST_SPILL_MAX = 82;
+
 const Tables = struct {
     lit_first: [1 << 10]Entry,
     dist_first: [1 << 9]Entry,
-    lit_spill: [288 * 16]Entry,
-    dist_spill: [32 * 64]Entry,
+    lit_spill: [LIT_SPILL_MAX]Entry,
+    dist_spill: [DIST_SPILL_MAX]Entry,
 };
 
 pub const Decoder = struct {
@@ -180,7 +183,7 @@ pub const Decoder = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Decoder) == 196608);
+    std.debug.assert(@sizeOf(Decoder) == 171544);
 }
 
 pub const Stop = enum { end, full };
@@ -765,10 +768,10 @@ test "[property] - [deflate tables]: rejected trees clear roots without changing
 test "[property] - [deflate tables]: narrower roots preserve entries and bounded spill" {
     const Fill = struct {
         fn check(comptime width: u4, lens: []const u4, seen_heights: *u16, compare_widths: bool) !void {
-            const capacity = if (width == 10) 1536 else 292;
+            const capacity = if (width == 10) LIT_SPILL_MAX else DIST_SPILL_MAX;
             const sentinel: Entry = .{ .nbits = 15, .kind = .long, .extra = 0xa, .payload = 0x5a5a };
             var root: [1 << width]Entry = @splat(sentinel);
-            var spill: [if (width == 10) 4608 else 2048]Entry = @splat(sentinel);
+            var spill: [capacity]Entry = @splat(sentinel);
             const kind = if (width == 10) litKind else distKind;
             const payload = if (width == 10) litPayload else distPayload;
             try fillTwoLevel(&root, &spill, width, lens, kind, payload, true);
@@ -906,6 +909,40 @@ test "[property] - [deflate tables]: narrower roots preserve entries and bounded
             }
         }
         try std.testing.expectEqual((@as(u16, 1) << @as(u4, 16 - @as(u5, width))) - 2, seen_heights);
+    }
+}
+
+test "[property] - [deflate tables]: the worst complete codes fill the spill tables exactly" {
+    const Case = struct { width: u4, alphabet: usize, short: []const u4, long: []const [2]u16, fill: usize };
+    const cases = [_]Case{
+        .{ .width = 10, .alphabet = 286, .short = &.{ 1, 2, 3, 4 }, .long = &.{ .{ 11, 1 }, .{ 12, 229 }, .{ 13, 49 }, .{ 14, 1 }, .{ 15, 2 } }, .fill = LIT_SPILL_MAX },
+        .{ .width = 10, .alphabet = 286, .short = &.{ 1, 2, 3, 4 }, .long = &.{ .{ 11, 1 }, .{ 12, 237 }, .{ 13, 25 }, .{ 14, 17 }, .{ 15, 2 } }, .fill = LIT_SPILL_MAX },
+        .{ .width = 9, .alphabet = 32, .short = &.{ 1, 2, 3, 4, 5, 6 }, .long = &.{ .{ 10, 11 }, .{ 11, 9 }, .{ 12, 1 }, .{ 14, 3 }, .{ 15, 2 } }, .fill = DIST_SPILL_MAX },
+        .{ .width = 9, .alphabet = 32, .short = &.{ 1, 2, 3, 4, 5, 6, 7 }, .long = &.{ .{ 10, 3 }, .{ 11, 1 }, .{ 12, 17 }, .{ 13, 1 }, .{ 14, 1 }, .{ 15, 2 } }, .fill = DIST_SPILL_MAX },
+    };
+    inline for (cases) |c| {
+        var lens: [c.alphabet]u4 = @splat(0);
+        var n: usize = 0;
+        for (c.short) |len| {
+            lens[n] = len;
+            n += 1;
+        }
+        for (c.long) |group| for (0..group[1]) |_| {
+            lens[n] = @intCast(group[0]);
+            n += 1;
+        };
+        try std.testing.expectEqual(c.alphabet, n);
+        var root: [@as(usize, 1) << c.width]Entry = undefined;
+        var spill: [c.fill]Entry = undefined;
+        const kind = if (c.width == 10) litKind else distKind;
+        const payload = if (c.width == 10) litPayload else distPayload;
+        try fillTwoLevel(&root, &spill, c.width, &lens, kind, payload, true);
+        var used: usize = 0;
+        for (root) |entry| {
+            if (entry.kind == .long) used = @max(used, entry.payload + (@as(usize, 1) << @intCast(entry.extra)));
+        }
+        try std.testing.expectEqual(c.fill, used);
+        try std.testing.expectError(error.BadHuffman, fillTwoLevel(&root, spill[0 .. c.fill - 1], c.width, &lens, kind, payload, true));
     }
 }
 
