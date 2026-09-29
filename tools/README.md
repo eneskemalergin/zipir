@@ -26,7 +26,7 @@ The default everywhere is the _prime_ peers at their three _lane_ levels on the 
 - `install.sh`: builds or links peers and oracles, and checks installs.
 - `corpus.sh`: fetches, derives, and verifies the corpus.
 - `qualify.sh`: correctness checks per peer, with a receipt.
-- `bench.sh`: matched Zebrac timing.
+- `bench.sh`: matched timing with [Zebrac](https://github.com/eneskemalergin/zebrac) 0.6.2.
 - `report.py`: the per-run facts table and Markdown summary.
 - `build.zig`, `build.zig.zon`, `zig/`: Zig adapters. `zipir-gzip` and `zipir-zlib` import the repository as a path dependency, so they get the same CPU backend code as the library build.
 - `c/`: the zlib API adapters (host libz, zlib-ng native API, libdeflate full buffer).

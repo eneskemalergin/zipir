@@ -68,12 +68,19 @@ Requires Zig 0.16.0.
 
 ```sh
 zig build -Doptimize=ReleaseFast
-./zig-out/bin/zipir compress --even input > output.gz
-./zig-out/bin/zipir decompress input.gz > output
-cat input.gz | ./zig-out/bin/zipir test > /dev/null
+./zig-out/bin/zipir compress input > input.gz
+./zig-out/bin/zipir compress --dense input > input.dense.gz
+./zig-out/bin/zipir decompress input.gz > input.out
+./zig-out/bin/zipir test < input.gz
+./zig-out/bin/zipir compress --format bgzf reads.fastq > reads.fastq.gz
+./zig-out/bin/zipir bgzf index reads.fastq.gz
+./zig-out/bin/zipir tar create notes > notes.tar.gz
+./zig-out/bin/zipir tar list notes.tar.gz
 ```
 
-The default build targets the host CPU. `-Dcpu=baseline` builds a portable binary that still picks the PCLMUL CRC-32 and AVX2 Adler-32 kernels at run time when the CPU has them.
+`compress` writes gzip at the `--even` preset unless `--format` (`gzip`, `zlib`, `deflate`, `bgzf`) or `--fast` or `--dense` says otherwise. `decompress` and `test` detect gzip, BGZF, and zlib; raw DEFLATE has no signature and needs `--format deflate`. BGZF blocks end at text lines, as `bgzip`'s do, unless the input has NUL bytes or `--binary` is given; `bgzf index` writes the `.gzi` file `bgzip -r` writes. `tar list`, `tar test`, and `tar create` work on plain, gzip, zlib, and BGZF archives; zipir does not extract archives. `zipir --help` lists every option.
+
+The default build targets the host CPU. `-Dcpu=baseline` builds a portable binary that still picks the PCLMUL CRC-32 and AVX2 Adler-32 kernels at run time when the CPU has them. `-Dkernel-backend=portable` forces every kernel onto its portable path; it replaces 0.1.2's `-Dadler-backend=scalar`.
 
 ## Library
 
@@ -103,7 +110,47 @@ _ = try encoder.finish();
 try out.interface.flush();
 ```
 
-A whole stream is one pump either way: `decoder.reader.streamRemaining(writer)`, or `input.streamRemaining(&encoder.writer)` then `encoder.finish()`. Every format namespace (`zipir.gzip`, `zipir.zlib`, `zipir.deflate`, `zipir.bgzf`) has the same `Decompressor`, `DecompressOptions`, `DecompressError`, `Compressor`, `CompressOptions`, and `CompressError`; BGZF's decompressor also seeks by virtual offset or through a `.gzi` index. `max_output_bytes` bounds decoded output and gzip's `max_header_bytes` bounds header fields.
+A whole stream is one pump either way: `decoder.reader.streamRemaining(writer)`, or `input.streamRemaining(&encoder.writer)` then `encoder.finish()`. Every format namespace (`zipir.gzip`, `zipir.zlib`, `zipir.deflate`, `zipir.bgzf`) has the same `Decompressor`, `DecompressOptions`, `DecompressError`, `Compressor`, `CompressOptions`, and `CompressError`, so zlib and raw DEFLATE read and write exactly as above. `max_output_bytes` bounds decoded output and gzip's `max_header_bytes` bounds header fields.
+
+BGZF adds block-level work and random access: the compressor can fill a `.gzi` index as it writes, and the decompressor seeks by virtual offset (`seek`) or by uncompressed offset through the index (`seekUncompressed`).
+
+```zig
+var entries: [4096]zipir.bgzf.IndexEntry = undefined;
+var index: zipir.bgzf.IndexBuilder = .init(&entries);
+const writer = try allocator.create(zipir.bgzf.Compressor);
+defer allocator.destroy(writer);
+try writer.init(&out.interface, .{ .preset = .fast, .split = .lines, .index = &index });
+try writer.writer.writeAll(reads);
+_ = try writer.finish();
+try out.interface.flush();
+try zipir.bgzf.writeIndex(&gzi.interface, index.slice());
+
+const reader = try allocator.create(zipir.bgzf.Decompressor);
+defer allocator.destroy(reader);
+reader.init(&file_reader.interface, .{});
+try reader.seekUncompressed(&file_reader, index.slice(), 1_000_000);
+const line = try reader.reader.takeDelimiterExclusive('\n');
+```
+
+tar joins the codecs through the same interfaces: `zipir.tar.Writer(Source)` is a reader of the archive it builds, so a compressor pulls from it, and `zipir.tar.Reader(Visitor)` is a writer that calls the visitor per entry, so a decompressor pushes into it. A `.tar.gz` round trip:
+
+```zig
+// Source declares `next(*Source) !?zipir.tar.Entry` and `data(*Source) *std.Io.Reader`.
+var tar_buffer: [4096]u8 = undefined;
+var archive: zipir.tar.Writer(Source) = .init(&source, &tar_buffer, .{});
+try gz.init(&out.interface, .{});
+_ = try archive.reader.streamRemaining(&gz.writer);
+_ = try gz.finish();
+try out.interface.flush();
+
+// Visitor declares `entry(*Visitor, Entry) !Action`, `data(*Visitor, []const u8) !void`, and `entryEnd(*Visitor) !void`.
+var name: [zipir.tar.MAX_NAME + 1]u8 = undefined;
+var link: [zipir.tar.MAX_NAME + 1]u8 = undefined;
+var tar_reader: zipir.tar.Reader(Visitor) = .init(&visitor, .{ .name = &name, .link = &link });
+gunzip.init(&in.interface, .{});
+_ = try gunzip.reader.streamRemaining(&tar_reader.writer);
+const summary = try tar_reader.finish(); // entries, and whether the end blocks were there
+```
 
 To use zipir from another Zig project, add it to `build.zig.zon` (for example `.zipir = .{ .path = "../zipir" }`) and import its module:
 
@@ -127,21 +174,28 @@ exe.root_module.addImport("zipir", zipir.module("zipir"));
 
 The [full report](bench/linux-x86-avx2/README.md) covers gzip, zlib, raw DEFLATE, and BGZF on sequencing, mass spectrometry, and general corpus files against zlib-ng, ISA-L igzip, the Zig standard library, and htslib `bgzip` built with libdeflate and with zlib-ng. Every tool's output was checked against an independent decoder before it was timed. The comparison adapters, corpus, and checks live in [`tools/`](tools/).
 
+The report predates the release code: its zipir compression rows were measured at commit `5f25547` and its decompression rows at `ff8e9e8`, before 0.2.0's last decode-speed changes and the move to `std.Io` readers and writers. A matched run of the same peers on the small files at the release code showed decompression faster and gzip, zlib, and raw DEFLATE compression a few percent slower (the cost of the writer interface), with identical compressed bytes. The timing tool is [Zebrac](https://github.com/eneskemalergin/zebrac) 0.6.2.
+
 ## Roadmap
 
-- Keep tuning gzip and zlib against real corpus shapes without losing bounded streaming behavior.
+- Decode each BGZF block whole with its size known, the largest remaining gap on the bioinformatics path.
+- Recover the 2% to 3% that gzip, zlib, and raw DEFLATE compression gave up for the writer interface in 0.2.0.
+- Keep tuning against real corpus shapes without losing bounded streaming behavior.
 - Extend the benchmark report: large files, more peers, and a single command that reruns it.
 - Move the complete API, format notes, and benchmark methods into the wiki.
 
 ## Development
 
 ```sh
-zig fmt --check src tests build.zig
+zig fmt --check src tests build.zig tools/build.zig tools/zig
 zig build test --summary all
 zig build test -Doptimize=ReleaseSafe --summary all
+zig build test -Doptimize=ReleaseFast --summary all
 zig build test -Dkernel-backend=portable --summary all
 zig build test -Dcpu=baseline --summary all
 ```
+
+The same checks, plus the four cross-target compiles and `shellcheck`, run in CI (`.github/workflows/ci.yml`).
 
 ---
 
