@@ -1,0 +1,98 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The full CI graph on the tagged commit, without caches: tests on every lane, the source package fetched and
+  # tested, and each lane's release binary packaged and smoke-tested. The tag must match the version and have a
+  # CHANGELOG.md entry.
+  verify:
+    name: Verify release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
+    with:
+      release: true
+
+  publish:
+    name: Publish release
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag must be vX.Y.Z: $TAG" >&2; exit 1; }
+          test "$TAG" = "v$VERSION"
+          main=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          test "$GITHUB_SHA" = "$main" || { echo "tag $TAG is not main's head ($main)" >&2; exit 1; }
+
+      - name: Download the tested packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/assets
+          merge-multiple: true
+
+      - name: Prepare notes and checksums
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/assets"
+          for name in source linux-x86_64 linux-aarch64 macos-x86_64 macos-aarch64; do
+            test -s "zipir-$VERSION-$name.tar.gz"
+          done
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 5
+          sha256sum ./*.tar.gz > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          cd "$GITHUB_WORKSPACE"
+          bash .github/scripts/release.sh notes "$TAG" > "$RUNNER_TEMP/notes.md"
+
+      # A draft first, so a failed upload or attestation can be re-run without a half-published release.
+      - name: Create or resume the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            test "$draft" = true || { echo "release $TAG is already published" >&2; exit 1; }
+          else
+            gh release create "$TAG" --draft --verify-tag --title "zipir $TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          gh release upload "$TAG" "$RUNNER_TEMP/assets"/* --clobber
+
+      - name: Attest the release packages
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-checksums: ${{ runner.temp }}/assets/SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$TAG" --draft=false --latest --verify-tag
