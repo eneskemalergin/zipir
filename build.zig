@@ -124,6 +124,7 @@ fn backendObject(
         .root_source_file = b.path(b.fmt("src/kernel/{s}.zig", .{name})),
         .target = b.resolveTargetQuery(query),
         .optimize = optimize,
+        .single_threaded = true,
     });
     module.addOptions("kernel_options", object_options);
     return b.addObject(.{ .name = name, .root_module = module, .use_llvm = true });
