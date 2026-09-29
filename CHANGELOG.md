@@ -4,10 +4,15 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 ## [Unreleased]
 
+### Added
+
+- `zlib.SliceDecoder` and `deflate.SliceDecoder` decode one complete stream held in memory straight into your buffer, with a workspace of tables only (7,704 bytes) and at most about 16.3 KiB of stack. Reading ten mzML files through zmz, they decode as fast as the reader or up to 2% faster, and the process peaks about 250 KiB lower than with the reader.
+
 ### Changed
 
-- Every decompressor's workspace, and `bgzf.BlockDecoder`, is 25,064 bytes smaller (about 172 KB): the decoding tables are sized to the exact worst case, computed with zlib's `enough`, instead of a loose bound. A process's peak memory does not change, because the unused table entries were never touched.
-- The documentation states when decoded bytes become readable (before a stream's check, except in BGZF) and that preset numbers are not zlib levels.
+- Every decompressor's workspace is 25,064 bytes smaller (about 172 KB): the decoding tables are sized to the exact worst case, computed with zlib's `enough`. A process's peak memory does not change, because the unused entries were never touched.
+- `bgzf.BlockDecoder` is 73,240 bytes instead of 196,608. It still writes `out` only once the block's checks pass.
+- At the exact output limit, a damaged length and distance pair reports its damage, such as `BadDistance`, instead of `OutputLimitExceeded`, so the reader and the slice decoder report the same error for the same stream.
 
 ### Fixed
 

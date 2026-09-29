@@ -42,4 +42,4 @@ BGZF is the exception: `bgzf.Decompressor` makes a block readable only after its
 
 ## Memory
 
-Each workspace has a fixed size that does not grow with input, output, header fields, or block count: about 172 KB for a decompressor, 429 KB for a gzip, zlib, or raw DEFLATE compressor, and 658 KB for a BGZF compressor. The `zipir` command is designed to stay below 2 MB of peak memory on every path; the [benchmark report](https://github.com/eneskemalergin/zipir/blob/main/bench/linux-x86-avx2/README.md) shows the measured peaks.
+Each workspace has a fixed size that does not grow with input, output, header fields, or block count: about 172 KB for a decompressor, 7.7 KB for a zlib or raw DEFLATE `SliceDecoder`, 73 KB for a `bgzf.BlockDecoder`, 429 KB for a gzip, zlib, or raw DEFLATE compressor, and 658 KB for a BGZF compressor. The `zipir` command is designed to stay below 2 MB of peak memory on every path; the [benchmark report](https://github.com/eneskemalergin/zipir/blob/main/bench/linux-x86-avx2/README.md) shows the measured peaks.

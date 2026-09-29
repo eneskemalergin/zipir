@@ -28,6 +28,7 @@ To build against a local checkout without editing `build.zig.zon`, run `zig buil
 A workspace is large, so allocate it once and reuse it:
 
 - about 172 KB for any decompressor;
+- 7.7 KB for a zlib or raw DEFLATE `SliceDecoder`, and 73 KB for a `bgzf.BlockDecoder`;
 - 429 KB for a gzip, zlib, or raw DEFLATE compressor;
 - 658 KB for a BGZF compressor, which stages two blocks of input to cut blocks as `bgzip` does.
 
@@ -76,6 +77,18 @@ try out.interface.flush();
 ## zlib and raw DEFLATE
 
 Every format namespace (`zipir.gzip`, `zipir.zlib`, `zipir.deflate`, `zipir.bgzf`) has the same `Decompressor`, `DecompressOptions`, `DecompressError`, `Compressor`, `CompressOptions`, and `CompressError`, so zlib and raw DEFLATE read and write exactly as above. `zipir.Decompressor(.zlib)` and `zipir.Compressor(.zlib)` name the same types when the format is a comptime value.
+
+For many independent streams already in memory, such as the binary arrays of an mzML file, `SliceDecoder` decodes one complete zlib or raw DEFLATE stream straight into a buffer you own, with a 7.7 KB workspace and up to about 16.3 KiB of stack:
+
+```zig
+// One whole zlib stream in memory, decoded into a buffer of the size you expect.
+const slicer = try allocator.create(zipir.zlib.SliceDecoder);
+defer allocator.destroy(slicer);
+const n = try slicer.decode(compressed, values);
+if (n != values.len) return error.ShortArray;
+```
+
+For zlib, `decode` checks the header and the Adler-32; for either format it rejects bytes after the stream, and `OutputLimitExceeded` means the stream needs more room than the buffer. Bytes of the buffer past the returned length are unspecified. Use the `Decompressor` reader for files and pipes, `SliceDecoder` for streams held whole in memory, and `bgzf.BlockDecoder` for single BGZF blocks.
 
 ## BGZF, indexes, and seeking
 

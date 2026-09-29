@@ -33,7 +33,7 @@ The library has no external dependencies, does not create threads, and does not 
 - **gzip, zlib, and raw DEFLATE**, compressed and decompressed, with three presets: `fast`, `even` (the default), and `dense`.
 - **BGZF**, the blocked gzip of bioinformatics: blocks that end at text lines as `bgzip`'s do, `.gzi` indexes, and seeking by virtual or uncompressed offset.
 - **tar** archives (ustar, pax, GNU), read and written through any of the formats above.
-- A library of `std.Io` readers and writers over workspaces you own, and a `zipir` command for all of it.
+- A library of `std.Io` readers and writers over workspaces you own, a decoder for whole zlib and raw DEFLATE streams held in memory, and a `zipir` command for all of it.
 
 <p align="center">
   <a href="bench/linux-x86-avx2/README.md">

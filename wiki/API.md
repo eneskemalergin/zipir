@@ -27,16 +27,23 @@ Every decoder can fail with `Truncated`, `BadHuffman`, `BadSymbol`, `BadDistance
 - zlib: `BadHeader`, `UnsupportedMethod`, `WindowTooLarge`, `DictionaryUnsupported`, `BadAdler`.
 - deflate: nothing more; raw DEFLATE has no header or check.
 
+## Slice decoding: zlib and deflate
+
+`zipir.zlib` and `zipir.deflate` also declare `SliceDecoder`, for a complete stream held in memory:
+
+- `decode(self, input: []const u8, output: []u8) DecompressError!usize` decodes the stream in `input` into `output` and returns the decoded length. `OutputLimitExceeded` means the stream needs more room than `output`; bytes after the stream are `TrailingData`. `output` past the returned length, and all of it after an error, is unspecified. `input` and `output` must not overlap.
+- The workspace holds only tables (7,704 bytes), keeps nothing between calls, and may be moved or copied between them. An output under 16 KiB is decoded into a stack buffer and copied, so a call uses up to about 16.3 KiB of stack.
+
 ## bgzf
 
-- `Decompressor`, `DecompressOptions`, `DecompressError`: as above. `DecompressOptions` has `max_output_bytes`, `trailing_data`, and `require_eof_marker: bool = false`. The decompressor also has `seek(self, source: *std.Io.File.Reader, offset: VirtualOffset)` and `seekUncompressed(self, source: *std.Io.File.Reader, entries: []const IndexEntry, uoffset: u64)`, and its `framing.blocks` and `framing.eof_marker` tell what was read. Its input reader needs a buffer of at least 28 bytes.
+- `Decompressor`, `DecompressOptions`, `DecompressError`: as above. `DecompressOptions` has `max_output_bytes`, `trailing_data`, and `require_eof_marker: bool = false`. The decompressor also has `seek(self, source: *std.Io.File.Reader, offset: VirtualOffset)` and `seekUncompressed(self, source: *std.Io.File.Reader, entries: []const IndexEntry, uoffset: u64)`, and its `framing.blocks` and `framing.eof_marker` tell what was read.
 - `DecompressError` adds to gzip's: `NotBgzf`, `BadBlockSize`, `BlockSizeMismatch`, `BlockTooLarge`, `MissingEofMarker`, `BadVirtualOffset`, `BadIndex`.
 - `Compressor`: `init(self, output, options) std.Io.Writer.Error!void`, `writer`, `err: ?CompressError`, `finish(self) std.Io.Writer.Error!Totals`.
 - `CompressOptions`: `preset: Preset = .even`, `split: Split = .fill`, `index: ?*IndexBuilder = null`. `CompressError`: `error{ WriteFailed, IndexFull }`. `Totals`: `uncompressed: u64`, `compressed: u64`.
 - `Split`: `enum { fill, lines }`. `.lines` gives the block boundaries of `bgzip` 1.24 on text.
 - `VirtualOffset`: `packed struct(u64) { uoffset: u16, coffset: u48 }`.
 - `scan(reader, options: ScanOptions) Scanner`; `Scanner.next() DecompressError!?Block`; `Block`: `coffset: u64`, `size: u32`, `data_size: u32`; `ScanOptions`: `trailing_data`, `require_eof_marker`. The scanner reads block headers and trailers without decoding.
-- `BlockDecoder`: `decodeBlock(self, block: []const u8, out: *[MAX_BLOCK]u8) DecompressError!usize` decodes one whole block.
+- `BlockDecoder`: `decodeBlock(self, block: []const u8, out: *[MAX_BLOCK]u8) DecompressError!usize` decodes one whole block and writes `out` only once the block's checks pass.
 - `BlockSplitter`: `init(split)`, `next(self, available: []const u8, at_end: bool) ?usize` returns the length of the next block, never 0; `LOOKAHEAD`.
 - `BlockEncoder`: `compressBlock(self, input: []const u8, out: *[MAX_BLOCK]u8, preset) usize` asserts at most `BLOCK_INPUT` bytes of input.
 - `IndexEntry`: `coffset: u64`, `uoffset: u64`. `IndexBuilder`: `init(entries: []IndexEntry)`, `add(self, coffset, data_size) error{IndexFull}!void`, `slice(self)`. `writeIndex(writer, entries)`. `IndexReader`: `init(reader, file_size) DecompressError!IndexReader`, `next(self) DecompressError!?IndexEntry`.
