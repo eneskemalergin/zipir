@@ -7,7 +7,7 @@ Everything below is reached through `@import("zipir")`. The [library guide](Libr
 - `gzip`, `zlib`, `deflate`, `bgzf`, `tar`: the format namespaces below.
 - `Format`: `enum { gzip, zlib, deflate }`.
 - `Decompressor(format)`, `Compressor(format)`: the namespace's `Decompressor` or `Compressor` for a comptime `Format`.
-- `Preset`: `enum { fast = 1, even = 5, dense = 9 }`. The tag values are the zlib levels each preset is compared with, and the command's `--level 1|5|9` spelling maps onto them.
+- `Preset`: `enum { fast = 1, even = 5, dense = 9 }`. The tag values are what the command's `--level 1|5|9` spelling maps onto, not zlib levels: compare presets with another compressor by measured speed and size, not by number.
 - `version`: a `std.SemanticVersion`.
 
 ## The shared shape of gzip, zlib, and deflate
@@ -16,7 +16,7 @@ Each of `zipir.gzip`, `zipir.zlib`, and `zipir.deflate` declares:
 
 - `Decompressor`: `init(self, input: *std.Io.Reader, options: DecompressOptions) void`; fields `reader: std.Io.Reader` (the decoded bytes) and `err: ?DecompressError` (the reason for a `ReadFailed`).
 - `DecompressOptions`: `max_output_bytes: u64 = maxInt(u64)`, `trailing_data: enum { reject, leave } = .reject`; gzip adds `max_header_bytes: u64 = 1 << 20`.
-- `DecompressError`: the errors below, plus `InputBufferTooSmall` (the input reader's buffer is under 16 bytes) and `PeekTooLarge` (a peek larger than the decoded-byte buffer can hold).
+- `DecompressError`: the errors below, plus `InputBufferTooSmall` (`trailing_data = .leave` with an input reader whose buffer is under 16 bytes, 28 for BGZF) and `PeekTooLarge` (a peek larger than the decoded-byte buffer can hold).
 - `Compressor`: `init(self, output: *std.Io.Writer, options: CompressOptions) CompressError!void`; field `writer: std.Io.Writer`; `finish(self) CompressError!u64` returns the number of plain bytes.
 - `CompressOptions`: `preset: Preset = .even`.
 - `CompressError`: `std.Io.Writer.Error`.

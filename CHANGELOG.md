@@ -4,6 +4,15 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 ## [Unreleased]
 
+### Changed
+
+- Every decompressor's workspace, and `bgzf.BlockDecoder`, is 25,064 bytes smaller (about 172 KB): the decoding tables are sized to the exact worst case, computed with zlib's `enough`, instead of a loose bound. A process's peak memory does not change, because the unused table entries were never touched.
+- The documentation states when decoded bytes become readable (before a stream's check, except in BGZF) and that preset numbers are not zlib levels.
+
+### Fixed
+
+- Decompressors and `bgzf.scan` accept an input reader whose buffer has any size; a buffer under 16 bytes (28 for `bgzf.Decompressor`) used to fail with `InputBufferTooSmall`. The error remains only with `trailing_data = .leave`, where the bytes after the stream must stay in the caller's reader.
+
 ## [0.2.0] - 2026-09-28
 
 The first public release.

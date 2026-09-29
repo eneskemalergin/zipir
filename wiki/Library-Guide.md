@@ -21,13 +21,13 @@ exe.root_module.addImport("zipir", zipir.module("zipir"));
 
 Your code can now `@import("zipir")`. Importing the module builds neither zipir's command nor its tests. To force every CPU kernel onto its portable path, pass `.@"kernel-backend" = .portable` beside `.target`; [Platforms and acceleration](Platforms-and-Acceleration) explains when that helps.
 
-To work against a local checkout instead, point the dependency at it: `.zipir = .{ .path = "../zipir" }` in `build.zig.zon`.
+To build against a local checkout without editing `build.zig.zon`, run `zig build --fork=../zipir`: wherever your dependency tree names zipir (matched by package name and fingerprint, whatever the version), Zig uses the checkout, and it fetches nothing for it.
 
 ## Workspaces
 
 A workspace is large, so allocate it once and reuse it:
 
-- about 197 KB for any decompressor;
+- about 172 KB for any decompressor;
 - 429 KB for a gzip, zlib, or raw DEFLATE compressor;
 - 658 KB for a BGZF compressor, which stages two blocks of input to cut blocks as `bgzip` does.
 
@@ -51,7 +51,7 @@ while (decoder.reader.peekGreedy(1)) |chunk| {
 }
 ```
 
-A failed read is always `error.ReadFailed`; `decoder.err` then holds the reason, such as `CrcMismatch`, `Truncated`, `TrailingData`, or the input reader's own `ReadFailed`. To decode a whole stream into a writer, use one pump: `decoder.reader.streamRemaining(writer)`.
+A failed read is always `error.ReadFailed`; `decoder.err` then holds the reason, such as `CrcMismatch`, `Truncated`, `TrailingData`, or the input reader's own `ReadFailed`. Bytes read before that error came before the failed check, so treat them as unverified until the end of the stream ([when decoded bytes become readable](Formats-and-Limits#when-decoded-bytes-become-readable)). To decode a whole stream into a writer, use one pump: `decoder.reader.streamRemaining(writer)`. The input reader's buffer can be any size, except that `trailing_data = .leave` needs 16 bytes (28 for BGZF) to leave the following bytes in it.
 
 Options bound what untrusted input can cost:
 

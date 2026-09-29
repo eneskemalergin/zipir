@@ -34,6 +34,12 @@ Decompression treats every input as untrusted: it checks each field before using
 - Writes ustar, with a GNU long-name header for a name or link target that does not fit ustar's fields and a base-256 size of 8 GiB or more. Names longer than `MAX_NAME` (4095 bytes) are `NameTooLong`.
 - zipir does not extract archives.
 
+## When decoded bytes become readable
+
+gzip, zlib, and raw DEFLATE hand out decoded bytes before the check that ends their stream or member, and a failed check is reported by a later read. Bytes read before an error are therefore unverified: trust them only once the reader reports the end of the stream. zlib's `inflate` and Go's `compress/gzip` work the same way. No bounded decoder can hold back a whole member until its check, so output that precedes a damaged member cannot be withheld; the command's exit status is what reports it.
+
+BGZF is the exception: `bgzf.Decompressor` makes a block readable only after its CRC-32 and ISIZE pass, so a damaged block's bytes are never read. Read BGZF input with it when unverified bytes must never reach the caller.
+
 ## Memory
 
-Each workspace has a fixed size that does not grow with input, output, header fields, or block count: about 197 KB for a decompressor, 429 KB for a gzip, zlib, or raw DEFLATE compressor, and 658 KB for a BGZF compressor. The `zipir` command is designed to stay below 2 MB of peak memory on every path; the [benchmark report](https://github.com/eneskemalergin/zipir/blob/main/bench/linux-x86-avx2/README.md) shows the measured peaks.
+Each workspace has a fixed size that does not grow with input, output, header fields, or block count: about 172 KB for a decompressor, 429 KB for a gzip, zlib, or raw DEFLATE compressor, and 658 KB for a BGZF compressor. The `zipir` command is designed to stay below 2 MB of peak memory on every path; the [benchmark report](https://github.com/eneskemalergin/zipir/blob/main/bench/linux-x86-avx2/README.md) shows the measured peaks.
