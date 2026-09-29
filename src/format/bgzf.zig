@@ -131,7 +131,7 @@ pub const BlockDecoder = struct {
         var br: decode.BitReader = .{ .reader = &reader };
         const header = try readBlockHeader(&br);
         var check: crc.Crc32 = .init();
-        var session: decode.Session(crc.Crc32) = .{ .decoder = &self.decoder, .max_output_bytes = std.math.maxInt(u64), .max_stream_bytes = MAX_BLOCK };
+        var session: decode.Session(crc.Crc32) = .{ .tables = &self.decoder.tables, .storage = &self.decoder.buffer, .max_output_bytes = std.math.maxInt(u64), .max_stream_bytes = MAX_BLOCK };
         session.begin(&br, &check);
         if (try mapBlockError(session.run()) != .end) unreachable;
         const size = session.out_pos;

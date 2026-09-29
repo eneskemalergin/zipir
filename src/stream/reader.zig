@@ -72,7 +72,7 @@ pub fn Decompressor(comptime Framing: type) type {
             self.input = input;
             const small = input.buffer.len < Framing.min_input_buffer;
             self.deferred = if (small and options.trailing_data == .leave) error.InputBufferTooSmall else null;
-            self.session = .{ .decoder = &self.decoder, .max_output_bytes = options.max_output_bytes };
+            self.session = .{ .tables = &self.decoder.tables, .storage = &self.decoder.buffer, .max_output_bytes = options.max_output_bytes };
             if (whole_streams) self.session.max_stream_bytes = Framing.max_stream_bytes;
             self.br = .{ .reader = if (small) self.staging.init() else input };
             self.framing = Framing.init(options);

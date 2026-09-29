@@ -1,6 +1,7 @@
-//! DEFLATE decoding (RFC 1951) into a bounded buffer that pauses when full. The owner of a `Session` reads
-//! `buffer[0..out_pos]`, then `rebase` keeps the unread bytes and 32 KiB of history; bits, block state, and a match
-//! cut short by a full buffer carry over to the next `run`, and new bytes are in the check when `run` returns.
+//! DEFLATE decoding (RFC 1951) into bounded output storage that pauses when full. The owner gives a `Session` its
+//! tables and its storage, reads `storage[0..out_pos]`, then `rebase` keeps the unread bytes and 32 KiB of history;
+//! bits, block state, and a match cut short by full storage carry over to the next `run`, and new bytes are in the
+//! check when `run` returns.
 
 const std = @import("std");
 const copy = @import("../kernel/copy.zig");
@@ -194,7 +195,8 @@ pub fn Session(comptime Check: type) type {
     return struct {
         const Self = @This();
 
-        decoder: *Decoder,
+        tables: *Tables,
+        storage: []u8,
         br: *BitReader = undefined,
         check: *Check = undefined,
         out: []u8 = &.{},
@@ -232,7 +234,7 @@ pub fn Session(comptime Check: type) type {
             const from = @min(keep_from, self.out_pos -| WINDOW);
             if (from != 0) {
                 const kept = self.out_pos - from;
-                @memmove(self.decoder.buffer[0..kept], self.decoder.buffer[from..self.out_pos]);
+                @memmove(self.storage[0..kept], self.storage[from..self.out_pos]);
                 self.base += from;
                 self.out_pos = kept;
                 self.check_pos -= from;
@@ -248,12 +250,12 @@ pub fn Session(comptime Check: type) type {
         fn limit(self: *Self) void {
             const at = self.position();
             const allowed = @min(self.max_output_bytes - at, (self.stream_start +| self.max_stream_bytes) - at);
-            const room = self.decoder.buffer.len - self.out_pos;
-            self.out = self.decoder.buffer[0 .. self.out_pos + @as(usize, @intCast(@min(room, allowed)))];
+            const room = self.storage.len - self.out_pos;
+            self.out = self.storage[0 .. self.out_pos + @as(usize, @intCast(@min(room, allowed)))];
         }
 
         fn full(self: *const Self) DecodeError!Stop {
-            if (self.out.len < self.decoder.buffer.len) return error.OutputLimitExceeded;
+            if (self.out.len < self.storage.len) return error.OutputLimitExceeded;
             return .full;
         }
 
@@ -298,7 +300,7 @@ pub fn Session(comptime Check: type) type {
                     .end => self.block = .header,
                     .full => return self.full(),
                 },
-                .dynamic => switch (try decodeHuff(Check, self, &self.decoder.tables.lit_first, &self.decoder.tables.dist_first)) {
+                .dynamic => switch (try decodeHuff(Check, self, &self.tables.lit_first, &self.tables.dist_first)) {
                     .end => self.block = .header,
                     .full => return self.full(),
                 },
@@ -327,8 +329,8 @@ pub fn Session(comptime Check: type) type {
             var dist_lens: [32]u4 = .{0} ** 32;
             @memcpy(dist_lens[0..hdist], all_lens[hlit..total_lens]);
             if (lit_lens[256] == 0) return error.BadHuffman;
-            try fillTwoLevel(&self.decoder.tables.lit_first, &self.decoder.tables.lit_spill, 10, &lit_lens, litKind, litPayload, true);
-            try fillTwoLevel(&self.decoder.tables.dist_first, &self.decoder.tables.dist_spill, 9, &dist_lens, distKind, distPayload, true);
+            try fillTwoLevel(&self.tables.lit_first, &self.tables.lit_spill, 10, &lit_lens, litKind, litPayload, true);
+            try fillTwoLevel(&self.tables.dist_first, &self.tables.dist_spill, 9, &dist_lens, distKind, distPayload, true);
         }
 
         fn catchup(self: *Self) void {
@@ -638,7 +640,7 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
         bits |= word << @as(u6, @truncate(count));
         in += 7 - (@as(u8, @truncate(count)) >> 3);
         count |= 56;
-        if (e.kind == .long) e = lookupLong(e, &ctx.decoder.tables.lit_spill, bits, 10);
+        if (e.kind == .long) e = lookupLong(e, &ctx.tables.lit_spill, bits, 10);
         if (e.kind == .invalid or e.kind == .dist) return error.BadSymbol;
         const raw: u32 = @bitCast(e);
         bits >>= @as(u6, @truncate(raw));
@@ -656,7 +658,7 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
         bits >>= extra;
         count -%= extra;
         var d = dist[@intCast(bits & ((1 << 9) - 1))];
-        if (d.kind == .long) d = lookupLong(d, &ctx.decoder.tables.dist_spill, bits, 9);
+        if (d.kind == .long) d = lookupLong(d, &ctx.tables.dist_spill, bits, 9);
         if (d.kind != .dist) return error.BadSymbol;
         const draw: u32 = @bitCast(d);
         bits >>= @as(u6, @truncate(draw));
@@ -701,7 +703,7 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
         if (try @call(.never_inline, decodeFast, .{ Check, ctx, lit, dist })) return .end;
         try br.fill(15);
         var e = peekFirst(lit, 10, br.bits);
-        if (e.kind == .long) e = lookupLong(e, &ctx.decoder.tables.lit_spill, br.bits, 10);
+        if (e.kind == .long) e = lookupLong(e, &ctx.tables.lit_spill, br.bits, 10);
         if (br.nbits < 15 and (e.kind == .invalid or e.nbits > br.nbits)) return error.Truncated;
         switch (e.kind) {
             .eob => {
@@ -721,7 +723,7 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
                 const length: usize = e.payload + add;
                 try br.fill(15);
                 var d = peekFirst(dist, 9, br.bits);
-                if (d.kind == .long) d = lookupLong(d, &ctx.decoder.tables.dist_spill, br.bits, 9);
+                if (d.kind == .long) d = lookupLong(d, &ctx.tables.dist_spill, br.bits, 9);
                 if (br.nbits < 15 and (d.kind != .dist or d.nbits > br.nbits)) return error.Truncated;
                 if (d.kind != .dist) return error.BadSymbol;
                 br.consume(d.nbits);
@@ -953,7 +955,8 @@ test "[edge] - [deflate decoder]: decoded counters stop at the u64 output bound"
     var br: BitReader = .{ .reader = &reader };
     var check: TestCheck = .{};
     var ctx: Session(TestCheck) = .{
-        .decoder = decoder,
+        .tables = &decoder.tables,
+        .storage = &decoder.buffer,
         .base = std.math.maxInt(u64) - 1,
         .max_output_bytes = std.math.maxInt(u64),
     };
@@ -988,7 +991,7 @@ fn pumpSession(session: *Session(SumCheck), size: usize, expected: []const u8) !
             continue;
         }
         const n = @min(size, session.out_pos - seek);
-        try std.testing.expectEqualSlices(u8, expected[got..][0..n], session.decoder.buffer[seek..][0..n]);
+        try std.testing.expectEqualSlices(u8, expected[got..][0..n], session.storage[seek..][0..n]);
         got += n;
         seek += n;
         if (stop == .full and seek < session.out_pos) {
@@ -1026,7 +1029,7 @@ test "[property] - [deflate decoder]: paused decoding returns the stream at ever
             var reader = std.Io.Reader.fixed(writer.buffered());
             var br: BitReader = .{ .reader = &reader };
             var check: SumCheck = .{};
-            var session: Session(SumCheck) = .{ .decoder = decoder, .max_output_bytes = std.math.maxInt(u64) };
+            var session: Session(SumCheck) = .{ .tables = &decoder.tables, .storage = &decoder.buffer, .max_output_bytes = std.math.maxInt(u64) };
             session.begin(&br, &check);
             try pumpSession(&session, size, plain);
             try std.testing.expectEqual(@as(u64, plain.len), session.position());
@@ -1036,7 +1039,7 @@ test "[property] - [deflate decoder]: paused decoding returns the stream at ever
             var reader = std.Io.Reader.fixed(writer.buffered());
             var br: BitReader = .{ .reader = &reader };
             var check: SumCheck = .{};
-            var session: Session(SumCheck) = .{ .decoder = decoder, .max_output_bytes = max };
+            var session: Session(SumCheck) = .{ .tables = &decoder.tables, .storage = &decoder.buffer, .max_output_bytes = max };
             session.begin(&br, &check);
             if (max == plain.len) {
                 try pumpSession(&session, 65536, plain);
@@ -1063,7 +1066,7 @@ test "[edge] - [deflate decoder]: streams whose last code ends at the end of inp
         var reader = std.Io.Reader.fixed(case[0]);
         var br: BitReader = .{ .reader = &reader };
         var check: TestCheck = .{};
-        var session: Session(TestCheck) = .{ .decoder = decoder, .max_output_bytes = std.math.maxInt(u64) };
+        var session: Session(TestCheck) = .{ .tables = &decoder.tables, .storage = &decoder.buffer, .max_output_bytes = std.math.maxInt(u64) };
         session.begin(&br, &check);
         try std.testing.expectEqual(Stop.end, try session.run());
         try std.testing.expectEqualSlices(u8, case[1], decoder.buffer[0..session.out_pos]);
@@ -1099,7 +1102,8 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
             var ctx: Session(TestCheck) = .{
                 .br = &br,
                 .check = &check,
-                .decoder = decoder,
+                .tables = &decoder.tables,
+                .storage = &decoder.buffer,
                 .out = decoder.buffer[0 .. WINDOW + room],
                 .out_pos = WINDOW,
                 .max_output_bytes = std.math.maxInt(u64),
@@ -1144,7 +1148,8 @@ test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-
         var ctx: Session(TestCheck) = .{
             .br = &br,
             .check = &check,
-            .decoder = decoder,
+            .tables = &decoder.tables,
+            .storage = &decoder.buffer,
             .out = &decoder.buffer,
             .out_pos = WINDOW,
             .max_output_bytes = std.math.maxInt(u64),
