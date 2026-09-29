@@ -10,6 +10,10 @@ The published report is [bench/linux-x86-avx2](https://github.com/eneskemalergin
 - **Speed and size together.** A faster compressor often writes larger files, so every compression result shows both.
 - **Memory.** Peak resident memory of the whole process.
 
+![Peak memory of zipir and every peer for each format and operation](https://raw.githubusercontent.com/eneskemalergin/zipir/main/bench/linux-x86-avx2/figures/memory-summary-light.svg)
+
+zipir holds each stream in one fixed workspace, so its peak stays near 0.6 MiB on every path and every file. The Zig standard library, also a static Zig program, lands at the same place but takes two to six times as long; part of the gap to the C tools is their libc runtime, not only their codec state.
+
 ## Peers
 
 zlib-ng, ISA-L igzip, the Zig standard library, and htslib `bgzip` built with libdeflate and with zlib-ng, each single-threaded, at the levels the report lists. The preset frontier figures add every level of libdeflate's own command.

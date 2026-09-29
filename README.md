@@ -46,6 +46,17 @@ The library has no external dependencies, does not create threads, and does not 
 </p>
 <p align="center"><sub>Whole-command time against the fastest single-threaded peer on one Linux x86-64 host (AMD Ryzen 9 3950X, AVX2). Left of 1 the peer is faster. For compression, a faster peer often writes larger files, so the hollow marker shows the fastest peer whose output is no larger than zipir's. Open the report for speed-ratio curves, memory, every measured value, and the method.</sub></p>
 
+<p align="center">
+  <a href="bench/linux-x86-avx2/README.md#memory">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="bench/linux-x86-avx2/figures/memory-summary-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="bench/linux-x86-avx2/figures/memory-summary-light.svg">
+      <img src="bench/linux-x86-avx2/figures/memory-summary-light.svg" alt="Peak memory of zipir and every peer for each format and operation on Linux x86-64: zipir about 0.6 MiB on every path, the C peers 1.6 to 3.6 MiB" width="100%">
+    </picture>
+  </a>
+</p>
+<p align="center"><sub>Peak memory of the whole process on the same runs. zipir holds each stream in one fixed workspace, so its peak stays near 0.6 MiB on every path and every file. The Zig standard library, also a static Zig program, lands at the same place but takes two to six times as long; part of the gap to the C tools is their libc runtime, not only their codec state.</sub></p>
+
 ## A few honest tradeoffs
 
 > [!NOTE]

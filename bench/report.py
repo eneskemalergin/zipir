@@ -208,9 +208,9 @@ class Svg:
         self.add(f'<rect x="{x:.1f}" y="{y:.1f}" width="{max(w, 0):.1f}" height="{h:.1f}" rx="{rx}" '
                  f'fill="{self.t[color]}" {extra}/>')
 
-    def marker(self, x, y, family, r=5.5, hollow=False, tip=''):
+    def marker(self, x, y, family, r=5.5, hollow=False, tip='', see_through=False):
         color = self.t[family]
-        fill = self.t['surface'] if hollow else color
+        fill = 'none' if see_through else (self.t['surface'] if hollow else color)
         stroke = f'stroke="{color}" stroke-width="2.2"' if hollow else f'stroke="{self.t["surface"]}" stroke-width="2"'
         shape = MARKER[family]
         tip = f'<title>{esc(tip)}</title>' if tip else ''
@@ -524,6 +524,97 @@ def figure_memory(rows, theme, path):
         svg.text(left + pw + 14, cy + 4, f'{span} MiB', 12, 'ink2')
     svg.text(28, h - 20, 'Whole-process RSS includes each program\'s runtime and libc, not only codec state. zipir and the '
              'Zig std adapter are static Zig programs; the others load libc.', 12, 'muted')
+    svg.save(path)
+
+
+def figure_memory_summary(rows, meta, theme, path):
+    """Each tool's peak memory on every format and operation, in the summary figure's layout, for the main README."""
+    sel = [r for r in rows if r['class'] in CLASSES]
+    w = 1180
+    left, plot_l, plot_r, col1 = 28, 236, 566, 600
+    row_h = 27
+    groups = []
+    for op in ('decompress', 'compress'):
+        groups.append(('header', 'Decompression' if op == 'decompress' else 'Compression, every level'))
+        for fmt in FORMATS:
+            items = [r for r in sel if r['op'] == op and r['format'] == fmt]
+            if items:
+                groups.append(('row', (fmt, op, items)))
+    top = 124
+    h = top + sum(34 if kind == 'header' else row_h for kind, _ in groups) + 124
+    svg = Svg(w, h, theme, 'Peak memory on every path',
+              'Median peak resident memory of the whole process for each tool, format, and operation.')
+    svg.text(left, 38, 'Peak memory on every path', 20, weight=650)
+    svg.text(left, 62, 'Median peak resident memory of the whole process over the small and medium corpus files, whiskers '
+             'across files and levels. Lower is better.', 13, 'ink2')
+    svg.text(left, 81, f'{meta["cpu"]} (Zen 2, AVX2), Linux, one thread per process, the runs of the summary figure. '
+             f'zipir {meta["commit"][:7]}.', 13, 'ink2')
+    top_mib = 5.0
+    X = lambda v: plot_l + min(v, top_mib) / top_mib * (plot_r - plot_l)
+    placed, y = [], top
+    for kind, item in groups:
+        if kind == 'header':
+            placed.append((kind, item, y + 22))
+            y += 34
+        else:
+            placed.append((kind, item, y + row_h / 2))
+            y += row_h
+    plot_top, plot_bottom = top, y
+    for tick in range(0, 6):
+        svg.line(X(tick), plot_top, X(tick), plot_bottom, 'grid')
+        svg.text(X(tick), plot_bottom + 18, f'{tick}', 11, 'muted', 'middle')
+    svg.text((plot_l + plot_r) / 2, plot_bottom + 36, 'peak memory, MiB', 12, 'ink2', 'middle')
+    svg.text(plot_l + 6, plot_top - 9, 'less memory', 11, 'muted')
+    svg.text(col1, plot_top - 9, 'zipir against the peers', 11, 'muted', weight=600)
+    families_seen = []
+    for kind, item, cy in placed:
+        if kind == 'header':
+            svg.text(left, cy, item, 13, 'ink', weight=650)
+            svg.line(left, cy + 7, w - 28, cy + 7, 'grid')
+            continue
+        fmt, op, items = item
+        svg.text(left + 12, cy + 4, FORMAT_NAME[fmt], 13, 'ink2')
+        by_family = {}
+        for r in items:
+            by_family.setdefault(r['family'], []).append(r['rss_median_bytes'] / 1048576)
+        # Zig std sits on zipir's value, so it is drawn last and hollow: both stay visible.
+        order = [f for f in FAMILY_ORDER if f in by_family and f not in ('zipir', 'zig-std')] + ['zipir']
+        order += ['zig-std'] if 'zig-std' in by_family else []
+        # Peer markers closer than a marker's width are nudged apart vertically so each stays visible.
+        peer_x, nudge = [], 0
+        for fam in order:
+            vals = by_family[fam]
+            if fam not in families_seen:
+                families_seen.append(fam)
+            mx, my = X(statistics_median(vals)), cy
+            if fam not in ('zipir', 'zig-std'):
+                if any(abs(mx - px) < 11 for px in peer_x):
+                    nudge += 1
+                    my = cy + (5 if nudge % 2 else -5)
+                peer_x.append(mx)
+            svg.line(X(min(vals)), cy, X(max(vals)), cy, fam, 2, 'stroke-linecap="round" opacity="0.55"')
+            svg.marker(mx, my, fam, r=7.5 if fam == 'zig-std' else 5.5, hollow=fam == 'zig-std', see_through=fam == 'zig-std',
+                       tip=f'{FAMILY_NAME[fam]}: median {statistics_median(vals):.2f} MiB, {min(vals):.2f} to {max(vals):.2f}')
+        zipir = statistics_median(by_family['zipir'])
+        c_peers = [statistics_median(v) for f, v in by_family.items() if f not in ('zipir', 'zig-std')]
+        text = f'zipir {zipir:.2f} MiB'
+        if c_peers:
+            lo, hi = min(c_peers), max(c_peers)
+            noun = 'C peers' if len(c_peers) > 1 else 'C peer'
+            mib = f'{lo:.1f} MiB' if f'{lo:.1f}' == f'{hi:.1f}' else f'{lo:.1f} to {hi:.1f} MiB'
+            more = f'{lo / zipir:.1f}x' if f'{lo / zipir:.1f}' == f'{hi / zipir:.1f}' else f'{lo / zipir:.1f}x to {hi / zipir:.1f}x'
+            text += f'; {noun} {mib}, {more} more'
+        if 'zig-std' in by_family:
+            text += f'; Zig std {statistics_median(by_family["zig-std"]):.2f} MiB'
+        svg.text(col1, cy + 4, text, 12, 'ink')
+    ly = plot_bottom + 70
+    zig_key = (lambda px, py: svg.marker(px, py, 'zig-std', 6, hollow=True, see_through=True), FAMILY_NAME['zig-std'] + ' (outline)')
+    svg.legend(left, ly, [f for f in FAMILY_ORDER if f in families_seen and f != 'zig-std'],
+               [zig_key] if 'zig-std' in families_seen else [])
+    svg.text(left, ly + 24, 'Whole-process peak: zipir and the Zig std adapter are static Zig programs and the C tools load libc, '
+             'so part of the gap is the process, not the codec.', 12, 'muted')
+    svg.text(left, ly + 42, 'zipir keeps each stream in one fixed workspace, so its peak does not grow with the input: 0.6 MiB on '
+             'small and medium files alike.', 12, 'muted')
     svg.save(path)
 
 
@@ -1152,6 +1243,7 @@ def main():
             figure_tradeoff(rows, fmt, theme, out / 'figures' / f'tradeoff-{fmt}-{theme}.svg')
         figure_decode(rows, theme, out / 'figures' / f'decode-{theme}.svg')
         figure_memory(rows, theme, out / 'figures' / f'memory-{theme}.svg')
+        figure_memory_summary(rows, meta, theme, out / 'figures' / f'memory-summary-{theme}.svg')
         for fmt in FRONTIER:
             if any(r['format'] == fmt for r in meta.get('frontier', [])):
                 figure_frontier(rows, meta['frontier'], fmt, theme, out / 'figures' / f'frontier-{fmt}-{theme}.svg')
