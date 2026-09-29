@@ -216,6 +216,23 @@ test "[property] - [bgzf scan]: blocks, sizes, the EOF marker, and trailing data
     }
 }
 
+test "[failure] - [bgzf block decoder]: a block that fails its checks leaves the caller's output untouched" {
+    const f = try standard();
+    defer std.testing.allocator.destroy(f);
+    const decoder = try std.testing.allocator.create(bgzf.BlockDecoder);
+    defer std.testing.allocator.destroy(decoder);
+    var out: [bgzf.MAX_BLOCK]u8 = undefined;
+    const first = f.bytes[0..f.starts[1]];
+    for ([_]usize{ first.len - 8, first.len - 4, first.len / 2, 20 }) |at| {
+        var damaged: [70000]u8 = undefined;
+        @memcpy(damaged[0..first.len], first);
+        damaged[at] ^= 0x04;
+        @memset(&out, 0x5a);
+        if (decoder.decodeBlock(damaged[0..first.len], &out)) |_| return error.DamagedBlockDecoded else |_| {}
+        for (out) |byte| try std.testing.expectEqual(@as(u8, 0x5a), byte);
+    }
+}
+
 test "[property] - [bgzf block decoder]: every block decoded alone concatenates to the stream's output" {
     const f = try standard();
     defer std.testing.allocator.destroy(f);

@@ -4,10 +4,11 @@
 //! entries (`seekUncompressed`; an offset past the end leaves it at the end). `Compressor` stages two blocks plus
 //! 32 KiB, so `.lines` gives exactly the block boundaries of `bgzip` 1.24 on text; boundaries depend only on the
 //! bytes, and `writer.flush()` ends the open block. Both assume their workspace stays in place while in use.
-//! `BlockEncoder.compressBlock` asserts at most 65280 input bytes; `BlockSplitter.next` never returns 0. `Scanner`
-//! reads block headers without decoding (an input buffer under 2 bytes with `trailing_data = .leave` is
-//! `InputBufferTooSmall`); `IndexBuilder` fills `.gzi` entries as htslib does (one per block with data, except the
-//! first); `IndexReader` rejects entries that do not increase strictly.
+//! `BlockDecoder.decodeBlock` writes `out` only once the block's checks pass. `BlockEncoder.compressBlock` asserts at
+//! most 65280 input bytes; `BlockSplitter.next` never returns 0. `Scanner` reads block headers without decoding (an
+//! input buffer under 2 bytes with `trailing_data = .leave` is `InputBufferTooSmall`); `IndexBuilder` fills `.gzi`
+//! entries as htslib does (one per block with data, except the first); `IndexReader` rejects entries that do not
+//! increase strictly.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
@@ -123,7 +124,8 @@ pub const Scanner = struct {
 pub const Decompressor = stream_reader.Decompressor(DecompressFraming);
 
 pub const BlockDecoder = struct {
-    decoder: decode.Decoder = .{},
+    tables: decode.Tables = undefined,
+    buffer: [MAX_BLOCK]u8 = undefined,
 
     pub fn decodeBlock(self: *BlockDecoder, block: []const u8, out: *[MAX_BLOCK]u8) DecompressError!usize {
         if (block.len < EOF_MARKER.len) return error.BadBlockSize;
@@ -131,19 +133,19 @@ pub const BlockDecoder = struct {
         var br: decode.BitReader = .{ .reader = &reader };
         const header = try readBlockHeader(&br);
         var check: crc.Crc32 = .init();
-        var session: decode.Session(crc.Crc32) = .{ .tables = &self.decoder.tables, .storage = &self.decoder.buffer, .max_output_bytes = std.math.maxInt(u64), .max_stream_bytes = MAX_BLOCK };
+        var session: decode.Session(crc.Crc32) = .{ .tables = &self.tables, .storage = &self.buffer, .max_output_bytes = std.math.maxInt(u64) };
         session.begin(&br, &check);
-        if (try mapBlockError(session.run()) != .end) unreachable;
+        if (try session.run() == .full) return error.BlockTooLarge;
         const size = session.out_pos;
         try readBlockTrailer(&br, header, check.final(), size);
         if (header.block_size != block.len) return error.BlockSizeMismatch;
-        @memcpy(out[0..size], self.decoder.buffer[0..size]);
+        @memcpy(out[0..size], self.buffer[0..size]);
         return size;
     }
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BlockDecoder) == 171544);
+    std.debug.assert(@sizeOf(BlockDecoder) == 73240);
 }
 
 pub const Split = enum { fill, lines };
@@ -532,10 +534,6 @@ fn isHeaderError(err: DecompressError) bool {
 }
 
 const BlockHeader = struct { start: u64, block_size: u64, marker: bool };
-
-fn mapBlockError(result: decode.DecodeError!decode.Stop) DecompressError!decode.Stop {
-    return result catch |err| if (err == error.OutputLimitExceeded) error.BlockTooLarge else err;
-}
 
 const BlockVisitor = struct {
     bsize: ?u16 = null,
