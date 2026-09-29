@@ -138,3 +138,68 @@ pub fn expectErrorNames(comptime Set: type, expected: []const []const u8) !void 
         } else return error.MissingError;
     }
 }
+
+pub fn expectSliceMatchesReader(
+    comptime Namespace: type,
+    slicer: *Namespace.SliceDecoder,
+    reader_decoder: *Namespace.Decompressor,
+    stream: []const u8,
+    output: []u8,
+    scratch: []u8,
+) !void {
+    std.debug.assert(scratch.len == output.len);
+    const sliced = slicer.decode(stream, output);
+    var input = std.Io.Reader.fixed(stream);
+    var sink = std.Io.Writer.fixed(scratch);
+    const read = decompressAll(reader_decoder, &input, &sink, .{ .max_output_bytes = output.len });
+    if (read) |n| {
+        const got = try sliced;
+        try std.testing.expectEqual(@as(usize, @intCast(n)), got);
+        try std.testing.expectEqualSlices(u8, scratch[0..got], output[0..got]);
+    } else |err| {
+        try std.testing.expectError(err, sliced);
+    }
+}
+
+pub fn expectSliceDecoderProperty(comptime Namespace: type, allocator: std.mem.Allocator) !void {
+    const slicer = try allocator.create(Namespace.SliceDecoder);
+    defer allocator.destroy(slicer);
+    const reader_decoder = try allocator.create(Namespace.Decompressor);
+    defer allocator.destroy(reader_decoder);
+    const encoder = try allocator.create(Namespace.Compressor);
+    defer allocator.destroy(encoder);
+    const plain = try allocator.alloc(u8, 200_000);
+    defer allocator.free(plain);
+    var rng = std.Random.DefaultPrng.init(0x511ce);
+    for (plain, 0..) |*b, i| b.* = if (i % 5000 < 3500) "ACGTN\n"[(i * 7 + i / 13) % 6] else rng.random().int(u8);
+    const output = try allocator.alloc(u8, plain.len + 300);
+    defer allocator.free(output);
+    const scratch = try allocator.alloc(u8, plain.len + 300);
+    defer allocator.free(scratch);
+    var stream_buffer: std.Io.Writer.Allocating = .init(allocator);
+    defer stream_buffer.deinit();
+    for ([_]usize{ 0, 1, 2, 17, 288, 289, 290, 1000, 5000, 16_383, 16_384, 40_000, 200_000 }) |size| {
+        for ([_]Namespace.CompressOptions{ .{ .preset = .fast }, .{ .preset = .even }, .{ .preset = .dense } }) |options| {
+            stream_buffer.clearRetainingCapacity();
+            var source = std.Io.Reader.fixed(plain[0..size]);
+            _ = try compressAll(encoder, &source, &stream_buffer.writer, options);
+            const stream = stream_buffer.written();
+            try std.testing.expectEqual(size, try slicer.decode(stream, output[0..size]));
+            try std.testing.expectEqualSlices(u8, plain[0..size], output[0..size]);
+            const room = [_]usize{ size -| 1, size, size + 300 };
+            for (room) |len| try expectSliceMatchesReader(Namespace, slicer, reader_decoder, stream, output[0..len], scratch[0..len]);
+            const small = stream.len <= 400;
+            const damaged = try allocator.dupe(u8, stream);
+            defer allocator.free(damaged);
+            for (0..if (small) stream.len else 64) |k| {
+                const at = if (small) k else rng.random().uintLessThan(usize, stream.len);
+                for (room) |len| try expectSliceMatchesReader(Namespace, slicer, reader_decoder, stream[0..at], output[0..len], scratch[0..len]);
+                for ([_]u8{ 0x01, 0x80 }) |bit| {
+                    damaged[at] ^= bit;
+                    for (room) |len| try expectSliceMatchesReader(Namespace, slicer, reader_decoder, damaged, output[0..len], scratch[0..len]);
+                    damaged[at] ^= bit;
+                }
+            }
+        }
+    }
+}

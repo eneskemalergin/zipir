@@ -23,6 +23,8 @@ pub const DecompressError = decode.DecodeError || stream_reader.Error || error{
 
 pub const Decompressor = stream_reader.Decompressor(DecompressFraming);
 
+pub const SliceDecoder = stream_reader.SliceDecoder(DecompressFraming);
+
 pub const CompressOptions = stream_writer.Options;
 
 pub const CompressError = std.Io.Writer.Error;
@@ -31,6 +33,7 @@ pub const Compressor = stream_writer.Compressor(CompressFraming);
 
 comptime {
     std.debug.assert(@sizeOf(Compressor) == 428624);
+    std.debug.assert(@sizeOf(SliceDecoder) == 7704);
 }
 
 const format = @This();

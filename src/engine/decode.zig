@@ -173,7 +173,7 @@ pub const FAST_ROOM = 289;
 const LIT_SPILL_MAX = 308;
 const DIST_SPILL_MAX = 82;
 
-const Tables = struct {
+pub const Tables = struct {
     lit_first: [1 << 10]Entry,
     dist_first: [1 << 9]Entry,
     lit_spill: [LIT_SPILL_MAX]Entry,

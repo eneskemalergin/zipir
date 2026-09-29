@@ -388,3 +388,63 @@ test "[unit] - [zlib]: the public error set names exactly the documented errors"
     const expected = [_][]const u8{ "BadAdler", "BadBlock", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "DictionaryUnsupported", "InputBufferTooSmall", "OutputLimitExceeded", "PeekTooLarge", "ReadFailed", "TrailingData", "Truncated", "UnsupportedMethod", "WindowTooLarge" };
     try support.expectErrorNames(zlib.DecompressError, &expected);
 }
+
+test "[property] - [zlib slice decoder]: every stream, truncation, and bit flip decodes as the reader does" {
+    try support.expectSliceDecoderProperty(zlib, std.testing.allocator);
+}
+
+test "[failure] - [zlib slice decoder]: too little room, trailing bytes, a bad Adler-32, and truncation are rejected" {
+    const allocator = std.testing.allocator;
+    const slicer = try allocator.create(zlib.SliceDecoder);
+    defer allocator.destroy(slicer);
+    const stream = try wrapGzip(allocator, COPY_MEMBER, COPY_MEMBER_PLAIN);
+    defer allocator.free(stream);
+    const output = try allocator.alloc(u8, COPY_MEMBER_PLAIN.len + 1);
+    defer allocator.free(output);
+    try std.testing.expectEqual(COPY_MEMBER_PLAIN.len, try slicer.decode(stream, output[0..COPY_MEMBER_PLAIN.len]));
+    try std.testing.expectEqualSlices(u8, COPY_MEMBER_PLAIN, output[0..COPY_MEMBER_PLAIN.len]);
+    try std.testing.expectEqual(COPY_MEMBER_PLAIN.len, try slicer.decode(stream, output));
+    try std.testing.expectEqualSlices(u8, COPY_MEMBER_PLAIN, output[0..COPY_MEMBER_PLAIN.len]);
+    try std.testing.expectError(error.OutputLimitExceeded, slicer.decode(stream, output[0 .. COPY_MEMBER_PLAIN.len - 1]));
+    try std.testing.expectError(error.OutputLimitExceeded, slicer.decode(stream, output[0..0]));
+    const tail = try std.mem.concat(allocator, u8, &.{ stream, "x" });
+    defer allocator.free(tail);
+    try std.testing.expectError(error.TrailingData, slicer.decode(tail, output));
+    tail[stream.len - 1] ^= 1;
+    try std.testing.expectError(error.BadAdler, slicer.decode(tail[0..stream.len], output));
+    for ([_][]const u8{ "", "\x78", "\x78\x9c", "\x78\x9c\x03" }) |short| {
+        try std.testing.expectError(error.Truncated, slicer.decode(short, output));
+    }
+    const encoder = try allocator.create(Compressor);
+    defer allocator.destroy(encoder);
+    var empty: [16]u8 = undefined;
+    var sink = std.Io.Writer.fixed(&empty);
+    var nothing = std.Io.Reader.fixed("");
+    _ = try support.compressAll(encoder, &nothing, &sink, .{});
+    try std.testing.expectEqual(@as(usize, 0), try slicer.decode(sink.buffered(), output[0..0]));
+}
+
+test "[property] - [zlib slice decoder]: one workspace decodes a mix of streams, and a copy of it decodes the same" {
+    const allocator = std.testing.allocator;
+    const first = try allocator.create(zlib.SliceDecoder);
+    defer allocator.destroy(first);
+    const second = try allocator.create(zlib.SliceDecoder);
+    defer allocator.destroy(second);
+    const copy = try wrapGzip(allocator, COPY_MEMBER, COPY_MEMBER_PLAIN);
+    defer allocator.free(copy);
+    const stored = try wrapGzip(allocator, STORED_MEMBER, STORED_MEMBER_PLAIN);
+    defer allocator.free(stored);
+    const output = try allocator.alloc(u8, @max(COPY_MEMBER_PLAIN.len, STORED_MEMBER_PLAIN.len));
+    defer allocator.free(output);
+    const streams = [_][]const u8{ copy, stored, copy, stored };
+    const plains = [_][]const u8{ COPY_MEMBER_PLAIN, STORED_MEMBER_PLAIN, COPY_MEMBER_PLAIN, STORED_MEMBER_PLAIN };
+    for (streams, plains) |stream, plain| {
+        try std.testing.expectEqual(plain.len, try first.decode(stream, output));
+        try std.testing.expectEqualSlices(u8, plain, output[0..plain.len]);
+    }
+    second.* = first.*;
+    for (streams, plains) |stream, plain| {
+        try std.testing.expectEqual(plain.len, try second.decode(stream, output));
+        try std.testing.expectEqualSlices(u8, plain, output[0..plain.len]);
+    }
+}

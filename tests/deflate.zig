@@ -155,3 +155,7 @@ test "[unit] - [raw deflate]: the public error set names exactly the documented 
     const expected = [_][]const u8{ "BadBlock", "BadDistance", "BadHuffman", "BadStored", "BadSymbol", "InputBufferTooSmall", "OutputLimitExceeded", "PeekTooLarge", "ReadFailed", "TrailingData", "Truncated" };
     try support.expectErrorNames(deflate.DecompressError, &expected);
 }
+
+test "[property] - [raw deflate slice decoder]: every stream, truncation, and bit flip decodes as the reader does" {
+    try support.expectSliceDecoderProperty(deflate, std.testing.allocator);
+}

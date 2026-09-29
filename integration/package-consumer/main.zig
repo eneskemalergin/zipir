@@ -1,5 +1,6 @@
 //! Public contracts of the `zipir` module as a dependent package sees them: streaming round trips for every format
-//! namespace, BGZF indexing and seeking through a file, and a tar archive inside gzip.
+//! namespace, slice decoding for zlib and raw DEFLATE, BGZF indexing and seeking through a file, and a tar archive
+//! inside gzip.
 
 const std = @import("std");
 const zipir = @import("zipir");
@@ -28,6 +29,26 @@ fn roundTrip(comptime format: zipir.Format, preset: zipir.Preset) !void {
 test "[integration] - [package]: gzip, zlib, and raw DEFLATE round-trip at every preset" {
     inline for (.{ .gzip, .zlib, .deflate }) |format| {
         for ([_]zipir.Preset{ .fast, .even, .dense }) |preset| try roundTrip(format, preset);
+    }
+}
+
+test "[integration] - [package]: zlib and raw DEFLATE streams decode by slice into the caller's buffer" {
+    const allocator = std.testing.allocator;
+    inline for (.{ .zlib, .deflate }) |format| {
+        const namespace = if (format == .zlib) zipir.zlib else zipir.deflate;
+        const compressor = try allocator.create(namespace.Compressor);
+        defer allocator.destroy(compressor);
+        const slicer = try allocator.create(namespace.SliceDecoder);
+        defer allocator.destroy(slicer);
+        var compressed: [TEXT.len]u8 = undefined;
+        var sink: std.Io.Writer = .fixed(&compressed);
+        try compressor.init(&sink, .{});
+        try compressor.writer.writeAll(TEXT);
+        _ = try compressor.finish();
+        var plain: [TEXT.len]u8 = undefined;
+        try std.testing.expectEqual(TEXT.len, try slicer.decode(sink.buffered(), &plain));
+        try std.testing.expectEqualStrings(TEXT, &plain);
+        try std.testing.expectError(error.OutputLimitExceeded, slicer.decode(sink.buffered(), plain[0 .. TEXT.len - 1]));
     }
 }
 

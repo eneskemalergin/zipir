@@ -4,9 +4,14 @@
 //! it is readable and may declare `streamError` and a `seeking` field, which enables `seek` and `seekUncompressed`.
 //! An input reader whose buffer is under `min_input_buffer` is read through a staging buffer in the workspace, which
 //! may take bytes past the stream from it, so with `trailing_data = .leave` it is `InputBufferTooSmall`.
+//! `SliceDecoder` decodes one complete stream from a slice into the caller's `output`, which is also the history;
+//! `output` past the returned length, and all of it after an error, is unspecified, and it must not overlap `input`
+//! (asserted). Outputs under `SMALL_OUTPUT` (16 KiB) decode into a stack buffer with the fast loop's room (about
+//! 16.3 KiB of stack) and are copied, so running past `output` is reported in stream order, as the reader reports it.
+//! Its workspace is only tables.
 
 const std = @import("std");
-const decode = @import("../engine/decode.zig");
+const engine = @import("../engine/decode.zig");
 const codes = @import("../engine/codes.zig");
 
 pub const TrailingData = enum { reject, leave };
@@ -30,11 +35,11 @@ pub fn Decompressor(comptime Framing: type) type {
         reader: std.Io.Reader,
         err: ?DecompressError,
         framing: Framing,
-        decoder: decode.Decoder align(8),
+        decoder: engine.Decoder align(8),
         input: *std.Io.Reader,
         staging: Staging,
-        session: decode.Session(Check),
-        br: decode.BitReader,
+        session: engine.Session(Check),
+        br: engine.BitReader,
         check: Check,
         phase: Phase,
         deferred: ?DecompressError,
@@ -217,6 +222,43 @@ pub fn Decompressor(comptime Framing: type) type {
             r.seek -= self.session.rebase(r.seek);
             r.end = self.session.out_pos;
             if (r.buffer.len - r.seek < capacity and self.phase != .done) return self.fail(error.PeekTooLarge);
+        }
+    };
+}
+
+const SMALL_OUTPUT = 16384;
+
+pub fn SliceDecoder(comptime Framing: type) type {
+    return struct {
+        const Self = @This();
+        const Check = Framing.Check;
+
+        tables: engine.Tables = undefined,
+
+        pub fn decode(self: *Self, input: []const u8, output: []u8) Framing.DecompressError!usize {
+            const in_start = @intFromPtr(input.ptr);
+            const out_start = @intFromPtr(output.ptr);
+            std.debug.assert(in_start + input.len <= out_start or out_start + output.len <= in_start);
+            if (output.len >= SMALL_OUTPUT) return self.decodeInto(input, output, output.len);
+            var scratch: [SMALL_OUTPUT + engine.FAST_ROOM]u8 = undefined;
+            const n = try self.decodeInto(input, scratch[0 .. output.len + engine.FAST_ROOM], output.len);
+            @memcpy(output[0..n], scratch[0..n]);
+            return n;
+        }
+
+        fn decodeInto(self: *Self, input: []const u8, storage: []u8, room: usize) Framing.DecompressError!usize {
+            var reader = std.Io.Reader.fixed(input);
+            var br: engine.BitReader = .{ .reader = &reader };
+            var framing = Framing.init(.{});
+            _ = try framing.header(&br);
+            var check = Check.init();
+            var session: engine.Session(Check) = .{ .tables = &self.tables, .storage = storage, .max_output_bytes = std.math.maxInt(u64) };
+            session.begin(&br, &check);
+            const stop = session.run() catch |err| return if (session.out_pos > room) error.OutputLimitExceeded else err;
+            if (stop == .full or session.out_pos > room) return error.OutputLimitExceeded;
+            try framing.trailer(&br, &check, session.position());
+            _ = try framing.header(&br);
+            return session.out_pos;
         }
     };
 }
