@@ -168,6 +168,8 @@ pub const BitReader = struct {
 
 const BATCH = 131072;
 
+pub const FAST_ROOM = 289;
+
 const LIT_SPILL_MAX = 308;
 const DIST_SPILL_MAX = 82;
 
@@ -288,8 +290,8 @@ pub fn Session(comptime Check: type) type {
                 },
                 .stored => {
                     while (self.stored_left != 0) {
-                        if (self.out_pos == self.out.len) return self.full();
                         if (br.i == br.src.len and !try br.refill(1)) return error.Truncated;
+                        if (self.out_pos == self.out.len) return self.full();
                         const n = @min(self.stored_left, br.src.len - br.i, self.out.len - self.out_pos);
                         self.put(try br.getBytes(n));
                         self.stored_left -= n;
@@ -617,7 +619,7 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
     const br = ctx.br;
     const output = ctx.out;
     const input = br.src;
-    if (output.len - ctx.out_pos < 289 or input.len - br.i < 8) return false;
+    if (output.len - ctx.out_pos < FAST_ROOM or input.len - br.i < 8) return false;
     std.debug.assert(br.nbits < 64);
     var bits = br.bits;
     var count = br.nbits;
@@ -625,7 +627,7 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
     const in_stop: [*]const u8 = input.ptr + (input.len - 8);
     var out: [*]u8 = output.ptr + ctx.out_pos;
     const out_start = out;
-    const out_stop: [*]u8 = output.ptr + (output.len - 289);
+    const out_stop: [*]u8 = output.ptr + (output.len - FAST_ROOM);
     const history = ctx.position() - ctx.stream_start;
     defer {
         br.bits = bits;
@@ -677,7 +679,7 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
                 (out + j)[0..32].* = chunk;
             }
         } else if (full_history or decoded >= 32) {
-            copy.repeatSmall((out - 32)[0 .. 32 + 289], 32, distance, length);
+            copy.repeatSmall((out - 32)[0 .. 32 + FAST_ROOM], 32, distance, length);
         } else {
             copy.matchVec16((out - distance)[0 .. distance + length], distance, distance, length);
         }
@@ -717,7 +719,6 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
                 ctx.out_pos += 1;
             },
             .len => {
-                if (ctx.out_pos == ctx.out.len) return .full;
                 br.consume(e.nbits);
                 const add = if (e.extra != 0) try br.get(e.extra) else 0;
                 const length: usize = e.payload + add;
