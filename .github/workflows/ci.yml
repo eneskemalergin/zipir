@@ -4,44 +4,185 @@ on:
   push:
     branches: [main, dev]
   pull_request:
+  workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZIG_VERSION: 0.16.0
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  test:
+  # Seconds on one runner: decides what the rest of the graph must run, and fails fast on format and scripts.
+  checks:
+    name: Source checks
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tests: ${{ steps.changes.outputs.tests }}
+      workflows: ${{ steps.changes.outputs.workflows }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
 
-      - name: Install Zig 0.16.0
+      - name: Select checks
+        id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          curl --fail --location --silent --show-error \
-            https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz --output "$RUNNER_TEMP/zig.tar.xz"
-          echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
-          mkdir "$RUNNER_TEMP/zig"
-          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
-          echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+          set -euo pipefail
+          tests=true
+          workflows=true
+          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch && -n "$BASE" ]] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            tests=false
+            workflows=false
+            while IFS= read -r -d '' path; do
+              case "$path" in
+                .github/*) tests=true; workflows=true ;;
+                *.md|LICENSE|assets/*|bench/*) ;;
+                *) tests=true ;;
+              esac
+            done < <(git diff --no-renames --name-only -z "$BASE" HEAD)
+          fi
+          printf 'tests=%s\nworkflows=%s\n' "$tests" "$workflows" >> "$GITHUB_OUTPUT"
 
-      - name: Zig version
-        run: test "$(zig version)" = 0.16.0
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          cache-key: checks
 
-      - name: Format
-        run: zig fmt --check src tests build.zig tools/build.zig tools/zig
-
-      - name: Tests
+      - name: Check format and scripts
         run: |
-          zig build test --summary all
-          zig build test -Doptimize=ReleaseSafe --summary all
-          zig build test -Doptimize=ReleaseFast --summary all
-          zig build test -Dkernel-backend=portable --summary all
-          zig build test -Dcpu=baseline --summary all
+          set -euo pipefail
+          test "$(zig version)" = "$ZIG_VERSION"
+          zig fmt --check src tests build.zig tools/build.zig tools/zig
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+            shellcheck -x "$script"
+          done < <(git ls-files -z '*.sh')
+          python3 -m compileall -q bench tools/report.py
 
-      - name: Cross-target compiles
+  workflows:
+    name: Workflow checks
+    needs: checks
+    if: needs.checks.outputs.workflows == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check workflow syntax
         run: |
-          for target in x86_64-linux aarch64-linux x86_64-macos aarch64-macos; do
-            zig build -Dtarget="$target" -Doptimize=ReleaseFast
+          set -euo pipefail
+          GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$RUNNER_TEMP/bin/actionlint" -color
+
+      - name: Check workflow security
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          inputs: .github/
+          advanced-security: false
+          online-audits: false
+          annotations: true
+          version: v1.30.1
+
+  # One native runner per supported OS and architecture; each builds the CLI its tests run, so no separate
+  # cross-compile job repeats that work. Debug everywhere for safety checks; the extra lanes run only where
+  # they test something the others cannot.
+  test:
+    name: Test (${{ matrix.name }})
+    needs: checks
+    if: needs.checks.outputs.tests == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+            extra: true
+          - name: Linux aarch64
+            runner: ubuntu-24.04-arm
+            ship: true
+          - name: macOS aarch64
+            runner: macos-15
+          - name: macOS x86_64
+            runner: macos-15-intel
+          - name: Windows x86_64
+            runner: windows-2025
+          - name: Windows aarch64
+            runner: windows-11-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          cache-key: ${{ matrix.name }}
+
+      - name: Test (Debug)
+        run: zig build test --summary all
+
+      # x86_64 only: the portable fallback of every kernel, and the object path a baseline build dispatches through.
+      - name: Test portable kernels
+        if: matrix.extra
+        run: zig build test -Dkernel-backend=portable --summary all
+
+      - name: Test baseline dispatch
+        if: matrix.extra
+        run: zig build test -Dcpu=baseline --summary all
+
+      # Ship mode on both Linux architectures: the fast decode loop's unchecked pointer walk runs as released.
+      - name: Test ReleaseFast
+        if: matrix.extra || matrix.ship
+        run: zig build test -Doptimize=ReleaseFast --summary all
+
+  result:
+    name: CI result
+    if: always()
+    needs: [checks, workflows, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    env:
+      CHECKS: ${{ needs.checks.result }}
+      TESTS_NEEDED: ${{ needs.checks.outputs.tests }}
+      TESTS: ${{ needs.test.result }}
+      WORKFLOWS_NEEDED: ${{ needs.checks.outputs.workflows }}
+      WORKFLOWS: ${{ needs.workflows.result }}
+    steps:
+      - name: Check required results
+        run: |
+          set -euo pipefail
+          test "$CHECKS" = success
+          for pair in "$TESTS_NEEDED:$TESTS" "$WORKFLOWS_NEEDED:$WORKFLOWS"; do
+            case "$pair" in
+              true:success|false:skipped) ;;
+              *) printf 'Required check did not pass: %s\n' "$pair" >&2; exit 1 ;;
+            esac
           done
-
-      - name: Shell scripts
-        run: shellcheck tools/*.sh
