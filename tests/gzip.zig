@@ -125,7 +125,9 @@ test "[edge] - [gzip decompressor]: buffer minimum and unread trailing bytes pre
     for ([_]usize{ 0, 1, 15 }) |capacity| {
         var source = support.Source.init(seed, input[0..capacity], 1);
         var sink: support.Sink = .{ .output = &output };
-        try std.testing.expectError(error.InputBufferTooSmall, support.decompressAll(work, &source.reader, &sink.writer, .{}));
+        try std.testing.expectEqual(@as(u64, 1), try support.decompressAll(work, &source.reader, &sink.writer, .{}));
+        source = support.Source.init(seed, input[0..capacity], 1);
+        try std.testing.expectError(error.InputBufferTooSmall, support.decompressAll(work, &source.reader, &sink.writer, .{ .trailing_data = .leave }));
     }
     var source = support.Source.init(seed.* ++ "tail", &input, 3);
     var sink: support.Sink = .{ .output = &output };

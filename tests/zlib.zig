@@ -282,7 +282,7 @@ test "[failure] - [zlib decompressor]: output limits cover matches, stored block
     }
 }
 
-test "[failure] - [zlib decompressor]: rejects undersized input buffers and preset dictionaries" {
+test "[failure] - [zlib decompressor]: preset dictionaries, and trailing data left behind a small input buffer, are rejected" {
     const stream = @embedFile("data/synthetic/short6.gz");
     const expected = @embedFile("data/synthetic/short.plain");
     const valid = try wrapGzip(std.testing.allocator, stream, expected);
@@ -292,7 +292,9 @@ test "[failure] - [zlib decompressor]: rejects undersized input buffers and pres
     var input_buffer: [15]u8 = undefined;
     var source = support.Source.init(valid, &input_buffer, 1);
     var sink = std.Io.Writer.Discarding.init(&.{});
-    try std.testing.expectError(error.InputBufferTooSmall, support.decompressAll(decoder, &source.reader, &sink.writer, .{}));
+    try std.testing.expectEqual(@as(u64, expected.len), try support.decompressAll(decoder, &source.reader, &sink.writer, .{}));
+    source = support.Source.init(valid, &input_buffer, 1);
+    try std.testing.expectError(error.InputBufferTooSmall, support.decompressAll(decoder, &source.reader, &sink.writer, .{ .trailing_data = .leave }));
 
     const dictionary_header = [_]u8{ 0x78, 0x20, 0, 0, 0, 1 };
     var dictionary_buffer: [17]u8 = undefined;

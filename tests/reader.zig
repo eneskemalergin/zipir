@@ -285,6 +285,63 @@ test "[integration] - [reader]: BGZF reads in every pattern, and peeks of 64 KiB
     }
 }
 
+const Outcome = struct {
+    bytes: []u8,
+    err: ?anyerror,
+
+    fn deinit(self: Outcome, allocator: std.mem.Allocator) void {
+        allocator.free(self.bytes);
+    }
+};
+
+fn decodeThrough(comptime D: type, allocator: std.mem.Allocator, decoder: *D, stream: []const u8, buffer: []u8, chunk: usize) !Outcome {
+    var source = support.Source.init(stream, buffer, chunk);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    decoder.init(&source.reader, .{});
+    const err: ?anyerror = if (decoder.reader.streamRemaining(&out.writer)) |_| null else |e| switch (e) {
+        error.ReadFailed => decoder.err.?,
+        error.WriteFailed => return e,
+    };
+    return .{ .bytes = try out.toOwnedSlice(), .err = err };
+}
+
+fn expectSmallBuffersDecodeAlike(comptime D: type, allocator: std.mem.Allocator, stream: []const u8) !?anyerror {
+    const decoder = try allocator.create(D);
+    defer allocator.destroy(decoder);
+    var large: [65536]u8 = undefined;
+    const reference = try decodeThrough(D, allocator, decoder, stream, &large, 4096);
+    defer reference.deinit(allocator);
+    var small: [28]u8 = undefined;
+    for ([_]usize{ 0, 1, 2, 7, 8, 9, 15, 16, 27, 28 }) |capacity| {
+        for ([_]usize{ 1, 7 }) |chunk| {
+            const got = try decodeThrough(D, allocator, decoder, stream, small[0..capacity], chunk);
+            defer got.deinit(allocator);
+            try std.testing.expectEqualSlices(u8, reference.bytes, got.bytes);
+            try std.testing.expectEqual(reference.err, got.err);
+        }
+    }
+    return reference.err;
+}
+
+test "[property] - [reader]: input readers of every small buffer size decode as a large one does" {
+    const allocator = std.testing.allocator;
+    const plain = try makePlain(allocator);
+    defer allocator.free(plain);
+    const part = plain[260_000..300_000];
+    inline for ([_]?Format{ .gzip, .zlib, .deflate, null }) |format| {
+        const D = if (format) |f| zipir.Decompressor(f) else zipir.bgzf.Decompressor;
+        const stream = if (format) |f| try compress(allocator, f, part) else try compressBgzf(allocator, part);
+        defer allocator.free(stream);
+        try std.testing.expectEqual(@as(?anyerror, null), try expectSmallBuffersDecodeAlike(D, allocator, stream));
+        stream[stream.len / 2] ^= 0x10;
+        try std.testing.expect(try expectSmallBuffersDecodeAlike(D, allocator, stream) != null);
+        stream[stream.len / 2] ^= 0x10;
+        stream[stream.len - (if (format == null) 30 else 2)] ^= 0x01;
+        try std.testing.expect(try expectSmallBuffersDecodeAlike(D, allocator, stream) != null);
+    }
+}
+
 test "[failure] - [reader]: a damaged BGZF block's bytes are never readable" {
     const allocator = std.testing.allocator;
     const plain = try makePlain(allocator);

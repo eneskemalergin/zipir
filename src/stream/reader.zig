@@ -1,7 +1,9 @@
 //! The `std.Io.Reader` every decompressor is: decoded bytes are read from the workspace's own buffer. A `Framing`
-//! declares `Check`, `DecompressOptions`, `DecompressError`, `min_input_buffer`, `init`, `header` (true when a
-//! stream follows), and `trailer`. One with `max_stream_bytes` decodes each stream whole before it is readable and
-//! may declare `streamError` and a `seeking` field, which enables `seek` and `seekUncompressed`.
+//! declares `Check`, `DecompressOptions` (with `trailing_data`), `DecompressError`, `min_input_buffer`, `init`,
+//! `header` (true when a stream follows), and `trailer`. One with `max_stream_bytes` decodes each stream whole before
+//! it is readable and may declare `streamError` and a `seeking` field, which enables `seek` and `seekUncompressed`.
+//! An input reader whose buffer is under `min_input_buffer` is read through a staging buffer in the workspace, which
+//! may take bytes past the stream from it, so with `trailing_data = .leave` it is `InputBufferTooSmall`.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
@@ -28,7 +30,9 @@ pub fn Decompressor(comptime Framing: type) type {
         reader: std.Io.Reader,
         err: ?DecompressError,
         framing: Framing,
-        decoder: decode.Decoder,
+        decoder: decode.Decoder align(8),
+        input: *std.Io.Reader,
+        staging: Staging,
         session: decode.Session(Check),
         br: decode.BitReader,
         check: Check,
@@ -36,6 +40,24 @@ pub fn Decompressor(comptime Framing: type) type {
         deferred: ?DecompressError,
 
         const Phase = enum { header, body, done, failed };
+
+        const Staging = struct {
+            reader: std.Io.Reader,
+            buffer: [Framing.min_input_buffer]u8,
+
+            const staging_vtable: std.Io.Reader.VTable = .{ .stream = forward };
+
+            fn init(self: *Staging) *std.Io.Reader {
+                self.reader = .{ .vtable = &staging_vtable, .buffer = &self.buffer, .seek = 0, .end = 0 };
+                return &self.reader;
+            }
+
+            fn forward(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
+                const staging: *Staging = @alignCast(@fieldParentPtr("reader", r));
+                const owner: *Self = @alignCast(@fieldParentPtr("staging", staging));
+                return owner.input.stream(w, limit);
+            }
+        };
 
         const vtable: std.Io.Reader.VTable = .{
             .stream = stream,
@@ -47,10 +69,12 @@ pub fn Decompressor(comptime Framing: type) type {
         pub fn init(self: *Self, input: *std.Io.Reader, options: DecompressOptions) void {
             self.reader = .{ .vtable = &vtable, .buffer = &self.decoder.buffer, .seek = 0, .end = 0 };
             self.err = null;
-            self.deferred = if (input.buffer.len < Framing.min_input_buffer) error.InputBufferTooSmall else null;
+            self.input = input;
+            const small = input.buffer.len < Framing.min_input_buffer;
+            self.deferred = if (small and options.trailing_data == .leave) error.InputBufferTooSmall else null;
             self.session = .{ .decoder = &self.decoder, .max_output_bytes = options.max_output_bytes };
             if (whole_streams) self.session.max_stream_bytes = Framing.max_stream_bytes;
-            self.br = .{ .reader = input };
+            self.br = .{ .reader = if (small) self.staging.init() else input };
             self.framing = Framing.init(options);
             self.phase = .header;
         }
@@ -76,7 +100,7 @@ pub fn Decompressor(comptime Framing: type) type {
         }
 
         fn seekTo(self: *Self, source: *std.Io.File.Reader, coffset: u64, skip: u64, in_block: bool) DecompressError!void {
-            std.debug.assert(self.br.reader == &source.interface);
+            std.debug.assert(self.input == &source.interface);
             const options = self.framing.options;
             source.seekTo(coffset) catch return error.ReadFailed;
             self.init(&source.interface, options);

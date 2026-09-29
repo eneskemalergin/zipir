@@ -5,8 +5,9 @@
 //! 32 KiB, so `.lines` gives exactly the block boundaries of `bgzip` 1.24 on text; boundaries depend only on the
 //! bytes, and `writer.flush()` ends the open block. Both assume their workspace stays in place while in use.
 //! `BlockEncoder.compressBlock` asserts at most 65280 input bytes; `BlockSplitter.next` never returns 0. `Scanner`
-//! reads block headers without decoding; `IndexBuilder` fills `.gzi` entries as htslib does (one per block with
-//! data, except the first); `IndexReader` rejects entries that do not increase strictly.
+//! reads block headers without decoding (an input buffer under 2 bytes with `trailing_data = .leave` is
+//! `InputBufferTooSmall`); `IndexBuilder` fills `.gzi` entries as htslib does (one per block with data, except the
+//! first); `IndexReader` rejects entries that do not increase strictly.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
@@ -53,18 +54,23 @@ pub const Scanner = struct {
     pub fn next(self: *Scanner) DecompressError!?Block {
         if (self.done) return null;
         const r = self.reader;
-        if (r.buffer.len < 16) return error.InputBufferTooSmall;
-        const head = r.peek(2) catch |err| switch (err) {
+        var fixed: [12]u8 = undefined;
+        const peeked = r.buffer.len >= 2;
+        const head = if (peeked) r.peek(2) catch |err| switch (err) {
             error.ReadFailed => return error.ReadFailed,
             error.EndOfStream => return self.end(r.buffered().len == 0),
+        } else head: {
+            if (self.options.trailing_data == .leave) return error.InputBufferTooSmall;
+            const n = r.readSliceShort(fixed[0..2]) catch return error.ReadFailed;
+            if (n < 2) return self.end(n == 0);
+            break :head fixed[0..2];
         };
         if (head[0] != 0x1f or head[1] != 0x8b) {
             if (self.coffset == 0) return error.NotBgzf;
             if (self.options.trailing_data == .leave) return self.end(true);
             return error.TrailingData;
         }
-        var fixed: [12]u8 = undefined;
-        try readAll(r, &fixed);
+        try readAll(r, fixed[if (peeked) 0 else 2..]);
         if (fixed[2] != 8) return error.UnsupportedMethod;
         if (fixed[3] & 0xe0 != 0) return error.ReservedFlag;
         if (fixed[3] & 4 == 0) return error.NotBgzf;

@@ -120,7 +120,9 @@ test "[failure] - [raw deflate decompressor]: every prefix is truncated, and lim
     try std.testing.expectError(error.OutputLimitExceeded, support.decompressAll(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = plain.len - 1 }));
     var small: [15]u8 = undefined;
     source = support.Source.init(stream, &small, 5);
-    try std.testing.expectError(error.InputBufferTooSmall, support.decompressAll(decoder, &source.reader, &sink.writer, .{}));
+    try std.testing.expectEqual(@as(u64, plain.len), try support.decompressAll(decoder, &source.reader, &sink.writer, .{}));
+    source = support.Source.init(stream, &small, 5);
+    try std.testing.expectError(error.InputBufferTooSmall, support.decompressAll(decoder, &source.reader, &sink.writer, .{ .trailing_data = .leave }));
     try decode(decoder, stream, &plain, 5, .{ .max_output_bytes = plain.len });
 }
 

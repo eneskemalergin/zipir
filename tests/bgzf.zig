@@ -558,6 +558,64 @@ test "[property] - [bgzf decompressor]: reads at uncompressed offsets through a 
     }
 }
 
+test "[edge] - [bgzf]: scans and seeks read through input buffers of every small size" {
+    const io = std.testing.io;
+    const f = try standard();
+    defer std.testing.allocator.destroy(f);
+    var reference: [8]bgzf.Block = undefined;
+    var count: usize = 0;
+    var fixed = std.Io.Reader.fixed(f.stream());
+    var scanner = bgzf.scan(&fixed, .{});
+    while (try scanner.next()) |b| : (count += 1) reference[count] = b;
+    var junk: [140004]u8 = undefined;
+    @memcpy(junk[0..f.len], f.stream());
+    @memcpy(junk[f.len..][0..4], "junk");
+    var small: [16]u8 = undefined;
+    for (0..small.len + 1) |capacity| {
+        for ([_]usize{ 1, 5 }) |chunk| {
+            var source = support.Source.init(f.stream(), small[0..capacity], chunk);
+            var each = bgzf.scan(&source.reader, .{ .require_eof_marker = true });
+            var n: usize = 0;
+            while (try each.next()) |b| : (n += 1) try std.testing.expectEqual(reference[n], b);
+            try std.testing.expectEqual(count, n);
+            source = support.Source.init(junk[0 .. f.len + 4], small[0..capacity], chunk);
+            each = bgzf.scan(&source.reader, .{});
+            for (0..count) |_| _ = try each.next();
+            try std.testing.expectError(error.TrailingData, each.next());
+            source = support.Source.init(junk[0 .. f.len + 4], small[0..capacity], chunk);
+            each = bgzf.scan(&source.reader, .{ .trailing_data = .leave });
+            if (capacity < 2) {
+                try std.testing.expectError(error.InputBufferTooSmall, each.next());
+            } else {
+                for (0..count) |_| _ = try each.next();
+                try std.testing.expectEqual(@as(?bgzf.Block, null), try each.next());
+            }
+        }
+    }
+    const reader = try std.testing.allocator.create(bgzf.Decompressor);
+    defer std.testing.allocator.destroy(reader);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "f.gz", .data = f.stream() });
+    const file = try tmp.dir.openFile(io, "f.gz", .{});
+    defer file.close(io);
+    const plain = f.plain[0..f.plain_len];
+    var out: [70000]u8 = undefined;
+    var rng = std.Random.DefaultPrng.init(2929);
+    var file_buffer: [27]u8 = undefined;
+    for ([_]usize{ 1, 4, 27 }) |capacity| {
+        var source = file.reader(io, file_buffer[0..capacity]);
+        reader.init(&source.interface, .{});
+        for (0..30) |_| {
+            const uoffset = rng.random().uintAtMost(u16, 60000);
+            const length = rng.random().uintAtMost(u64, 70000);
+            const n = try readAt(reader, &source, .{ .coffset = 0, .uoffset = uoffset }, out[0..@intCast(length)]);
+            try std.testing.expectEqual(@min(length, plain.len - uoffset), n);
+            try std.testing.expectEqualSlices(u8, plain[uoffset..][0..n], out[0..n]);
+        }
+    }
+}
+
 test "[unit] - [bgzf]: the public error set names exactly the documented errors" {
     const expected = [_][]const u8{ "BadBlock", "BadBlockSize", "BadDistance", "BadHeader", "BadHuffman", "BadIndex", "BadStored", "BadSymbol", "BadVirtualOffset", "BlockSizeMismatch", "BlockTooLarge", "CrcMismatch", "HeaderCrcMismatch", "HeaderTooLong", "InputBufferTooSmall", "IsizeMismatch", "MissingEofMarker", "NotBgzf", "OutputLimitExceeded", "PeekTooLarge", "ReadFailed", "ReservedFlag", "TrailingData", "Truncated", "UnsupportedMethod" };
     try support.expectErrorNames(bgzf.DecompressError, &expected);
