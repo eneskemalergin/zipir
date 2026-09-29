@@ -6,7 +6,7 @@
   <p><strong>Streaming DEFLATE-family compression for Zig, in fixed memory.</strong></p>
   <p>
     <a href="https://github.com/eneskemalergin/zipir/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/eneskemalergin/zipir/ci.yml?branch=main&amp;style=flat-square&amp;label=CI&amp;logo=githubactions" alt="CI status"></a>
-    <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.1.2-2C8EBB?style=flat-square" alt="Version 0.1.2"></a>
+    <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.2.0-2C8EBB?style=flat-square" alt="Version 0.2.0"></a>
     <a href="https://ziglang.org/download/"><img src="https://img.shields.io/badge/Zig-0.16.0-F7A41D?style=flat-square&amp;logo=zig&amp;logoColor=white" alt="Zig 0.16.0"></a>
     <a href="#a-few-honest-tradeoffs"><img src="https://img.shields.io/badge/status-development-4B9D6E?style=flat-square" alt="Status: development"></a>
     <img src="https://img.shields.io/badge/dependencies-none-2D7D46?style=flat-square" alt="No external dependencies">

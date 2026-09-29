@@ -28,7 +28,7 @@ The default everywhere is the _prime_ peers at their three _lane_ levels on the 
 - `qualify.sh`: correctness checks per peer, with a receipt.
 - `bench.sh`: matched timing with [Zebrac](https://github.com/eneskemalergin/zebrac) 0.6.2.
 - `report.py`: the per-run facts table and Markdown summary.
-- `build.zig`, `build.zig.zon`, `zig/`: Zig adapters. `zipir-gzip` and `zipir-zlib` import the repository as a path dependency, so they get the same CPU backend code as the library build.
+- `build.zig`, `build.zig.zon`, `zig/`: Zig adapters. The four zipir adapters import the repository as a path dependency, so they get the same CPU backend code as the library build.
 - `c/`: the zlib API adapters (host libz, zlib-ng native API, libdeflate full buffer).
 - `rust/`: the flate2 adapters, with tracked `Cargo.lock` files.
 
@@ -38,7 +38,7 @@ Versions are pinned in `common.sh`. Levels are on each tool's own scale.
 
 | Peer                 | Version       | Format  | Tier     | Levels  | Lanes (fast, balanced, dense) | Decode      | Origin                                        |
 | -------------------- | ------------- | ------- | -------- | ------- | ----------------------------- | ----------- | --------------------------------------------- |
-| `zipir-gzip`         | 0.1.2         | gzip    | prime    | 1, 5, 9 | 1, 5, 9                       | streaming   | this repository, Zig adapter                  |
+| `zipir-gzip`         | this checkout | gzip    | prime    | 1, 5, 9 | 1, 5, 9                       | streaming   | this repository, Zig adapter                  |
 | `zlib-ng`            | 2.3.3         | gzip    | prime    | 0-9     | 1, 5, 9                       | streaming   | static `minigzip`, native instructions        |
 | `igzip`              | 2.32.1        | gzip    | prime    | 0-3     | 0, 1, 2                       | streaming   | ISA-L CLI, static, no shim, no `-T`           |
 | `std-gzip`           | 0.16.0        | gzip    | prime    | 1-9     | 1, 5, 9                       | streaming   | Zig standard library adapter                  |
@@ -47,16 +47,16 @@ Versions are pinned in `common.sh`. Levels are on each tool's own scale.
 | `pigz`               | 2.8           | gzip    | all      | 0-9     | 1, 5, 9                       | streaming   | host `/usr/bin/pigz -p1`                      |
 | `flate2-miniz`       | 1.1.10        | gzip    | all      | 0-9     | 1, 5, 9                       | streaming   | Rust flate2, `miniz_oxide`                    |
 | `flate2-zlib-rs`     | 1.1.10        | gzip    | all      | 0-9     | 1, 5, 9                       | streaming   | Rust flate2, zlib-rs 0.6.7                    |
-| `zipir-zlib`         | 0.1.2         | zlib    | prime    | 1, 5, 9 | 1, 5, 9                       | streaming   | this repository, Zig adapter                  |
+| `zipir-zlib`         | this checkout | zlib    | prime    | 1, 5, 9 | 1, 5, 9                       | streaming   | this repository, Zig adapter                  |
 | `zlib-ng-zlib`       | 2.3.3         | zlib    | prime    | 0-9     | 1, 5, 9                       | streaming   | zlib-ng native API, C adapter                 |
 | `std-zlib`           | 0.16.0        | zlib    | prime    | decode  |                               | streaming   | Zig standard library adapter                  |
 | `libdeflate-zlib`    | 1.26          | zlib    | extended | 1-12    | 1, 6, 12                      | full-buffer | libdeflate, C adapter, told the output size   |
 | `system-zlib`        | 1.3.1.zlib-ng | zlib    | extended | 0-9     | 1, 5, 9                       | streaming   | host libz, C adapter                          |
-| `zipir-deflate`      | 0.1.2         | deflate | prime    | 1, 5, 9 | 1, 5, 9                       | streaming   | this repository, Zig adapter                  |
+| `zipir-deflate`      | this checkout | deflate | prime    | 1, 5, 9 | 1, 5, 9                       | streaming   | this repository, Zig adapter                  |
 | `zlib-ng-deflate`    | 2.3.3         | deflate | prime    | 0-9     | 1, 5, 9                       | streaming   | zlib-ng native API, C adapter, windowBits -15 |
 | `libdeflate-deflate` | 1.26          | deflate | extended | 1-12    | 1, 6, 12                      | full-buffer | libdeflate, C adapter, told the output size   |
 | `system-deflate`     | 1.3.1.zlib-ng | deflate | extended | 0-9     | 1, 5, 9                       | streaming   | host libz, C adapter, windowBits -15          |
-| `zipir-bgzf`         | 0.1.2         | bgzf    | prime    | 1, 5, 9 | 1, 5, 9                       | streaming   | this repository, Zig adapter                  |
+| `zipir-bgzf`         | this checkout | bgzf    | prime    | 1, 5, 9 | 1, 5, 9                       | streaming   | this repository, Zig adapter                  |
 | `bgzip-libdeflate`   | 1.24          | bgzf    | prime    | 0-9     | 1, 5, 9                       | streaming   | htslib `bgzip -@1`, static libdeflate         |
 | `bgzip-zlib-ng`      | 1.24          | bgzf    | prime    | 0-9     | 1, 5, 9                       | streaming   | htslib `bgzip -@1`, static zlib-ng (compat)   |
 

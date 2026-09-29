@@ -24,7 +24,8 @@ WORK=""
 ZIG_VERSION=0.16.0
 STD_GZIP_VERSION=0.16.0
 STD_ZLIB_VERSION=0.16.0
-ZIPIR_VERSION=0.1.2
+# The zipir adapters report the package version.
+ZIPIR_VERSION=$(sed -n 's/^    \.version = "\([^"]*\)",$/\1/p' "$ROOT_DIR/build.zig.zon")
 GNU_GZIP_VERSION=1.14
 GNU_GZIP_BIN=/usr/bin/gzip
 PIGZ_VERSION=2.8

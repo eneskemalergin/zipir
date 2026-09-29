@@ -1,6 +1,6 @@
 .{
     .name = .zipir,
-    .version = "0.1.2",
+    .version = "0.2.0",
     .fingerprint = 0x6dab1f5439f1aeff,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},

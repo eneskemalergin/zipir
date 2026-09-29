@@ -38,8 +38,8 @@ pub fn Compressor(comptime format: Format) type {
 
 pub const version: std.SemanticVersion = .{
     .major = 0,
-    .minor = 1,
-    .patch = 2,
+    .minor = 2,
+    .patch = 0,
 };
 
 test {
