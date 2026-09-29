@@ -1,0 +1,14 @@
+.{
+    .name = .zipir_package_consumer,
+    .version = "0.0.0",
+    .fingerprint = 0x4f58c3b67c1e05d2,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zipir = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "main.zig",
+    },
+}
