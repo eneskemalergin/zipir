@@ -6,6 +6,8 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 ## [0.2.1] - 2026-09-30
 
+0.2.1 makes zipir lighter for the projects that decode many small streams held in memory: a zlib or raw DEFLATE stream can now be decoded straight into your own buffer, and every decompressor's workspace is smaller. It also removes the minimum input reader buffer size (16 bytes, 28 for BGZF) that two dependents had to work around.
+
 ### Added
 
 - `zlib.SliceDecoder` and `deflate.SliceDecoder` decode one complete stream held in memory straight into your buffer, with a workspace of tables only (7,704 bytes) and at most about 16.3 KiB of stack. Reading ten mzML files through zmz, they decode as fast as the reader or up to 2% faster, and the process peaks about 250 KiB lower than with the reader.
