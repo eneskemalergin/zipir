@@ -7,7 +7,7 @@ zipir's module is named `zipir`. Every decompressor is a `std.Io.Reader` over an
 Fetch the release's source package into your project. It holds only the build files, the source, the tests, and the license:
 
 ```sh
-zig fetch --save=zipir https://github.com/eneskemalergin/zipir/releases/download/v0.2.0/zipir-0.2.0-source.tar.gz
+zig fetch --save=zipir https://github.com/eneskemalergin/zipir/releases/download/v0.2.1/zipir-0.2.1-source.tar.gz
 ```
 
 Zig records the package and its hash in your `build.zig.zon`. Fetch the archive, never a live checkout or `.`: a fetch copies what it is given into Zig's package cache.

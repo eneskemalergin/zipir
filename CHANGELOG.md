@@ -4,6 +4,8 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-30
+
 ### Added
 
 - `zlib.SliceDecoder` and `deflate.SliceDecoder` decode one complete stream held in memory straight into your buffer, with a workspace of tables only (7,704 bytes) and at most about 16.3 KiB of stack. Reading ten mzML files through zmz, they decode as fast as the reader or up to 2% faster, and the process peaks about 250 KiB lower than with the reader.
@@ -70,6 +72,7 @@ The first version under the name zipir (it began as z-flate). It was tagged but 
 - Streaming zlib decompression with RFC 1950 header checks, Adler-32 (an AVX2 kernel when the CPU has it), a trailing-data policy, and an output limit.
 - The `zipir compress`, `decompress`, and `test` commands for gzip.
 
-[Unreleased]: https://github.com/eneskemalergin/zipir/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/eneskemalergin/zipir/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/eneskemalergin/zipir/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/eneskemalergin/zipir/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/eneskemalergin/zipir/tree/v0.1.2

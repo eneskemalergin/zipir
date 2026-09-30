@@ -16,8 +16,8 @@ test "[cli] - [gzip]: command status and byte streams preserve source files" {
     try tmp.dir.writeFile(io, .{ .sub_path = "-plain with spaces", .data = "A" });
     const compressed = "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x73\x04\x00\x8b\x9e\xd9\xd3\x01\x00\x00\x00";
     const cases = .{
-        .{ &.{executable}, @as(u8, 0), "zipir 0.2.0\n", "" },
-        .{ &.{ executable, "--version" }, @as(u8, 0), "zipir 0.2.0\n", "" },
+        .{ &.{executable}, @as(u8, 0), "zipir 0.2.1\n", "" },
+        .{ &.{ executable, "--version" }, @as(u8, 0), "zipir 0.2.1\n", "" },
         .{ &.{ executable, "decompress", "--", "-input with spaces.gz" }, @as(u8, 0), "A", "" },
         .{ &.{ executable, "test", "--", "-input with spaces.gz" }, @as(u8, 0), "", "" },
         .{ &.{ executable, "decompress", "--max-output-bytes", "0", "--", "-input with spaces.gz" }, @as(u8, 1), "", "zipir: OutputLimitExceeded\n" },
