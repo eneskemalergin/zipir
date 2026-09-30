@@ -1,6 +1,6 @@
 # zipir benchmarks
 
-Published benchmark reports, one directory per measured target. Each report states its host, build flags, inputs, method, and limits, and ships the measured rows as TSV next to its figures.
+Published benchmark reports for users, one directory per measured target. Each report states its host, build flags, inputs, method, and limits, and ships the measured rows as TSV next to its figures. Every number here comes from the pinned corpus and pinned peers in [`tools/`](../tools/README.md), so anyone can reproduce it.
 
 | Target | Host | zipir | Report |
 | --- | --- | --- | --- |

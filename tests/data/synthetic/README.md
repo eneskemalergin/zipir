@@ -10,4 +10,4 @@ These are deterministic synthetic inputs, not downloaded user data. Expected pla
 - `repeat-zero` exercises a legal zero code-length repeat. The `invalid-*` files reject impossible history and an incorrect FHCRC.
 - `empty-single` is a legal empty member with a single one-bit end-of-block code and empty distance alphabet. The incomplete and oversubscribed tree fixtures are rejected by independent Python zlib.
 
-The checked-in files are the fixture source used by the self-contained test suite. Generator scripts are not required and are not present in the current checkout. GNU gzip and Python zlib validated the applicable vectors before they were frozen; retained decoder findings are in `tmp/gzip/decompress/BASELINES.md`.
+The checked-in files are the fixture source used by the self-contained test suite. Generator scripts are not required and are not present in the current checkout. GNU gzip and Python zlib validated the applicable vectors before they were frozen.

@@ -2,7 +2,7 @@
 
 Status: **Active** (last updated: 2026-09-26)
 
-These scripts build the peer codecs, fetch the test corpus, check every peer for correctness, and time peers against zipir. They are for development and publication numbers. The zipir library and CLI do not use anything here.
+These scripts build the peer codecs, fetch the test corpus, check every peer for correctness, and time peers against zipir. They are for maintainers: they produce the published numbers in [`bench/`](../bench/README.md), always on the pinned corpus and pinned peers. The zipir library and CLI do not use anything here.
 
 Linux x86_64 only. Everything the tools produce is gitignored: peers under `tools/.local/` and `tools/bin/`, the corpus under `data/`.
 
