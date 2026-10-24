@@ -4,6 +4,10 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 ## [Unreleased]
 
+### Added
+
+- `bgzf.Decompressor.tell()` gives the virtual offset of the next byte a read returns, as htslib's `bgzf_tell` does: between blocks, the start of the next block with data. BAM indexes record these offsets. The decompressor keeps the last 16 decoded blocks with data (384 bytes) to answer it; a single peek longer than 16 such blocks loses the earlier ones, and `tell` then reports `PositionUnavailable`. Decoding speed and memory do not change.
+
 ## [0.2.1] - 2026-09-30
 
 0.2.1 makes zipir lighter for the projects that decode many small streams held in memory: a zlib or raw DEFLATE stream can now be decoded straight into your own buffer, and every decompressor's workspace is smaller. It also removes the minimum input reader buffer size (16 bytes, 28 for BGZF) that two dependents had to work around.

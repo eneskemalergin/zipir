@@ -283,6 +283,82 @@ test "[property] - [bgzf decompressor]: reads at every block start and inside bl
     try std.testing.expectError(error.BadVirtualOffset, readAt(reader, &source, .{ .coffset = @intCast(f.len), .uoffset = 0 }, &one));
 }
 
+fn standardOffset(f: *const Fixture, at: u64) bgzf.VirtualOffset {
+    if (at < 60000) return .{ .coffset = @intCast(f.starts[0]), .uoffset = @intCast(at) };
+    if (at < 60012) return .{ .coffset = @intCast(f.starts[1]), .uoffset = @intCast(at - 60000) };
+    return .{ .coffset = @intCast(f.starts[2]), .uoffset = 0 };
+}
+
+test "[property] - [bgzf decompressor]: tell gives each byte's virtual offset through reads, peeks and seeks" {
+    const io = std.testing.io;
+    const f = try standard();
+    defer std.testing.allocator.destroy(f);
+    const reader = try std.testing.allocator.create(bgzf.Decompressor);
+    defer std.testing.allocator.destroy(reader);
+    var input = std.Io.Reader.fixed(f.stream());
+    reader.init(&input, .{});
+    try std.testing.expectEqual(standardOffset(f, 0), try reader.tell());
+    var rng = std.Random.DefaultPrng.init(4242);
+    var at: u64 = 0;
+    var out: [5000]u8 = undefined;
+    while (at < f.plain_len) {
+        const length = rng.random().uintAtMost(usize, @min(out.len, f.plain_len - at));
+        if (rng.random().boolean()) {
+            _ = try reader.reader.peek(length);
+            try std.testing.expectEqual(standardOffset(f, at), try reader.tell());
+        }
+        try reader.reader.readSliceAll(out[0..length]);
+        at += length;
+        try std.testing.expectEqual(standardOffset(f, at), try reader.tell());
+    }
+    try std.testing.expectError(error.EndOfStream, reader.reader.takeByte());
+    try std.testing.expectEqual(standardOffset(f, at), try reader.tell());
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "f.gz", .data = f.stream() });
+    const file = try tmp.dir.openFile(io, "f.gz", .{});
+    defer file.close(io);
+    var buffer: [64]u8 = undefined;
+    var source = file.reader(io, &buffer);
+    reader.init(&source.interface, .{});
+    for ([_]bgzf.VirtualOffset{ .{ .coffset = @intCast(f.starts[1]), .uoffset = 5 }, .{ .coffset = 0, .uoffset = 59999 }, .{ .coffset = 0, .uoffset = 0 } }) |offset| {
+        try reader.seek(&source, offset);
+        try std.testing.expectEqual(offset, try reader.tell());
+        const block_start: u64 = if (offset.coffset == 0) 0 else 60000;
+        const from = block_start + offset.uoffset;
+        try reader.reader.readSliceAll(out[0..3]);
+        try std.testing.expectEqual(standardOffset(f, from + 3), try reader.tell());
+    }
+}
+
+test "[failure] - [bgzf decompressor]: tell reports a position the block log dropped as unavailable" {
+    const stream = try std.testing.allocator.alloc(u8, 200 * 64 + EOF.len);
+    defer std.testing.allocator.free(stream);
+    var starts: [200]u64 = undefined;
+    var len: usize = 0;
+    for (&starts, 0..) |*start, index| {
+        start.* = len;
+        len += (try block(stream[len..], &.{"ACGT"[index % 4]}, "", 0)).len;
+    }
+    @memcpy(stream[len..][0..EOF.len], EOF);
+    len += EOF.len;
+    const reader = try std.testing.allocator.create(bgzf.Decompressor);
+    defer std.testing.allocator.destroy(reader);
+    var input = std.Io.Reader.fixed(stream[0..len]);
+    reader.init(&input, .{});
+    for (starts) |start| {
+        try std.testing.expectEqual(bgzf.VirtualOffset{ .coffset = @intCast(start), .uoffset = 0 }, try reader.tell());
+        _ = try reader.reader.takeByte();
+    }
+    try std.testing.expectEqual(bgzf.VirtualOffset{ .coffset = @intCast(len - EOF.len), .uoffset = 0 }, try reader.tell());
+    input = std.Io.Reader.fixed(stream[0..len]);
+    reader.init(&input, .{});
+    _ = try reader.reader.peek(150);
+    try std.testing.expectError(error.PositionUnavailable, reader.tell());
+    reader.reader.toss(149);
+    try std.testing.expectEqual(bgzf.VirtualOffset{ .coffset = @intCast(starts[149]), .uoffset = 0 }, try reader.tell());
+}
+
 test "[failure] - [bgzf decompressor]: a read stops after its range, so damage in a later block fails only reads that reach it" {
     const io = std.testing.io;
     const f = try standard();

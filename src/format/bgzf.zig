@@ -1,14 +1,15 @@
-//! BGZF (SAM specification 4.1). `Decompressor` makes a block's bytes readable only after its sizes, CRC-32, and
-//! ISIZE are checked and caps every block at 65536 bytes. Over a `std.Io.File.Reader` it seeks by virtual offset
-//! (`seek`; an offset that is not a block start, or a skip past the block, is `BadVirtualOffset`) or through `.gzi`
-//! entries (`seekUncompressed`; an offset past the end leaves it at the end). `Compressor` stages two blocks plus
-//! 32 KiB, so `.lines` gives exactly the block boundaries of `bgzip` 1.24 on text; boundaries depend only on the
-//! bytes, and `writer.flush()` ends the open block. Both assume their workspace stays in place while in use.
-//! `BlockDecoder.decodeBlock` writes `out` only once the block's checks pass. `BlockEncoder.compressBlock` asserts at
-//! most 65280 input bytes; `BlockSplitter.next` never returns 0. `Scanner` reads block headers without decoding (an
-//! input buffer under 2 bytes with `trailing_data = .leave` is `InputBufferTooSmall`); `IndexBuilder` fills `.gzi`
-//! entries as htslib does (one per block with data, except the first); `IndexReader` rejects entries that do not
-//! increase strictly.
+//! BGZF (SAM specification 4.1). `Decompressor` makes a block's bytes readable only after its sizes, CRC-32, and ISIZE
+//! are checked and caps every block at 65536 bytes. Over a `std.Io.File.Reader` it seeks by virtual offset (`seek`; an
+//! offset that is not a block start, or a skip past the block, is `BadVirtualOffset`) or through `.gzi` entries
+//! (`seekUncompressed`; an offset past the end leaves it at the end). `tell` gives the next byte's virtual offset from
+//! the input position at `init` or `seek` (between blocks, the next with data, as `bgzf_tell`); a peek over 16 blocks
+//! with data loses earlier ones (`PositionUnavailable`). `Compressor` stages two blocks plus 32 KiB, so `.lines` gives
+//! exactly the block boundaries of `bgzip` 1.24 on text; boundaries depend only on the bytes, and `writer.flush()` ends
+//! the open block. Both assume their workspace stays in place while in use. `BlockDecoder.decodeBlock` writes `out`
+//! only once the block's checks pass. `BlockEncoder.compressBlock` asserts at most 65280 input bytes;
+//! `BlockSplitter.next` never returns 0. `Scanner` reads headers without decoding (an input buffer under 2 bytes with
+//! `trailing_data = .leave` is `InputBufferTooSmall`); `IndexBuilder` fills `.gzi` entries as htslib does (one per
+//! block with data, except the first); `IndexReader` rejects entries that do not increase strictly.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
@@ -447,6 +448,7 @@ const DecompressFraming = struct {
     pub const DecompressError = format.DecompressError;
     pub const min_input_buffer = EOF_MARKER.len;
     pub const max_stream_bytes = MAX_BLOCK;
+    pub const VirtualOffset = format.VirtualOffset;
 
     options: format.DecompressOptions,
     blocks: u64 = 0,

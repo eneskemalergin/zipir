@@ -1,14 +1,14 @@
 //! The `std.Io.Reader` every decompressor is: decoded bytes are read from the workspace's own buffer. A `Framing`
 //! declares `Check`, `DecompressOptions` (with `trailing_data`), `DecompressError`, `min_input_buffer`, `init`,
 //! `header` (true when a stream follows), and `trailer`. One with `max_stream_bytes` decodes each stream whole before
-//! it is readable and may declare `streamError` and a `seeking` field, which enables `seek` and `seekUncompressed`.
-//! An input reader whose buffer is under `min_input_buffer` is read through a staging buffer in the workspace, which
-//! may take bytes past the stream from it, so with `trailing_data = .leave` it is `InputBufferTooSmall`.
+//! it is readable and may declare `streamError`, `VirtualOffset` and a `seeking` field (`seek`, `seekUncompressed`,
+//! `tell`). An input reader whose buffer is under `min_input_buffer` is read through a staging buffer in the workspace,
+//! which may take bytes past the stream from it, so with `trailing_data = .leave` it is `InputBufferTooSmall`.
 //! `SliceDecoder` decodes one complete stream from a slice into the caller's `output`, which is also the history;
 //! `output` past the returned length, and all of it after an error, is unspecified, and it must not overlap `input`
-//! (asserted). Outputs under `SMALL_OUTPUT` (16 KiB) decode into a stack buffer with the fast loop's room (about
-//! 16.3 KiB of stack) and are copied, so running past `output` is reported in stream order, as the reader reports it.
-//! Its workspace is only tables.
+//! (asserted). Outputs under `SMALL_OUTPUT` (16 KiB) decode into a stack buffer with the fast loop's room (about 16.3
+//! KiB of stack) and are copied, so running past `output` is reported in stream order, as the reader reports it. Its
+//! workspace is only tables.
 
 const std = @import("std");
 const engine = @import("../engine/decode.zig");
@@ -29,6 +29,7 @@ pub fn Decompressor(comptime Framing: type) type {
         const Check = Framing.Check;
         const whole_streams = @hasDecl(Framing, "max_stream_bytes");
         const min_room = if (whole_streams) Framing.max_stream_bytes else codes.WINDOW;
+        const positioned = @hasField(Framing, "seeking");
         pub const DecompressOptions = Framing.DecompressOptions;
         pub const DecompressError = Framing.DecompressError;
 
@@ -43,6 +44,7 @@ pub fn Decompressor(comptime Framing: type) type {
         check: Check,
         phase: Phase,
         deferred: ?DecompressError,
+        log: if (positioned) BlockLog else void,
 
         const Phase = enum { header, body, done, failed };
 
@@ -82,11 +84,30 @@ pub fn Decompressor(comptime Framing: type) type {
             self.br = .{ .reader = if (small) self.staging.init() else input };
             self.framing = Framing.init(options);
             self.phase = .header;
+            if (positioned) self.log = .{};
         }
 
         pub const seek = if (@hasField(Framing, "seeking")) seekVirtual else @compileError("only BGZF seeks");
 
         pub const seekUncompressed = if (@hasField(Framing, "seeking")) seekIndexed else @compileError("only BGZF seeks");
+
+        pub const tell = if (@hasField(Framing, "seeking")) tellVirtual else @compileError("only BGZF tells");
+
+        fn tellVirtual(self: *const Self) error{PositionUnavailable}!Framing.VirtualOffset {
+            const at = self.session.base + self.reader.seek;
+            const log = &self.log;
+            if (at < log.lost) return error.PositionUnavailable;
+            for (0..log.count) |index| {
+                const entry = log.entries[(log.first + index) % BlockLog.capacity];
+                if (at >= entry.start + entry.size) continue;
+                return virtual(entry.coffset, at - entry.start);
+            }
+            return virtual(log.next, 0);
+        }
+
+        fn virtual(coffset: u64, uoffset: u64) error{PositionUnavailable}!Framing.VirtualOffset {
+            return .{ .coffset = std.math.cast(u48, coffset) orelse return error.PositionUnavailable, .uoffset = @intCast(uoffset) };
+        }
 
         fn seekVirtual(self: *Self, source: *std.Io.File.Reader, offset: anytype) DecompressError!void {
             return self.seekTo(source, offset.coffset, offset.uoffset, true);
@@ -110,6 +131,8 @@ pub fn Decompressor(comptime Framing: type) type {
             source.seekTo(coffset) catch return error.ReadFailed;
             self.init(&source.interface, options);
             self.framing.seeking = true;
+            self.log.base = coffset;
+            self.log.next = coffset;
             const r = &self.reader;
             const reached = if (skip == 0) r.fill(1) else r.discardAll64(skip);
             reached catch |e| switch (e) {
@@ -143,6 +166,7 @@ pub fn Decompressor(comptime Framing: type) type {
                 switch (self.phase) {
                     .header => {
                         if (r.buffer.len - self.session.out_pos < (if (whole_streams) min_room else 1)) break;
+                        if (positioned and !self.log.makeRoom(self.session.base + r.seek, r.end > start)) break;
                         const more = self.framing.header(&self.br) catch |e| return self.fault(e, start);
                         if (!more) {
                             self.phase = .done;
@@ -168,6 +192,7 @@ pub fn Decompressor(comptime Framing: type) type {
                             if (!whole_streams) r.end = self.session.out_pos;
                             return self.fault(e, start);
                         };
+                        if (positioned) self.log.add(self.session.stream_start, self.session.position() - self.session.stream_start, self.framing.current.start, self.framing.current.block_size);
                         r.end = self.session.out_pos;
                         self.phase = .header;
                     },
@@ -225,6 +250,43 @@ pub fn Decompressor(comptime Framing: type) type {
         }
     };
 }
+
+const BlockLog = struct {
+    const capacity = 16;
+    const Entry = struct { start: u64, size: u64, coffset: u64 };
+
+    entries: [capacity]Entry = undefined,
+    first: usize = 0,
+    count: usize = 0,
+    base: u64 = 0,
+    next: u64 = 0,
+    lost: u64 = 0,
+
+    fn add(self: *BlockLog, at: u64, size: u64, start: u64, block_size: u64) void {
+        if (size == 0) return;
+        std.debug.assert(self.count < capacity);
+        const coffset = self.base + start;
+        self.entries[(self.first + self.count) % capacity] = .{ .start = at, .size = size, .coffset = coffset };
+        self.count += 1;
+        self.next = coffset + block_size;
+    }
+
+    fn makeRoom(self: *BlockLog, at: u64, progressed: bool) bool {
+        while (self.count != 0) {
+            const oldest = self.entries[self.first];
+            if (oldest.start + oldest.size > at) break;
+            self.first = (self.first + 1) % capacity;
+            self.count -= 1;
+        }
+        if (self.count < capacity) return true;
+        if (progressed) return false;
+        const oldest = self.entries[self.first];
+        self.lost = oldest.start + oldest.size;
+        self.first = (self.first + 1) % capacity;
+        self.count -= 1;
+        return true;
+    }
+};
 
 const SMALL_OUTPUT = 16384;
 

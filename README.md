@@ -31,7 +31,7 @@ I kept reaching for compression in my other projects. Zig's standard library alr
 The library has no external dependencies, does not create threads, and does not allocate during codec operations. The goal is not to replace every compression library. The goal is to make the common bounded streaming path pleasant to use and straightforward to measure.
 
 - **gzip, zlib, and raw DEFLATE**, compressed and decompressed, with three presets: `fast`, `even` (the default), and `dense`.
-- **BGZF**, the blocked gzip of bioinformatics: blocks that end at text lines as `bgzip`'s do, `.gzi` indexes, and seeking by virtual or uncompressed offset.
+- **BGZF**, the blocked gzip of bioinformatics: blocks that end at text lines as `bgzip`'s do, `.gzi` indexes, seeking by virtual or uncompressed offset, and the virtual offset of the next byte for BAM indexes.
 - **tar** archives (ustar, pax, GNU), read and written through any of the formats above.
 - A library of `std.Io` readers and writers over workspaces you own, a decoder for whole zlib and raw DEFLATE streams held in memory, and a `zipir` command for all of it.
 
