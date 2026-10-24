@@ -72,7 +72,7 @@ A full-buffer decoder reads the whole input and allocates the whole output. Its 
 
 `--peers` picks tiers, and the tiers nest:
 
-- `prime` (default): zipir, zlib-ng, ISA-L, and the Zig standard library. This is the development set.
+- `prime` (default): the rows of `peers.tsv` with tier `prime`: zipir's own adapters, zlib-ng, ISA-L (`igzip`), the Zig standard library, and the `bgzip` builds for BGZF. This is the development set.
 - `extended`: prime plus libdeflate, GNU gzip, and host zlib. Use it to check a claim more widely.
 - `all`: extended plus pigz and both flate2 backends.
 
@@ -111,10 +111,10 @@ Results go to `tools/.local/qualify/TOOL/checks.tsv` and `receipt.tsv`. The rece
 ## Bench
 
 ```bash
-tools/bench.sh [--peers SET] [--levels SET] [--category C] [--class C[,C...] | --full] [--force] [--list] [TOOL...]
+tools/bench.sh [--peers SET] [--levels SET] [--category C] [--class C[,C...] | --full] [--op OP] [--format F] [--rounds N] [--warmup N] [--force] [--list] [TOOL...]
 ```
 
-This is the matched method used for every comparison we report. For each corpus file and operation, all selected subjects run in one Zebrac batch: Zebrac runs every command once per round in a changing order, with 3 warmups and exactly 25 rounds, pinned to one CPU with `taskset -c $BENCH_CPU` (default 4). A busy machine then slows every subject in the same rounds, so the ratios stay fair. The 1-minute load average before and after each batch is recorded.
+This is the matched method used for every comparison we report. For each corpus file and operation, all selected subjects run in one Zebrac batch: Zebrac runs every command once per round in a changing order, with 3 warmups and 25 rounds by default (`--warmup` and `--rounds` change them), pinned to one CPU with `taskset -c $BENCH_CPU` (default 4). A busy machine then slows every subject in the same rounds, so the ratios stay fair. The 1-minute load average before and after each batch is recorded.
 
 The zipir tool of each format is always in the batch as the anchor. Before timing, `bench.sh` compresses once with each subject, records the bytes, and checks that GNU gzip decodes them to the input. A tool is timed only if its qualify receipt passed on the same binary and covers the levels, classes, and category being timed; `--full` timing needs `qualify.sh --full` first.
 

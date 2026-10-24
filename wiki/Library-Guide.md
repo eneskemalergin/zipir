@@ -116,6 +116,42 @@ The index storage is yours; when it is full, the compressor's writer fails and `
 
 For work on single blocks, `zipir.bgzf.scan` walks block headers without decoding, `BlockDecoder` decodes one whole block, and `BlockSplitter` with `BlockEncoder` write blocks one at a time.
 
+### Blocks you compress yourself
+
+`BlockSplitter` decides where blocks end, and each `BlockEncoder.compressBlock` call encodes one block from nothing but its input. Written in order and followed by the EOF marker, the blocks are exactly what `bgzf.Compressor` writes with the same preset and split:
+
+```zig
+var splitter: zipir.bgzf.BlockSplitter = .init(.fill);
+var block: [zipir.bgzf.MAX_BLOCK]u8 = undefined;
+var rest = plain;
+while (splitter.next(rest, true)) |n| {
+    const size = encoder.compressBlock(rest[0..n], &block, .even);
+    try out.writeAll(block[0..size]);
+    rest = rest[n..];
+}
+try out.writeAll(&zipir.bgzf.EOF_MARKER);
+```
+
+`next(available, at_end)` returns `null` until it has `BlockSplitter.LOOKAHEAD` bytes or the input has ended, so a caller that streams keeps that much input ahead. Because blocks are independent, a program that wants several cores can give each thread its own `BlockEncoder`, compress blocks there, and write them in order on one thread; zipir itself starts no threads.
+
+### Many outputs through one encoder
+
+`bgzf.Compressor` holds its own `BlockEncoder` (428,584 bytes). A program writing many BGZF outputs at once, such as one file per group of records, can share one encoder: each output keeps only its pending input and its own `BlockSplitter`, and calls `compressBlock` on the shared encoder whenever a block is ready.
+
+### Copy unchanged blocks
+
+To change the start of a BGZF file, such as a BAM header, without recompressing the rest: `scan` gives each block's offset and size, `BlockDecoder` decodes the block that changes, `BlockEncoder` encodes its new contents (at most `BLOCK_INPUT` bytes), and the remaining blocks are copied byte for byte.
+
+```zig
+var input: std.Io.Reader = .fixed(original);
+var scanner = zipir.bgzf.scan(&input, .{});
+const first = (try scanner.next()).?;
+const n = try block_decoder.decodeBlock(original[@intCast(first.coffset)..][0..first.size], &plain);
+// ... edit plain[0..n] ...
+try out.writeAll(block[0..encoder.compressBlock(plain[0..n], &block, .even)]);
+try out.writeAll(original[first.size..]);
+```
+
 ## tar through any format
 
 `zipir.tar.Writer(Source)` is a reader of the archive it builds, so a compressor pulls from it, and `zipir.tar.Reader(Visitor)` is a writer that calls the visitor per entry, so a decompressor pushes into it. A `.tar.gz` round trip:

@@ -13,7 +13,7 @@
 # crc isize concat
 #           gzip checks qualify.sh blocks on (yes); any other value records the result only.
 #           - for the other formats.
-# Every row is single-threaded. Versions live in tools/versions.sh.
+# Every row is single-threaded. Versions live in tools/common.sh.
 tool	format	tier	levels	fast	balanced	dense	decode	crc	isize	concat
 zipir-gzip	gzip	prime	1 5 9	1	5	9	streaming	yes	yes	yes
 zipir-zlib	zlib	prime	1 5 9	1	5	9	streaming	-	-	-

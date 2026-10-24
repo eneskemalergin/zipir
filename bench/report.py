@@ -941,8 +941,8 @@ def write_readme(target, rows, summary, meta, out):
         L.append(f'- **zipir compression re-timed alone.** zipir\'s compression rows come from zipir-only runs '
                  f'({runs}, zipir `{sp["zipir_commit"][:12]}`, CPU {sp.get("zipir_cpu", "?")}; batches disturbed by other jobs '
                  f're-timed in the later runs); every peer row and zipir\'s decompression rows '
-                 f'come from `{sp["base"]}` (zipir `{sp["peers_commit"][:12]}`, whose decoder is unchanged since; CPU '
-                 f'{sp.get("peers_cpu", "?")}). '
+                 f'come from `{sp["base"]}` (zipir `{sp["peers_commit"][:12]}`, CPU {sp.get("peers_cpu", "?")}), so they '
+                 f'describe zipir\'s decoder at that commit. '
                  f'So zipir\'s compression was not timed in the same rounds as the peers: load that differed between '
                  f'the two runs shifts zipir against every peer. {sp.get("control_note", "")}'.rstrip())
     L.extend(noise_lines(rows))

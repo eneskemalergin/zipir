@@ -37,6 +37,7 @@ Every decoder can fail with `Truncated`, `BadHuffman`, `BadSymbol`, `BadDistance
 ## bgzf
 
 - `Decompressor`, `DecompressOptions`, `DecompressError`: as above. `DecompressOptions` has `max_output_bytes`, `trailing_data`, and `require_eof_marker: bool = false`. The decompressor also has `seek(self, source: *std.Io.File.Reader, offset: VirtualOffset)` and `seekUncompressed(self, source: *std.Io.File.Reader, entries: []const IndexEntry, uoffset: u64)`, and its `framing.blocks` and `framing.eof_marker` tell what was read.
+- `tell(self) error{PositionUnavailable}!VirtualOffset` gives the virtual offset of the next byte a read returns, counted from the input position at `init` or the last seek; between blocks it is the start of the next block with data, as htslib's `bgzf_tell`. Each call costs the same. The decompressor remembers the last 16 decoded blocks with data, so `PositionUnavailable` means one peek held more than 16 such blocks: one peek holds at most 163,840 bytes, so a file whose blocks average more than 10,240 bytes of data never reaches it.
 - `DecompressError` adds to gzip's: `NotBgzf`, `BadBlockSize`, `BlockSizeMismatch`, `BlockTooLarge`, `MissingEofMarker`, `BadVirtualOffset`, `BadIndex`.
 - `Compressor`: `init(self, output, options) std.Io.Writer.Error!void`, `writer`, `err: ?CompressError`, `finish(self) std.Io.Writer.Error!Totals`.
 - `CompressOptions`: `preset: Preset = .even`, `split: Split = .fill`, `index: ?*IndexBuilder = null`. `CompressError`: `error{ WriteFailed, IndexFull }`. `Totals`: `uncompressed: u64`, `compressed: u64`.
@@ -48,6 +49,25 @@ Every decoder can fail with `Truncated`, `BadHuffman`, `BadSymbol`, `BadDistance
 - `BlockEncoder`: `compressBlock(self, input: []const u8, out: *[MAX_BLOCK]u8, preset) usize` asserts at most `BLOCK_INPUT` bytes of input.
 - `IndexEntry`: `coffset: u64`, `uoffset: u64`. `IndexBuilder`: `init(entries: []IndexEntry)`, `add(self, coffset, data_size) error{IndexFull}!void`, `slice(self)`. `writeIndex(writer, entries)`. `IndexReader`: `init(reader, file_size) DecompressError!IndexReader`, `next(self) DecompressError!?IndexEntry`.
 - Constants: `MAX_BLOCK = 65536`, `BLOCK_INPUT = 65280`, `EOF_MARKER` (the 28-byte empty block).
+
+## Workspace sizes
+
+Every workspace has a fixed size, checked at compile time, on the supported 64-bit targets. It does not grow with input, output, header fields, or block count. Allocate it once and reuse it.
+
+| Workspace                                      |   Bytes |
+| ---------------------------------------------- | ------: |
+| `gzip.Decompressor`                            | 171,888 |
+| `zlib.Decompressor`                            | 171,880 |
+| `deflate.Decompressor`                         | 171,872 |
+| `bgzf.Decompressor`                            | 172,240 |
+| `zlib.SliceDecoder`, `deflate.SliceDecoder`    |   7,704 |
+| `bgzf.BlockDecoder`                            |  73,240 |
+| `gzip`, `zlib`, and `deflate` `Compressor`     | 428,624 |
+| `bgzf.BlockEncoder`                            | 428,584 |
+| `bgzf.Compressor`                              | 657,544 |
+
+- `SliceDecoder.decode` also uses about 16.3 KiB of stack for outputs under 16 KiB.
+- A release that changes one of these sizes says so in the changelog.
 
 ## tar
 

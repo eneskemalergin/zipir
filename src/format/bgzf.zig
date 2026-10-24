@@ -147,6 +147,7 @@ pub const BlockDecoder = struct {
 
 comptime {
     std.debug.assert(@sizeOf(BlockDecoder) == 73240);
+    std.debug.assert(@sizeOf(Decompressor) == 172240);
 }
 
 pub const Split = enum { fill, lines };
@@ -254,6 +255,7 @@ pub const BlockEncoder = struct {
 
 comptime {
     std.debug.assert(@sizeOf(BlockEncoder) == 428584);
+    std.debug.assert(@sizeOf(Compressor) == 657544);
 }
 
 pub const CompressOptions = struct {
