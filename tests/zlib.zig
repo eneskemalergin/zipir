@@ -131,6 +131,8 @@ test "[failure] - [zlib decompressor]: invalid history, trees, and fixed symbols
         .{ "incomplete-distance", error.BadHuffman },
         .{ "incomplete-code-length", error.BadHuffman },
         .{ "oversubscribed-literal", error.BadHuffman },
+        .{ "distance-codes-31", error.BadHuffman },
+        .{ "distance-codes-32", error.BadHuffman },
         .{ "fixed-invalid-286", error.BadSymbol },
         .{ "fixed-invalid-287", error.BadSymbol },
         .{ "fixed-invalid-30", error.BadSymbol },
@@ -422,6 +424,28 @@ test "[failure] - [zlib slice decoder]: too little room, trailing bytes, a bad A
     var nothing = std.Io.Reader.fixed("");
     _ = try support.compressAll(encoder, &nothing, &sink, .{});
     try std.testing.expectEqual(@as(usize, 0), try slicer.decode(sink.buffered(), output[0..0]));
+}
+
+test "[edge] - [zlib slice decoder]: an empty slice that points into the other slice does not overlap it" {
+    const allocator = std.testing.allocator;
+    const slicer = try allocator.create(zlib.SliceDecoder);
+    defer allocator.destroy(slicer);
+    const encoder = try allocator.create(Compressor);
+    defer allocator.destroy(encoder);
+    inline for (.{ "", "A" }) |plain| {
+        var buffer: [64]u8 = undefined;
+        var sink = std.Io.Writer.fixed(&buffer);
+        var source = std.Io.Reader.fixed(plain);
+        _ = try support.compressAll(encoder, &source, &sink, .{});
+        const stream = sink.buffered();
+        if (plain.len == 0) {
+            try std.testing.expectEqual(@as(usize, 0), try slicer.decode(stream, buffer[1..1]));
+        } else {
+            try std.testing.expectError(error.OutputLimitExceeded, slicer.decode(stream, buffer[1..1]));
+        }
+        try std.testing.expectError(error.Truncated, slicer.decode(buffer[1..1], &buffer));
+        try std.testing.expectError(error.Truncated, slicer.decode(buffer[1..1], buffer[1..1]));
+    }
 }
 
 test "[property] - [zlib slice decoder]: one workspace decodes a mix of streams, and a copy of it decodes the same" {

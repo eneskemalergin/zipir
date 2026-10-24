@@ -214,13 +214,13 @@ test "[edge] - [gzip decompressor]: strict trailing data empty members and fixed
     try std.testing.expectEqualStrings("A", writer.buffered());
 }
 
-test "[failure] - [gzip decompressor]: incomplete and oversubscribed Huffman trees are rejected" {
+test "[failure] - [gzip decompressor]: incomplete and oversubscribed Huffman trees and more than 30 distance codes are rejected" {
     const decoder = try std.testing.allocator.create(Decoder);
     defer std.testing.allocator.destroy(decoder);
     var sink: std.Io.Writer.Discarding = .init(&.{});
     var reader = std.Io.Reader.fixed(@embedFile("data/synthetic/empty-single.gz"));
     try std.testing.expectEqual(@as(u64, 0), try support.decompressAll(decoder, &reader, &sink.writer, .{}));
-    inline for (.{ "incomplete-literal", "incomplete-distance", "incomplete-code-length", "oversubscribed-literal" }) |name| {
+    inline for (.{ "incomplete-literal", "incomplete-distance", "incomplete-code-length", "oversubscribed-literal", "distance-codes-31", "distance-codes-32" }) |name| {
         reader = .fixed(@embedFile("data/synthetic/" ++ name ++ ".gz"));
         try std.testing.expectError(error.BadHuffman, support.decompressAll(decoder, &reader, &sink.writer, .{}));
     }

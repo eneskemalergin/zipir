@@ -8,6 +8,7 @@ These are deterministic synthetic inputs, not downloaded user data. Expected pla
 - `fixed-codes` exercises every literal byte, all 29 legal length symbols, all 30 legal distance symbols, and reserved fixed-alphabet symbols in separate invalid files.
 - `long-codes` contains valid 15-bit literal/length and distance codes and a long end-of-block code.
 - `repeat-zero` exercises a legal zero code-length repeat. The `invalid-*` files reject impossible history and an incorrect FHCRC.
+- `distance-codes-31` and `distance-codes-32` declare 31 and 32 distance codes in a dynamic header, one of them unused but given a length; GNU gzip and Python zlib reject both, and the same header with 30 codes decodes to `A`.
 - `empty-single` is a legal empty member with a single one-bit end-of-block code and empty distance alphabet. The incomplete and oversubscribed tree fixtures are rejected by independent Python zlib.
 
 The checked-in files are the fixture source used by the self-contained test suite. Generator scripts are not required and are not present in the current checkout. GNU gzip and Python zlib validated the applicable vectors before they were frozen.

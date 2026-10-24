@@ -159,3 +159,25 @@ test "[unit] - [raw deflate]: the public error set names exactly the documented 
 test "[property] - [raw deflate slice decoder]: every stream, truncation, and bit flip decodes as the reader does" {
     try support.expectSliceDecoderProperty(deflate, std.testing.allocator);
 }
+
+test "[edge] - [raw deflate slice decoder]: an empty slice that points into the other slice does not overlap it" {
+    const allocator = std.testing.allocator;
+    const slicer = try allocator.create(deflate.SliceDecoder);
+    defer allocator.destroy(slicer);
+    const encoder = try allocator.create(Compressor);
+    defer allocator.destroy(encoder);
+    inline for (.{ "", "A" }) |plain| {
+        var buffer: [64]u8 = undefined;
+        var sink = std.Io.Writer.fixed(&buffer);
+        var source = std.Io.Reader.fixed(plain);
+        _ = try support.compressAll(encoder, &source, &sink, .{});
+        const stream = sink.buffered();
+        if (plain.len == 0) {
+            try std.testing.expectEqual(@as(usize, 0), try slicer.decode(stream, buffer[1..1]));
+        } else {
+            try std.testing.expectError(error.OutputLimitExceeded, slicer.decode(stream, buffer[1..1]));
+        }
+        try std.testing.expectError(error.Truncated, slicer.decode(buffer[1..1], &buffer));
+        try std.testing.expectError(error.Truncated, slicer.decode(buffer[1..1], buffer[1..1]));
+    }
+}

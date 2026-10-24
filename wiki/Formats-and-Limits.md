@@ -2,6 +2,10 @@
 
 Decompression treats every input as untrusted: it checks each field before using it, bounds its own work and output, and reports a named error instead of reading or writing out of bounds. Compression within one version writes the same bytes for the same input and preset on every CPU and build; a later version may write different bytes that decode to the same input.
 
+## DEFLATE, in every format
+
+- A dynamic block that declares more than 30 distance codes is `BadHuffman`, even when the extra codes are unused, as GNU gzip and zlib reject it.
+
 ## gzip
 
 - Concatenated members decode as one stream; empty input is `Truncated`.

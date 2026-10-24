@@ -315,7 +315,7 @@ pub fn Session(comptime Check: type) type {
             const hlit = try br.get(5) + 257;
             const hdist = try br.get(5) + 1;
             const hclen = try br.get(4) + 4;
-            if (hlit > 286 or hdist > 32 or hclen > 19) return error.BadHuffman;
+            if (hlit > 286 or hdist > 30 or hclen > 19) return error.BadHuffman;
             var clens: [19]u4 = .{0} ** 19;
             var ci: u32 = 0;
             while (ci < hclen) : (ci += 1) {

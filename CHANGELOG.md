@@ -8,6 +8,14 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 - `bgzf.Decompressor.tell()` gives the virtual offset of the next byte a read returns, as htslib's `bgzf_tell` does: between blocks, the start of the next block with data. BAM indexes record these offsets. The decompressor keeps the last 16 decoded blocks with data to answer it, which makes `bgzf.Decompressor` 304 bytes larger (172,240 bytes), and a call costs the same however many blocks it keeps; a single peek longer than 16 such blocks loses the earlier ones, and `tell` then reports `PositionUnavailable`.
 
+### Changed
+
+- Every decoder rejects a dynamic block that declares more than 30 distance codes with `BadHuffman`, as GNU gzip, zlib, zlib-ng, and igzip do; earlier versions accepted it when the extra codes were unused. RFC 1951 lets the header count reach 32, but only 30 distance codes exist.
+
+### Fixed
+
+- `zlib.SliceDecoder.decode` and `deflate.SliceDecoder.decode` accept an empty `input` or `output` slice that points into the other slice, such as `buf[k..k]`; a Debug or ReleaseSafe build asserted on it. An empty slice overlaps nothing. The results are the documented ones: an empty `input` is `Truncated`, and an empty `output` gives 0 for an empty stream and `OutputLimitExceeded` otherwise.
+
 ## [0.2.1] - 2026-09-30
 
 0.2.1 makes zipir lighter for the projects that decode many small streams held in memory: a zlib or raw DEFLATE stream can now be decoded straight into your own buffer, and every decompressor's workspace is smaller. It also removes the minimum input reader buffer size (16 bytes, 28 for BGZF) that two dependents had to work around.

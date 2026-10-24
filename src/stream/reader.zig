@@ -319,7 +319,7 @@ pub fn SliceDecoder(comptime Framing: type) type {
         pub fn decode(self: *Self, input: []const u8, output: []u8) Framing.DecompressError!usize {
             const in_start = @intFromPtr(input.ptr);
             const out_start = @intFromPtr(output.ptr);
-            std.debug.assert(in_start + input.len <= out_start or out_start + output.len <= in_start);
+            std.debug.assert(input.len == 0 or output.len == 0 or in_start + input.len <= out_start or out_start + output.len <= in_start);
             if (output.len >= SMALL_OUTPUT) return self.decodeInto(input, output, output.len);
             var scratch: [SMALL_OUTPUT + engine.FAST_ROOM]u8 = undefined;
             const n = try self.decodeInto(input, scratch[0 .. output.len + engine.FAST_ROOM], output.len);
