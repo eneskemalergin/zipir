@@ -93,14 +93,13 @@ pub fn Decompressor(comptime Framing: type) type {
 
         pub const tell = if (@hasField(Framing, "seeking")) tellVirtual else @compileError("only BGZF tells");
 
-        fn tellVirtual(self: *const Self) error{PositionUnavailable}!Framing.VirtualOffset {
+        fn tellVirtual(self: *Self) error{PositionUnavailable}!Framing.VirtualOffset {
             const at = self.session.base + self.reader.seek;
             const log = &self.log;
             if (at < log.lost) return error.PositionUnavailable;
-            for (0..log.count) |index| {
-                const entry = log.entries[(log.first + index) % BlockLog.capacity];
-                if (at >= entry.start + entry.size) continue;
-                return virtual(entry.coffset, at - entry.start);
+            while (log.cursor < log.count) : (log.cursor += 1) {
+                const entry = log.entries[(log.first + log.cursor) % BlockLog.capacity];
+                if (at < entry.start + entry.size()) return virtual(entry.place.coffset, at - entry.start);
             }
             return virtual(log.next, 0);
         }
@@ -253,40 +252,60 @@ pub fn Decompressor(comptime Framing: type) type {
 
 const BlockLog = struct {
     const capacity = 16;
-    const Entry = struct { start: u64, size: u64, coffset: u64 };
+    const Entry = struct {
+        start: u64,
+        place: packed struct(u64) { last: u16, coffset: u48 },
+
+        fn size(self: Entry) u64 {
+            return @as(u64, self.place.last) + 1;
+        }
+    };
 
     entries: [capacity]Entry = undefined,
     first: usize = 0,
     count: usize = 0,
+    cursor: usize = 0,
     base: u64 = 0,
     next: u64 = 0,
     lost: u64 = 0,
 
     fn add(self: *BlockLog, at: u64, size: u64, start: u64, block_size: u64) void {
         if (size == 0) return;
-        std.debug.assert(self.count < capacity);
+        std.debug.assert(self.count < capacity and size <= 1 << 16);
         const coffset = self.base + start;
-        self.entries[(self.first + self.count) % capacity] = .{ .start = at, .size = size, .coffset = coffset };
-        self.count += 1;
         self.next = coffset + block_size;
+        const place = std.math.cast(u48, coffset) orelse {
+            self.lost = at + size;
+            return;
+        };
+        self.entries[(self.first + self.count) % capacity] = .{ .start = at, .place = .{ .last = @intCast(size - 1), .coffset = place } };
+        self.count += 1;
+    }
+
+    fn drop(self: *BlockLog) void {
+        self.first = (self.first + 1) % capacity;
+        self.count -= 1;
+        self.cursor -|= 1;
     }
 
     fn makeRoom(self: *BlockLog, at: u64, progressed: bool) bool {
         while (self.count != 0) {
             const oldest = self.entries[self.first];
-            if (oldest.start + oldest.size > at) break;
-            self.first = (self.first + 1) % capacity;
-            self.count -= 1;
+            if (oldest.start + oldest.size() > at) break;
+            self.drop();
         }
         if (self.count < capacity) return true;
         if (progressed) return false;
         const oldest = self.entries[self.first];
-        self.lost = oldest.start + oldest.size;
-        self.first = (self.first + 1) % capacity;
-        self.count -= 1;
+        self.lost = oldest.start + oldest.size();
+        self.drop();
         return true;
     }
 };
+
+comptime {
+    std.debug.assert(@sizeOf(BlockLog.Entry) == 16);
+}
 
 const SMALL_OUTPUT = 16384;
 
