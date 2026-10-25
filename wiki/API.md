@@ -33,7 +33,7 @@ Every decoder can fail with `Truncated`, `BadHuffman`, `BadSymbol`, `BadDistance
 
 - `decode(self, input: []const u8, output: []u8) SliceError!usize` decodes the stream in `input` into `output` and returns the decoded length. `OutputLimitExceeded` means the stream needs more room than `output`; bytes after the stream are `TrailingData`. `output` past the returned length, and all of it after an error, is unspecified. `input` and `output` must not overlap.
 - `SliceError` is the format's `DecompressError` without `ReadFailed`, `InputBufferTooSmall`, and `PeekTooLarge`, which a slice cannot raise.
-- The workspace holds only tables (7,704 bytes), keeps nothing between calls, and may be moved or copied between them. An output under 16 KiB is decoded into a stack buffer and copied, so a call uses up to about 16.3 KiB of stack.
+- The workspace holds only tables (10,980 bytes), keeps nothing between calls, and may be moved or copied between them. An output under 16 KiB is decoded into a stack buffer and copied, so a call uses up to about 16.3 KiB of stack.
 
 ## bgzf
 
@@ -57,12 +57,12 @@ Every workspace has a fixed size, checked at compile time, on the supported 64-b
 
 | Workspace                                      |   Bytes |
 | ---------------------------------------------- | ------: |
-| `gzip.Decompressor`                            | 171,888 |
-| `zlib.Decompressor`                            | 171,880 |
-| `deflate.Decompressor`                         | 171,872 |
-| `bgzf.Decompressor`                            | 172,240 |
-| `zlib.SliceDecoder`, `deflate.SliceDecoder`    |   7,704 |
-| `bgzf.BlockDecoder`                            |  73,240 |
+| `gzip.Decompressor`                            | 175,168 |
+| `zlib.Decompressor`                            | 175,160 |
+| `deflate.Decompressor`                         | 175,152 |
+| `bgzf.Decompressor`                            | 175,520 |
+| `zlib.SliceDecoder`, `deflate.SliceDecoder`    |  10,980 |
+| `bgzf.BlockDecoder`                            |  76,516 |
 | `gzip`, `zlib`, and `deflate` `Compressor`     | 428,624 |
 | `bgzf.BlockEncoder`                            | 428,584 |
 | `bgzf.Compressor`                              | 657,544 |

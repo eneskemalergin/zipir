@@ -1,7 +1,8 @@
 //! DEFLATE decoding (RFC 1951) into bounded output storage that pauses when full. The owner gives a `Session` its
 //! tables and its storage, reads `storage[0..out_pos]`, then `rebase` keeps the unread bytes and 32 KiB of history;
 //! bits, block state, and a match cut short by full storage carry over to the next `run`, and new bytes are in the
-//! check when `run` returns.
+//! check when `run` returns. Table entries, the table builder, and the decode loops follow libdeflate's decoder
+//! (MIT; its notice is in `LICENSE`): an 11-bit literal/length root and an 8-bit distance root with subtables.
 
 const std = @import("std");
 const copy = @import("../kernel/copy.zig");
@@ -32,9 +33,41 @@ const Entry = packed struct(u32) {
     payload: u16,
 };
 
+const LIT_TABLEBITS = 11;
+const DIST_TABLEBITS = 8;
+const LIT_ENOUGH = 2342;
+const DIST_ENOUGH = 402;
+
+const LITERAL: u32 = 0x8000_0000;
+const EXCEPTIONAL: u32 = 0x8000;
+const SUBTABLE: u32 = 0x4000;
+const END_OF_BLOCK: u32 = 0x2000;
+const RESERVED: u32 = 0x1000;
+const UNUSED: u32 = EXCEPTIONAL | RESERVED;
+
+const lit_results: [288]u32 = blk: {
+    var r: [288]u32 = undefined;
+    for (0..256) |s| r[s] = LITERAL | (@as(u32, s) << 16);
+    r[256] = EXCEPTIONAL | END_OF_BLOCK;
+    for (0..29) |k| r[257 + k] = (@as(u32, LEN_BASE[k]) << 16) | LEN_EXTRA[k];
+    r[286] = UNUSED;
+    r[287] = UNUSED;
+    break :blk r;
+};
+
+const dist_results: [32]u32 = blk: {
+    var r: [32]u32 = undefined;
+    for (0..30) |k| r[k] = (@as(u32, DIST_BASE[k]) << 16) | DIST_EXTRA[k];
+    r[30] = UNUSED;
+    r[31] = UNUSED;
+    break :blk r;
+};
+
+const Huff = struct { lit: [*]const u32, dist: [*]const u32, lit_mask: u64 };
+
 const FixedTables = struct {
-    lit: [1 << 10]Entry,
-    dist: [1 << 9]Entry,
+    lit: [1 << 9]u32,
+    dist: [1 << DIST_TABLEBITS]u32,
 };
 
 const FIXED_TABLES: FixedTables = fixedTables();
@@ -42,11 +75,13 @@ const FIXED_TABLES: FixedTables = fixedTables();
 fn fixedTables() FixedTables {
     @setEvalBranchQuota(1000000);
     var tables: FixedTables = undefined;
-    var no_spill: [0]Entry = .{};
-    fillTwoLevel(&tables.lit, &no_spill, 10, &FIXED_LIT_LENS, litKind, litPayload, true) catch |err| @compileError(@errorName(err));
-    fillTwoLevel(&tables.dist, &no_spill, 9, &FIXED_DIST_LENS, distKind, distPayload, true) catch |err| @compileError(@errorName(err));
+    const lit_bits = buildTable(&tables.lit, &FIXED_LIT_LENS, &lit_results, 9, true) catch |err| @compileError(@errorName(err));
+    std.debug.assert(lit_bits == 9);
+    _ = buildTable(&tables.dist, &FIXED_DIST_LENS, &dist_results, DIST_TABLEBITS, false) catch |err| @compileError(@errorName(err));
     return tables;
 }
+
+const FIXED_HUFF: Huff = .{ .lit = &FIXED_TABLES.lit, .dist = &FIXED_TABLES.dist, .lit_mask = (1 << 9) - 1 };
 
 pub const BitReader = struct {
     reader: *std.Io.Reader,
@@ -170,16 +205,14 @@ pub const BitReader = struct {
 
 const BATCH = 131072;
 
-pub const FAST_ROOM = 289;
+pub const FAST_ROOM = 2 + 258 + 5 * 8 - 1;
 
-const LIT_SPILL_MAX = 308;
-const DIST_SPILL_MAX = 82;
+const FAST_READ = (63 + 2 * LIT_TABLEBITS + 20 + 28 + 7) / 8 + 8;
 
 pub const Tables = struct {
-    lit_first: [1 << 10]Entry,
-    dist_first: [1 << 9]Entry,
-    lit_spill: [LIT_SPILL_MAX]Entry,
-    dist_spill: [DIST_SPILL_MAX]Entry,
+    lit: [LIT_ENOUGH]u32,
+    dist: [DIST_ENOUGH]u32,
+    lit_bits: u32,
 };
 
 pub const Decoder = struct {
@@ -188,7 +221,7 @@ pub const Decoder = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(Decoder) == 171544);
+    std.debug.assert(@sizeOf(Decoder) == 174820);
 }
 
 pub const Stop = enum { end, full };
@@ -300,11 +333,11 @@ pub fn Session(comptime Check: type) type {
                     }
                     self.block = .header;
                 },
-                .fixed => switch (try decodeHuff(Check, self, &FIXED_TABLES.lit, &FIXED_TABLES.dist)) {
+                .fixed => switch (try decodeHuff(Check, self, FIXED_HUFF)) {
                     .end => self.block = .header,
                     .full => return self.full(),
                 },
-                .dynamic => switch (try decodeHuff(Check, self, &self.tables.lit_first, &self.tables.dist_first)) {
+                .dynamic => switch (try decodeHuff(Check, self, .{ .lit = &self.tables.lit, .dist = &self.tables.dist, .lit_mask = (@as(u64, 1) << @intCast(self.tables.lit_bits)) - 1 })) {
                     .end => self.block = .header,
                     .full => return self.full(),
                 },
@@ -324,17 +357,13 @@ pub fn Session(comptime Check: type) type {
                 clens[CLEN_ORDER[ci]] = @intCast(try br.get(3));
             }
             var clen_first: [1 << 7]Entry = undefined;
-            try fillFirst(clen_first[0..], 7, clens[0..19], clenKind, clenPayload, false);
-            var all_lens: [318]u4 = .{0} ** 318;
+            try fillFirst(clen_first[0..], 7, clens[0..19]);
+            var lens: [318]u4 = undefined;
             const total_lens: usize = hlit + hdist;
-            try readDynLens(br, clen_first[0..], all_lens[0..total_lens]);
-            var lit_lens: [288]u4 = .{0} ** 288;
-            @memcpy(lit_lens[0..hlit], all_lens[0..hlit]);
-            var dist_lens: [32]u4 = .{0} ** 32;
-            @memcpy(dist_lens[0..hdist], all_lens[hlit..total_lens]);
-            if (lit_lens[256] == 0) return error.BadHuffman;
-            try fillTwoLevel(&self.tables.lit_first, &self.tables.lit_spill, 10, &lit_lens, litKind, litPayload, true);
-            try fillTwoLevel(&self.tables.dist_first, &self.tables.dist_spill, 9, &dist_lens, distKind, distPayload, true);
+            try readDynLens(br, clen_first[0..], lens[0..total_lens]);
+            if (lens[256] == 0) return error.BadHuffman;
+            self.tables.lit_bits = try buildTable(&self.tables.lit, lens[0..hlit], &lit_results, LIT_TABLEBITS, true);
+            _ = try buildTable(&self.tables.dist, lens[hlit..total_lens], &dist_results, DIST_TABLEBITS, false);
         }
 
         fn catchup(self: *Self) void {
@@ -377,7 +406,7 @@ pub fn Session(comptime Check: type) type {
     };
 }
 
-fn fillFirst(table: []Entry, width: u4, lens: []const u4, kind_of: *const fn (usize) Kind, payload_of: *const fn (usize) u16, comptime predecoded: bool) !void {
+fn fillFirst(table: []Entry, width: u4, lens: []const u4) !void {
     const table_len: usize = @as(usize, 1) << width;
     if (table.len != table_len) return error.BadHuffman;
     @memset(table, .{ .nbits = 0, .kind = .invalid, .payload = 0 });
@@ -388,12 +417,7 @@ fn fillFirst(table: []Entry, width: u4, lens: []const u4, kind_of: *const fn (us
         if (len == 0) continue;
         const rev = bitReverse(assigned[s], len);
         if (len <= width) {
-            var entry = Entry{
-                .nbits = len,
-                .kind = kind_of(s),
-                .payload = payload_of(s),
-            };
-            if (predecoded) entry = predecode(entry);
+            const entry = Entry{ .nbits = len, .kind = .lit, .payload = @intCast(s) };
             const step: usize = @as(usize, 1) << len;
             var i: usize = rev;
             while (i < table_len) : (i += step) {
@@ -412,154 +436,110 @@ fn fillFirst(table: []Entry, width: u4, lens: []const u4, kind_of: *const fn (us
     }
 }
 
-fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []const u4, comptime kind_of: fn (usize) Kind, comptime payload_of: fn (usize) u16, comptime predecoded: bool) !void {
-    const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
-    std.debug.assert(table.len == @as(usize, 1) << width);
-    errdefer @memset(table, invalid);
-    var counts: [4][17]u16 = @splat(@splat(0));
-    var at: usize = 0;
-    while (at + 4 <= lens.len) : (at += 4) {
-        inline for (0..4) |k| counts[k][lens[at + k]] += 1;
-    }
-    while (at < lens.len) : (at += 1) counts[0][lens[at]] += 1;
-    var count: [17]u16 = undefined;
-    for (&count, 0..) |*c, len| c.* = counts[0][len] + counts[1][len] + counts[2][len] + counts[3][len];
-    var left: i32 = 1;
-    for (1..16) |len| {
-        left = left * 2 - count[len];
-        if (left < 0) return error.BadHuffman;
-    }
-    const symbols = lens.len - count[0];
-    if (left != 0) {
-        if (symbols != 0 and !(symbols == 1 and count[1] == 1)) return error.BadHuffman;
-        @memset(table, invalid);
-        if (symbols == 1) {
-            const symbol = std.mem.findScalar(u4, lens, 1).?;
-            const entry = makeEntry(symbol, 1, kind_of, payload_of, predecoded);
-            var i: usize = 0;
-            while (i < table.len) : (i += 2) table[i] = entry;
-        }
-        return;
-    }
-    var offsets: [16]u16 = undefined;
+fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bits: u32, comptime shrink: bool) error{BadHuffman}!u32 {
+    var counts: [16]u32 = @splat(0);
+    for (lens) |len| counts[len] += 1;
+    var max_len: u32 = 15;
+    while (max_len > 1 and counts[max_len] == 0) max_len -= 1;
+    const table_bits = if (shrink) @min(max_table_bits, max_len) else max_table_bits;
+    var offsets: [16]u32 = undefined;
     offsets[0] = 0;
-    for (1..16) |len| offsets[len] = offsets[len - 1] + count[len - 1];
-    var sorted: [288]u16 = undefined;
-    for (lens, 0..) |len, symbol| {
-        sorted[offsets[len]] = @intCast(symbol);
-        offsets[len] += 1;
+    offsets[1] = counts[0];
+    var used: u32 = 0;
+    var len: u32 = 1;
+    while (len < max_len) : (len += 1) {
+        offsets[len + 1] = offsets[len] + counts[len];
+        used = (used << 1) + counts[len];
     }
-    var next: usize = count[0];
-    var len: usize = 1;
-    while (count[len] == 0) len += 1;
-    var remaining: usize = count[len];
-    var codeword: usize = 0;
-    var end: usize = @as(usize, 1) << @intCast(@min(len, width));
-    while (len <= width) {
+    used = (used << 1) + counts[len];
+    if (used > (@as(u32, 1) << @intCast(max_len))) return error.BadHuffman;
+    var sorted_buf: [288]u16 = undefined;
+    for (lens, 0..) |l, symbol| {
+        sorted_buf[offsets[l]] = @intCast(symbol);
+        offsets[l] += 1;
+    }
+    var sorted: []const u16 = sorted_buf[counts[0]..];
+    const size = @as(usize, 1) << @intCast(table_bits);
+    if (used < (@as(u32, 1) << @intCast(max_len))) {
+        if (used == 0) {
+            @memset(table[0..size], UNUSED);
+            return table_bits;
+        }
+        if (used != (@as(u32, 1) << @intCast(max_len - 1)) or counts[1] != 1) return error.BadHuffman;
+        const entry = results[sorted[0]] + (1 << 8) + 1;
+        var k: usize = 0;
+        while (k < size) : (k += 2) {
+            table[k] = entry;
+            table[k + 1] = UNUSED;
+        }
+        return table_bits;
+    }
+    var codeword: u32 = 0;
+    len = 1;
+    var count = counts[len];
+    while (count == 0) {
+        len += 1;
+        count = counts[len];
+    }
+    var end: u32 = @as(u32, 1) << @intCast(len);
+    while (len <= table_bits) {
         while (true) {
-            table[codeword] = makeEntry(sorted[next], @intCast(len), kind_of, payload_of, predecoded);
-            next += 1;
+            table[codeword] = results[sorted[0]] + (len << 8) + len;
+            sorted = sorted[1..];
             if (codeword == end - 1) {
-                while (end < table.len) : (end <<= 1) @memcpy(table[end..][0..end], table[0..end]);
-                return;
+                while (len < table_bits) : (len += 1) {
+                    @memcpy(table[end..][0..end], table[0..end]);
+                    end <<= 1;
+                }
+                return table_bits;
             }
-            const bit = @as(usize, 1) << @intCast(std.math.log2_int(usize, codeword ^ (end - 1)));
+            const bit = @as(u32, 1) << @intCast(31 - @clz(codeword ^ (end - 1)));
             codeword = (codeword & (bit - 1)) | bit;
-            remaining -= 1;
-            if (remaining == 0) break;
+            count -= 1;
+            if (count == 0) break;
         }
         while (true) {
             len += 1;
-            if (len <= width) {
+            if (len <= table_bits) {
                 @memcpy(table[end..][0..end], table[0..end]);
                 end <<= 1;
             }
-            remaining = count[len];
-            if (remaining != 0) break;
+            count = counts[len];
+            if (count != 0) break;
         }
     }
-    const root_mask = table.len - 1;
-    var prefix: usize = std.math.maxInt(usize);
-    var start: usize = 0;
-    var used: usize = 0;
+    const root_mask = (@as(u32, 1) << @intCast(table_bits)) - 1;
+    end = @as(u32, 1) << @intCast(table_bits);
+    var prefix: u32 = std.math.maxInt(u32);
+    var start: u32 = 0;
     while (true) {
         if (codeword & root_mask != prefix) {
             prefix = codeword & root_mask;
-            start = used;
-            var height: usize = len - width;
-            var space: usize = remaining;
-            while (space < @as(usize, 1) << @intCast(height)) {
-                height += 1;
-                space = (space << 1) + count[width + height];
+            start = end;
+            var sub_bits = len - table_bits;
+            var space = count;
+            while (space < (@as(u32, 1) << @intCast(sub_bits))) {
+                sub_bits += 1;
+                space = (space << 1) + counts[table_bits + sub_bits];
             }
-            used = start + (@as(usize, 1) << @intCast(height));
-            if (used > spill.len) return error.BadHuffman;
-            table[prefix] = .{ .nbits = width, .kind = .long, .extra = @intCast(height), .payload = @intCast(start) };
+            end = start + (@as(u32, 1) << @intCast(sub_bits));
+            if (end > table.len) return error.BadHuffman;
+            table[prefix] = (start << 16) | EXCEPTIONAL | SUBTABLE | (sub_bits << 8) | table_bits;
         }
-        const entry = makeEntry(sorted[next], @intCast(len), kind_of, payload_of, predecoded);
-        next += 1;
-        const stride = @as(usize, 1) << @intCast(len - width);
-        var i = start + (codeword >> width);
-        while (i < used) : (i += stride) spill[i] = entry;
-        if (codeword == (@as(usize, 1) << @intCast(len)) - 1) return;
-        const bit = @as(usize, 1) << @intCast(std.math.log2_int(usize, codeword ^ ((@as(usize, 1) << @intCast(len)) - 1)));
+        const entry = results[sorted[0]] + ((len - table_bits) << 8) + (len - table_bits);
+        sorted = sorted[1..];
+        const stride = @as(u32, 1) << @intCast(len - table_bits);
+        var k = start + (codeword >> @intCast(table_bits));
+        while (k < end) : (k += stride) table[k] = entry;
+        if (codeword == (@as(u32, 1) << @intCast(len)) - 1) return table_bits;
+        const bit = @as(u32, 1) << @intCast(31 - @clz(codeword ^ ((@as(u32, 1) << @intCast(len)) - 1)));
         codeword = (codeword & (bit - 1)) | bit;
-        remaining -= 1;
-        while (remaining == 0) {
+        count -= 1;
+        while (count == 0) {
             len += 1;
-            remaining = count[len];
+            count = counts[len];
         }
     }
-}
-
-inline fn makeEntry(symbol: usize, len: u4, comptime kind_of: fn (usize) Kind, comptime payload_of: fn (usize) u16, comptime predecoded: bool) Entry {
-    const templates = comptime symbolEntries(kind_of, payload_of, predecoded);
-    var entry = templates[symbol];
-    entry.nbits = len;
-    return entry;
-}
-
-fn symbolEntries(comptime kind_of: fn (usize) Kind, comptime payload_of: fn (usize) u16, comptime predecoded: bool) [288]Entry {
-    @setEvalBranchQuota(10000);
-    var entries: [288]Entry = undefined;
-    for (&entries, 0..) |*entry, symbol| {
-        const plain: Entry = .{ .nbits = 0, .kind = kind_of(symbol), .payload = payload_of(symbol) };
-        entry.* = if (predecoded) predecode(plain) else plain;
-    }
-    return entries;
-}
-
-inline fn lookupLong(root: Entry, spill: []const Entry, bits: u64, comptime width: u4) Entry {
-    const mask = (@as(u64, 1) << @intCast(root.extra)) - 1;
-    return spill[root.payload + @as(usize, @intCast((bits >> width) & mask))];
-}
-
-fn litKind(s: usize) Kind {
-    if (s < 256) return .lit;
-    if (s == 256) return .eob;
-    return .len;
-}
-
-fn litPayload(s: usize) u16 {
-    if (s < 256) return @intCast(s);
-    if (s == 256) return 0;
-    return @intCast(s - 257);
-}
-
-fn distKind(_: usize) Kind {
-    return .dist;
-}
-
-fn distPayload(s: usize) u16 {
-    return @intCast(s);
-}
-
-fn clenKind(_: usize) Kind {
-    return .lit;
-}
-
-fn clenPayload(s: usize) u16 {
-    return @intCast(s);
 }
 
 fn peekFirst(table: []const Entry, width: u4, bits: u64) Entry {
@@ -662,203 +642,307 @@ fn readDynLensFast(br: *BitReader, clen_tab: []const Entry, out: []u4, prev: *u4
     return i;
 }
 
-fn predecode(entry: Entry) Entry {
-    var e = entry;
-    if (e.kind == .len and e.payload <= 28) {
-        e.extra = LEN_EXTRA[e.payload];
-        e.payload = LEN_BASE[e.payload];
-    } else if (e.kind == .dist and e.payload <= 29) {
-        e.extra = DIST_EXTRA[e.payload];
-        e.payload = DIST_BASE[e.payload];
-    } else if (e.kind == .len or e.kind == .dist) {
-        e.kind = .invalid;
-    }
-    return e;
+inline fn varbits(word: u64, count: u32) u64 {
+    return word & ((@as(u64, 1) << @as(u6, @truncate(count))) - 1);
 }
 
-fn decodeFast(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) !bool {
-    if (ctx.position() - ctx.stream_start >= WINDOW) return decodeFastImpl(Check, ctx, lit, dist, true);
-    return decodeFastImpl(Check, ctx, lit, dist, false);
+inline fn subtableEntry(table: [*]const u32, entry: u32, bits: u64) u32 {
+    return table[(entry >> 16) + @as(u32, @intCast(varbits(bits, (entry >> 8) & 0x3f)))];
 }
 
-fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry, comptime full_history: bool) !bool {
+fn decodeFast(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!bool {
+    if (ctx.position() - ctx.stream_start >= WINDOW) return decodeFastImpl(Check, ctx, h, true);
+    return decodeFastImpl(Check, ctx, h, false);
+}
+
+fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), h: Huff, comptime full_history: bool) DecodeError!bool {
     const br = ctx.br;
     const output = ctx.out;
     const input = br.src;
-    if (output.len - ctx.out_pos < FAST_ROOM or input.len - br.i < 8) return false;
-    std.debug.assert(br.nbits < 64);
-    var bits = br.bits;
-    var count = br.nbits;
+    if (output.len - ctx.out_pos < FAST_ROOM or input.len - br.i < FAST_READ or br.nbits >= 64) return false;
+    var bitbuf = br.bits;
+    var bitsleft: u32 = br.nbits;
     var in: [*]const u8 = input.ptr + br.i;
-    const in_stop: [*]const u8 = input.ptr + (input.len - 8);
+    const in_stop: [*]const u8 = input.ptr + (input.len - FAST_READ);
     var out: [*]u8 = output.ptr + ctx.out_pos;
     const out_start = out;
     const out_stop: [*]u8 = output.ptr + (output.len - FAST_ROOM);
     const history = ctx.position() - ctx.stream_start;
+    const lit = h.lit;
+    const dist = h.dist;
+    const mask = h.lit_mask;
     defer {
-        br.bits = bits;
-        br.nbits = count & 0xff;
+        br.bits = bitbuf;
+        br.nbits = bitsleft & 0xff;
         br.i = @intFromPtr(in) - @intFromPtr(input.ptr);
         ctx.out_pos = @intFromPtr(out) - @intFromPtr(output.ptr);
     }
-    const first_word = std.mem.readInt(u64, in[0..8], .little);
-    var e = lit[@intCast((bits | (first_word << @intCast(count))) & ((1 << 10) - 1))];
-    while (@intFromPtr(out) <= @intFromPtr(out_stop) and @intFromPtr(in) <= @intFromPtr(in_stop)) {
-        const word = std.mem.readInt(u64, in[0..8], .little);
-        bits |= word << @as(u6, @truncate(count));
-        in += 7 - (@as(u8, @truncate(count)) >> 3);
-        count |= 56;
-        if (e.kind == .long) e = lookupLong(e, &ctx.tables.lit_spill, bits, 10);
-        if (e.kind == .invalid or e.kind == .dist) return error.BadSymbol;
-        const raw: u32 = @bitCast(e);
-        bits >>= @as(u6, @truncate(raw));
-        count -%= raw;
-        if (e.kind == .eob) return true;
-        if (e.kind == .lit) {
-            out[0] = @truncate(e.payload);
+    bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
+    in += 7 - ((bitsleft >> 3) & 7);
+    bitsleft |= 56;
+    var entry = lit[@intCast(bitbuf & mask)];
+    while (@intFromPtr(in) <= @intFromPtr(in_stop) and @intFromPtr(out) <= @intFromPtr(out_stop)) {
+        var saved = bitbuf;
+        bitbuf >>= @as(u6, @truncate(entry));
+        bitsleft -%= entry;
+        if (entry & LITERAL != 0) {
+            var byte: u8 = @truncate(entry >> 16);
+            entry = lit[@intCast(bitbuf & mask)];
+            saved = bitbuf;
+            bitbuf >>= @as(u6, @truncate(entry));
+            bitsleft -%= entry;
+            out[0] = byte;
             out += 1;
-            e = lit[@intCast(bits & ((1 << 10) - 1))];
-            continue;
-        }
-        if (e.kind != .len) return error.BadSymbol;
-        const extra: u6 = @intCast(e.extra);
-        const length: usize = e.payload + @as(usize, @intCast(bits & ((@as(u64, 1) << extra) - 1)));
-        bits >>= extra;
-        count -%= extra;
-        var d = dist[@intCast(bits & ((1 << 9) - 1))];
-        if (d.kind == .long) d = lookupLong(d, &ctx.tables.dist_spill, bits, 9);
-        if (d.kind != .dist) return error.BadSymbol;
-        const draw: u32 = @bitCast(d);
-        bits >>= @as(u6, @truncate(draw));
-        count -%= draw;
-        const dx: u6 = @intCast(d.extra);
-        const distance: usize = d.payload + @as(usize, @intCast(bits & ((@as(u64, 1) << dx) - 1)));
-        bits >>= dx;
-        count -%= dx;
-        const next = lit[@intCast(bits & ((1 << 10) - 1))];
-        const decoded = history + (@intFromPtr(out) - @intFromPtr(out_start));
-        if (!full_history and distance > decoded) return error.BadDistance;
-        if (distance >= 32) {
-            var j: usize = 0;
-            while (j < length) : (j += 32) {
-                const chunk: @Vector(32, u8) = (out + j - distance)[0..32].*;
-                (out + j)[0..32].* = chunk;
+            if (entry & LITERAL != 0) {
+                byte = @truncate(entry >> 16);
+                entry = lit[@intCast(bitbuf & mask)];
+                saved = bitbuf;
+                bitbuf >>= @as(u6, @truncate(entry));
+                bitsleft -%= entry;
+                out[0] = byte;
+                out += 1;
+                if (entry & LITERAL != 0) {
+                    byte = @truncate(entry >> 16);
+                    entry = lit[@intCast(bitbuf & mask)];
+                    bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
+                    in += 7 - ((bitsleft >> 3) & 7);
+                    bitsleft |= 56;
+                    out[0] = byte;
+                    out += 1;
+                    continue;
+                }
             }
-        } else if (full_history or decoded >= 32) {
-            copy.repeatSmall((out - 32)[0 .. 32 + FAST_ROOM], 32, distance, length);
-        } else {
-            copy.matchVec16((out - distance)[0 .. distance + length], distance, distance, length);
         }
+        if (entry & EXCEPTIONAL != 0) {
+            if (entry & SUBTABLE == 0) {
+                if (entry & END_OF_BLOCK != 0) return true;
+                return error.BadSymbol;
+            }
+            entry = subtableEntry(lit, entry, bitbuf);
+            saved = bitbuf;
+            bitbuf >>= @as(u6, @truncate(entry));
+            bitsleft -%= entry;
+            if (entry & LITERAL != 0) {
+                const byte: u8 = @truncate(entry >> 16);
+                entry = lit[@intCast(bitbuf & mask)];
+                bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
+                in += 7 - ((bitsleft >> 3) & 7);
+                bitsleft |= 56;
+                out[0] = byte;
+                out += 1;
+                continue;
+            }
+            if (entry & EXCEPTIONAL != 0) {
+                if (entry & END_OF_BLOCK != 0) return true;
+                return error.BadSymbol;
+            }
+        }
+        const length: usize = (entry >> 16) + @as(u32, @intCast(varbits(saved, entry) >> @as(u6, @truncate(entry >> 8))));
+        entry = dist[@intCast(bitbuf & 0xff)];
+        if (entry & EXCEPTIONAL != 0) {
+            if (entry & SUBTABLE == 0) return error.BadSymbol;
+            if (@as(u8, @truncate(bitsleft)) < 28 + LIT_TABLEBITS - 1) {
+                bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
+                in += 7 - ((bitsleft >> 3) & 7);
+                bitsleft |= 56;
+            }
+            bitbuf >>= DIST_TABLEBITS;
+            bitsleft -%= DIST_TABLEBITS;
+            entry = subtableEntry(dist, entry, bitbuf);
+            if (entry & EXCEPTIONAL != 0) return error.BadSymbol;
+        } else if (@as(u8, @truncate(bitsleft)) < 21 + LIT_TABLEBITS - 1) {
+            bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
+            in += 7 - ((bitsleft >> 3) & 7);
+            bitsleft |= 56;
+        }
+        saved = bitbuf;
+        bitbuf >>= @as(u6, @truncate(entry));
+        bitsleft -%= entry;
+        const distance: usize = (entry >> 16) + @as(u32, @intCast(varbits(saved, entry) >> @as(u6, @truncate(entry >> 8))));
+        if (!full_history and distance > history + (@intFromPtr(out) - @intFromPtr(out_start))) return error.BadDistance;
+        var src = out - distance;
+        var dst = out;
         out += length;
-        e = next;
+        entry = lit[@intCast(bitbuf & mask)];
+        bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
+        in += 7 - ((bitsleft >> 3) & 7);
+        bitsleft |= 56;
+        if (distance >= 8) {
+            inline for (0..5) |_| {
+                dst[0..8].* = src[0..8].*;
+                src += 8;
+                dst += 8;
+            }
+            while (@intFromPtr(dst) < @intFromPtr(out)) {
+                inline for (0..5) |_| {
+                    dst[0..8].* = src[0..8].*;
+                    src += 8;
+                    dst += 8;
+                }
+            }
+        } else if (distance == 1) {
+            const v: @Vector(8, u8) = @splat(src[0]);
+            inline for (0..4) |_| {
+                dst[0..8].* = v;
+                dst += 8;
+            }
+            while (@intFromPtr(dst) < @intFromPtr(out)) {
+                inline for (0..4) |_| {
+                    dst[0..8].* = v;
+                    dst += 8;
+                }
+            }
+        } else {
+            inline for (0..2) |_| {
+                std.mem.writeInt(u64, dst[0..8], std.mem.readInt(u64, src[0..8], .little), .little);
+                src += distance;
+                dst += distance;
+            }
+            while (true) {
+                inline for (0..2) |_| {
+                    std.mem.writeInt(u64, dst[0..8], std.mem.readInt(u64, src[0..8], .little), .little);
+                    src += distance;
+                    dst += distance;
+                }
+                if (@intFromPtr(dst) >= @intFromPtr(out)) break;
+            }
+        }
     }
     return false;
 }
 
-fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) DecodeError!Stop {
+const Code = struct { entry: u32, bits: u32, ok: bool };
+
+fn lookupCareful(table: [*]const u32, mask: u64, main_bits: u32, bits: u64) Code {
+    var entry = table[@intCast(bits & mask)];
+    var used: u32 = 0;
+    if (entry & SUBTABLE != 0) {
+        used = main_bits;
+        entry = subtableEntry(table, entry, bits >> @as(u6, @truncate(main_bits)));
+    }
+    if (entry & EXCEPTIONAL != 0 and entry & END_OF_BLOCK == 0) return .{ .entry = entry, .bits = 0, .ok = false };
+    return .{ .entry = entry, .bits = used + ((entry >> 8) & 0xf), .ok = true };
+}
+
+fn decodeHuff(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!Stop {
     const br = ctx.br;
+    const lit_bits: u32 = @intCast(@popCount(h.lit_mask));
     var more = true;
     while (true) {
         if (more and br.src.len - br.i < 8) {
-            if (br.nbits >= 10) {
-                const buffered = peekFirst(lit, 10, br.bits);
-                if (buffered.kind == .eob) {
-                    br.consume(buffered.nbits);
+            if (br.nbits >= 1) {
+                const code = lookupCareful(h.lit, h.lit_mask, lit_bits, br.bits);
+                if (code.ok and code.entry & END_OF_BLOCK != 0 and code.bits <= br.nbits) {
+                    br.consume(code.bits);
                     return .end;
                 }
             }
             more = try br.refill(8);
         }
-        if (try @call(.never_inline, decodeFast, .{ Check, ctx, lit, dist })) return .end;
-        if (ctx.out.len - ctx.out_pos < FAST_ROOM and try @call(.never_inline, decodeTail, .{ Check, ctx, lit, dist })) return .end;
+        if (try @call(.never_inline, decodeFast, .{ Check, ctx, h })) return .end;
+        if (try @call(.never_inline, decodeTail, .{ Check, ctx, h })) return .end;
         try br.fill(15);
-        var e = peekFirst(lit, 10, br.bits);
-        if (e.kind == .long) e = lookupLong(e, &ctx.tables.lit_spill, br.bits, 10);
-        if (br.nbits < 15 and (e.kind == .invalid or e.nbits > br.nbits)) return error.Truncated;
-        switch (e.kind) {
-            .eob => {
-                br.consume(e.nbits);
-                return .end;
-            },
-            .lit => {
-                if (ctx.out_pos == ctx.out.len) return .full;
-                br.consume(e.nbits);
-                ctx.out[ctx.out_pos] = @truncate(e.payload);
-                ctx.out_pos += 1;
-            },
-            .len => {
-                br.consume(e.nbits);
-                const add = if (e.extra != 0) try br.get(e.extra) else 0;
-                const length: usize = e.payload + add;
-                try br.fill(15);
-                var d = peekFirst(dist, 9, br.bits);
-                if (d.kind == .long) d = lookupLong(d, &ctx.tables.dist_spill, br.bits, 9);
-                if (br.nbits < 15 and (d.kind != .dist or d.nbits > br.nbits)) return error.Truncated;
-                if (d.kind != .dist) return error.BadSymbol;
-                br.consume(d.nbits);
-                const dadd = if (d.extra != 0) try br.get(d.extra) else 0;
-                if (!try ctx.startMatch(d.payload + @as(usize, dadd), length)) return .full;
-            },
-            else => return error.BadSymbol,
+        const code = lookupCareful(h.lit, h.lit_mask, lit_bits, br.bits);
+        if (br.nbits < 15 and (!code.ok or code.bits > br.nbits)) return error.Truncated;
+        if (!code.ok) return error.BadSymbol;
+        const entry = code.entry;
+        if (entry & LITERAL != 0) {
+            if (ctx.out_pos == ctx.out.len) return .full;
+            br.consume(code.bits);
+            ctx.out[ctx.out_pos] = @truncate(entry >> 16);
+            ctx.out_pos += 1;
+            continue;
         }
+        if (entry & END_OF_BLOCK != 0) {
+            br.consume(code.bits);
+            return .end;
+        }
+        br.consume(code.bits);
+        const extra = (entry & 0xff) - ((entry >> 8) & 0xf);
+        const add = if (extra != 0) try br.get(extra) else 0;
+        const length: usize = (entry >> 16) + add;
+        try br.fill(15);
+        const d = lookupCareful(h.dist, 0xff, DIST_TABLEBITS, br.bits);
+        if (br.nbits < 15 and (!d.ok or d.bits > br.nbits)) return error.Truncated;
+        if (!d.ok) return error.BadSymbol;
+        br.consume(d.bits);
+        const dextra = (d.entry & 0xff) - ((d.entry >> 8) & 0xf);
+        const dadd = if (dextra != 0) try br.get(dextra) else 0;
+        if (!try ctx.startMatch((d.entry >> 16) + @as(usize, dadd), length)) return .full;
     }
 }
 
-fn decodeTail(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) DecodeError!bool {
+fn decodeTail(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!bool {
     const br = ctx.br;
     const input = br.src;
     const output = ctx.out;
     if (input.len - br.i < 8 or br.nbits >= 64) return false;
-    var bits = br.bits;
-    var count = br.nbits;
-    var at = br.i;
+    var bitbuf = br.bits;
+    var bitsleft: u32 = br.nbits;
+    var in = br.i;
     var out = ctx.out_pos;
     const start = out;
     const history = ctx.position() - ctx.stream_start;
+    const lit_bits: u32 = @intCast(@popCount(h.lit_mask));
     defer {
-        br.bits = bits;
-        br.nbits = count;
-        br.i = at;
+        br.bits = bitbuf;
+        br.nbits = bitsleft & 0xff;
+        br.i = in;
         ctx.out_pos = out;
     }
-    while (out < output.len and input.len - at >= 8) {
-        bits |= std.mem.readInt(u64, input[at..][0..8], .little) << @intCast(count);
-        at += 7 - (count >> 3);
-        count |= 56;
-        const symbol_bits = bits;
-        const symbol_count = count;
-        const symbol_at = at;
-        var e = lit[@intCast(bits & ((1 << 10) - 1))];
-        if (e.kind == .long) e = lookupLong(e, &ctx.tables.lit_spill, bits, 10);
-        if (e.kind == .invalid or e.kind == .dist) return error.BadSymbol;
-        bits >>= @intCast(e.nbits);
-        count -= e.nbits;
-        if (e.kind == .eob) return true;
-        if (e.kind == .lit) {
-            output[out] = @truncate(e.payload);
+    while (out < output.len and input.len - in >= 8) {
+        bitbuf |= std.mem.readInt(u64, input[in..][0..8], .little) << @as(u6, @truncate(bitsleft));
+        in += 7 - ((bitsleft >> 3) & 7);
+        bitsleft |= 56;
+        const symbol_bits = bitbuf;
+        const symbol_left = bitsleft;
+        const symbol_in = in;
+        const code = lookupCareful(h.lit, h.lit_mask, lit_bits, bitbuf);
+        if (!code.ok) return error.BadSymbol;
+        const entry = code.entry;
+        if (entry & LITERAL != 0) {
+            bitbuf >>= @as(u6, @truncate(code.bits));
+            bitsleft -%= code.bits;
+            output[out] = @truncate(entry >> 16);
             out += 1;
             continue;
         }
-        if (e.kind != .len) return error.BadSymbol;
-        const length: usize = e.payload + @as(usize, @intCast(bits & ((@as(u64, 1) << @intCast(e.extra)) - 1)));
-        bits >>= @intCast(e.extra);
-        count -= e.extra;
-        var d = dist[@intCast(bits & ((1 << 9) - 1))];
-        if (d.kind == .long) d = lookupLong(d, &ctx.tables.dist_spill, bits, 9);
-        if (d.kind != .dist) return error.BadSymbol;
-        bits >>= @intCast(d.nbits);
-        count -= d.nbits;
-        const distance: usize = d.payload + @as(usize, @intCast(bits & ((@as(u64, 1) << @intCast(d.extra)) - 1)));
-        bits >>= @intCast(d.extra);
-        count -= d.extra;
+        if (entry & END_OF_BLOCK != 0) {
+            bitbuf >>= @as(u6, @truncate(code.bits));
+            bitsleft -%= code.bits;
+            return true;
+        }
+        const extra = (entry & 0xff) - ((entry >> 8) & 0xf);
+        bitbuf >>= @as(u6, @truncate(code.bits));
+        bitsleft -%= code.bits;
+        const length: usize = (entry >> 16) + @as(u32, @intCast(varbits(bitbuf, extra)));
+        bitbuf >>= @as(u6, @truncate(extra));
+        bitsleft -%= extra;
+        const d = lookupCareful(h.dist, 0xff, DIST_TABLEBITS, bitbuf);
+        if (!d.ok) return error.BadSymbol;
+        bitbuf >>= @as(u6, @truncate(d.bits));
+        bitsleft -%= d.bits;
+        const dextra = (d.entry & 0xff) - ((d.entry >> 8) & 0xf);
+        const distance: usize = (d.entry >> 16) + @as(u32, @intCast(varbits(bitbuf, dextra)));
+        bitbuf >>= @as(u6, @truncate(dextra));
+        bitsleft -%= dextra;
         if (distance > history + (out - start)) return error.BadDistance;
         if (length > output.len - out) {
-            bits = symbol_bits;
-            count = symbol_count;
-            at = symbol_at;
+            bitbuf = symbol_bits;
+            bitsleft = symbol_left;
+            in = symbol_in;
             return false;
         }
-        for (output[out..][0..length], out - distance..) |*byte, from| byte.* = output[from];
+        if (distance >= 8 and output.len - out >= length + 40) {
+            var from = out - distance;
+            var to = out;
+            while (to < out + length) : ({
+                from += 8;
+                to += 8;
+            }) output[to..][0..8].* = output[from..][0..8].*;
+        } else {
+            for (output[out..][0..length], out - distance..) |*byte, from| byte.* = output[from];
+        }
         out += length;
     }
     return false;
@@ -873,183 +957,108 @@ test {
     _ = codes;
 }
 
-test "[property] - [deflate tables]: rejected trees clear roots without changing adjacent entries" {
-    const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
-    const sentinel: Entry = .{ .nbits = 15, .kind = .long, .extra = 0xa, .payload = 0x5a5a };
-    inline for (.{ @as(u4, 9), @as(u4, 10), @as(u4, 11) }) |width| {
-        const count = 1 << width;
-        var actual: [count + 16]Entry align(32) = undefined;
-        var expected: [count + 16]Entry = undefined;
-        for (0..8) |offset| {
-            for ([_]Entry{ invalid, sentinel }) |previous| {
-                @memset(&actual, sentinel);
-                const root = actual[8 + offset ..][0..count];
-                @memset(root, previous);
-                expected = actual;
-                @memset(expected[8 + offset ..][0..count], invalid);
-                var spill: [0]Entry = .{};
+fn resolve(table: []const u32, table_bits: u32, bits: u64) struct { entry: u32, len: u32 } {
+    var entry = table[@intCast(bits & ((@as(u64, 1) << @intCast(table_bits)) - 1))];
+    var used: u32 = 0;
+    if (entry & SUBTABLE != 0) {
+        used = table_bits;
+        entry = subtableEntry(table.ptr, entry, bits >> @intCast(table_bits));
+    }
+    return .{ .entry = entry, .len = used + ((entry >> 8) & 0xf) };
+}
 
-                try std.testing.expectError(error.BadHuffman, fillTwoLevel(root, &spill, width, &.{ 1, 1, 1 }, litKind, litPayload, true));
-                try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&expected), std.mem.sliceAsBytes(&actual));
-            }
+fn tableUse(table: []const u32, table_bits: u32) usize {
+    var used: usize = @as(usize, 1) << @intCast(table_bits);
+    for (table[0..used]) |entry| {
+        if (entry & SUBTABLE != 0) used = @max(used, (entry >> 16) + (@as(usize, 1) << @intCast((entry >> 8) & 0xf)));
+    }
+    return used;
+}
+
+fn expectCanonical(table: []const u32, table_bits: u32, lens: []const u4, results: []const u32) !void {
+    var canonical: [32768]u16 = @splat(65535);
+    var start: usize = 0;
+    for (1..16) |depth| {
+        for (lens, 0..) |len, symbol| {
+            if (len != depth) continue;
+            const count = @as(usize, 1) << @intCast(15 - depth);
+            @memset(canonical[start..][0..count], @intCast(symbol));
+            start += count;
         }
+    }
+    for (0..32768) |bits| {
+        const symbol = canonical[@bitReverse(@as(u16, @intCast(bits))) >> 1];
+        const got = resolve(table, table_bits, bits);
+        if (symbol == 65535) {
+            try std.testing.expectEqual(UNUSED, got.entry);
+            continue;
+        }
+        try std.testing.expectEqual(@as(u32, lens[symbol]), got.len);
+        try std.testing.expectEqual(results[symbol] & 0xffff_f000, got.entry & 0xffff_f000);
+        try std.testing.expectEqual(results[symbol] & 0x1f, (got.entry & 0xff) - ((got.entry >> 8) & 0xf));
     }
 }
 
-test "[property] - [deflate tables]: narrower roots preserve entries and bounded spill" {
-    const Fill = struct {
-        fn check(comptime width: u4, lens: []const u4, seen_heights: *u16, compare_widths: bool) !void {
-            const capacity = if (width == 10) LIT_SPILL_MAX else DIST_SPILL_MAX;
-            const sentinel: Entry = .{ .nbits = 15, .kind = .long, .extra = 0xa, .payload = 0x5a5a };
-            var root: [1 << width]Entry = @splat(sentinel);
-            var spill: [capacity]Entry = @splat(sentinel);
-            const kind = if (width == 10) litKind else distKind;
-            const payload = if (width == 10) litPayload else distPayload;
-            try fillTwoLevel(&root, &spill, width, lens, kind, payload, true);
-            var used: usize = 0;
-            for (root) |entry| {
-                if (entry.kind == .long) used = @max(used, entry.payload + (@as(usize, 1) << @intCast(entry.extra)));
-            }
-            try std.testing.expect(used <= capacity);
-            for (spill[used..]) |entry| try std.testing.expectEqual(@as(u32, @bitCast(sentinel)), @as(u32, @bitCast(entry)));
+test "[property] - [deflate tables]: rejected trees leave the table as it was" {
+    const sentinel: u32 = 0x5a5a_a5a5;
+    for ([_][]const u4{ &.{ 1, 1, 1 }, &.{ 2, 2, 2 }, &.{ 1, 2, 2, 2 }, &.{2} }) |lens| {
+        var table: [LIT_ENOUGH]u32 = @splat(sentinel);
+        try std.testing.expectError(error.BadHuffman, buildTable(&table, lens, &lit_results, LIT_TABLEBITS, true));
+        for (table) |entry| try std.testing.expectEqual(sentinel, entry);
+    }
+}
 
-            var leaves: [1 << width]u16 = @splat(0);
-            var heights: [1 << width]u4 = @splat(0);
-            var slot: usize = 0;
-            var symbols: usize = 0;
-            for (1..16) |depth| {
-                for (lens) |len| {
-                    if (len != depth) continue;
-                    if (len > width) {
-                        const prefix = slot >> (15 - width);
-                        leaves[prefix] += 1;
-                        heights[prefix] = @max(heights[prefix], len - width);
-                    }
-                    slot += @as(usize, 1) << @intCast(15 - depth);
-                    symbols += 1;
-                }
-            }
-            var modeled: usize = 0;
-            for (heights, leaves) |height, leaf_count| {
-                if (height == 0) continue;
-                seen_heights.* |= @as(u16, 1) << height;
-                const slots = @as(usize, 1) << height;
-                try std.testing.expect(leaf_count >= @as(usize, height) + 1);
-                try std.testing.expect(slots * (16 - @as(usize, width)) <= @as(usize, leaf_count) * (@as(usize, 1) << (15 - width)));
-                modeled += slots;
-            }
-            try std.testing.expectEqual(used, modeled);
-            if (symbols > 1) try std.testing.expectEqual(@as(usize, 32768), slot);
-
-            if (compare_widths) {
-                var canonical: [32768]u16 = @splat(65535);
-                var start: usize = 0;
-                for (1..16) |depth| {
-                    for (lens, 0..) |len, symbol| {
-                        if (len != depth) continue;
-                        const count = @as(usize, 1) << @intCast(15 - depth);
-                        @memset(canonical[start..][0..count], @intCast(symbol));
-                        start += count;
-                    }
-                }
-                for (0..32768) |bits| {
-                    const symbol = canonical[@bitReverse(@as(u16, @intCast(bits))) >> 1];
-                    var expected: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
-                    if (symbol != 65535) {
-                        expected.nbits = lens[symbol];
-                        if (width == 9) {
-                            expected.kind = if (symbol < 30) .dist else .invalid;
-                            expected.payload = if (symbol < 30) DIST_BASE[symbol] else symbol;
-                            expected.extra = if (symbol < 30) DIST_EXTRA[symbol] else 0;
-                        } else if (symbol < 256) {
-                            expected.kind = .lit;
-                            expected.payload = symbol;
-                        } else if (symbol == 256) {
-                            expected.kind = .eob;
-                        } else {
-                            expected.kind = if (symbol <= 285) .len else .invalid;
-                            expected.payload = if (symbol <= 285) LEN_BASE[symbol - 257] else symbol - 257;
-                            expected.extra = if (symbol <= 285) LEN_EXTRA[symbol - 257] else 0;
-                        }
-                    }
-                    var actual = root[bits & (root.len - 1)];
-                    if (actual.kind == .long) actual = lookupLong(actual, &spill, bits, width);
-                    try std.testing.expectEqual(@as(u32, @bitCast(expected)), @as(u32, @bitCast(actual)));
-                }
-            }
-
-            if (width == 10 and compare_widths) {
-                var original_root: [1 << 11]Entry = undefined;
-                var original_spill: [4608]Entry = undefined;
-                try fillTwoLevel(&original_root, &original_spill, 11, lens, litKind, litPayload, true);
-                for (0..32768) |bits| {
-                    var original = original_root[bits & 2047];
-                    if (original.kind == .long) original = lookupLong(original, &original_spill, bits, 11);
-                    var narrowed = root[bits & 1023];
-                    if (narrowed.kind == .long) narrowed = lookupLong(narrowed, &spill, bits, 10);
-                    try std.testing.expectEqual(@as(u32, @bitCast(original)), @as(u32, @bitCast(narrowed)));
-                }
-            }
-            if (compare_widths) {
-                if (used != 0) try std.testing.expectError(error.BadHuffman, fillTwoLevel(&root, spill[0 .. used - 1], width, lens, kind, payload, true));
-                const previous_spill = spill;
-                var short_lens: [if (width == 10) 288 else 32]u4 = @splat(0);
-                for (0..2) |single| {
-                    short_lens[0] = @intCast(single);
-                    try fillTwoLevel(&root, &spill, width, &short_lens, kind, payload, true);
-                    for (root, 0..) |entry, prefix| {
-                        const expected: Entry = if (single != 0 and prefix & 1 == 0)
-                            .{ .nbits = 1, .kind = if (width == 10) .lit else .dist, .payload = if (width == 10) 0 else 1 }
-                        else
-                            .{ .nbits = 0, .kind = .invalid, .payload = 0 };
-                        try std.testing.expectEqual(@as(u32, @bitCast(expected)), @as(u32, @bitCast(entry)));
-                    }
-                    try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(&previous_spill), std.mem.sliceAsBytes(&spill));
-                }
+test "[property] - [deflate tables]: every code resolves to its canonical symbol within the table bound" {
+    inline for (.{ .{ 288, LIT_TABLEBITS, LIT_ENOUGH, true }, .{ 32, DIST_TABLEBITS, DIST_ENOUGH, false } }) |c| {
+        const results: []const u32 = if (c[0] == 288) &lit_results else &dist_results;
+        var lens: [c[0]]u4 = @splat(0);
+        var table: [c[2]]u32 = undefined;
+        for (0..2) |single| {
+            @memset(&lens, 0);
+            lens[0] = @intCast(single);
+            const bits = try buildTable(&table, &lens, results, c[1], c[3]);
+            for (table[0 .. @as(usize, 1) << @intCast(bits)], 0..) |entry, prefix| {
+                const want: u32 = if (single != 0 and prefix & 1 == 0) results[0] + (1 << 8) + 1 else UNUSED;
+                try std.testing.expectEqual(want, entry);
             }
         }
-    };
-
-    inline for (.{ @as(u4, 10), @as(u4, 9) }) |width| {
-        const alphabet = if (width == 10) 288 else 32;
-        var lens: [alphabet]u4 = @splat(0);
-        var seen_heights: u16 = 0;
-        try Fill.check(width, &lens, &seen_heights, true);
-        lens[alphabet - 1] = 1;
-        try Fill.check(width, &lens, &seen_heights, true);
         for (0..32) |trial| {
             @memset(&lens, 0);
             var random = std.Random.DefaultPrng.init(0x513 + trial);
-            var count: usize = 1;
-            while (count < alphabet) {
+            lens[0] = 1;
+            lens[1] = 1;
+            var count: usize = 2;
+            while (count < c[0]) {
                 var selected: usize = 0;
                 if (trial < 2) {
-                    for (lens[0..count], 0..) |len, i| {
+                    for (lens[0..count], 0..) |len, k| {
                         if (len == 15) continue;
-                        if (lens[selected] == 15 or (trial == 0 and len > lens[selected]) or (trial == 1 and len < lens[selected])) selected = i;
+                        if (lens[selected] == 15 or (trial == 0 and len > lens[selected]) or (trial == 1 and len < lens[selected])) selected = k;
                     }
                 } else {
                     selected = random.random().uintLessThan(usize, count);
                     while (lens[selected] == 15) selected = (selected + 1) % count;
                 }
-                try std.testing.expect(lens[selected] < 15);
                 lens[selected] += 1;
                 lens[count] = lens[selected];
                 count += 1;
-                if (count <= 17 or count % 16 == 0 or count == alphabet) try Fill.check(width, &lens, &seen_heights, count == alphabet);
+                if (count <= 17 or count % 32 == 0 or count == c[0]) {
+                    const bits = try buildTable(&table, &lens, results, c[1], c[3]);
+                    try std.testing.expect(tableUse(&table, bits) <= c[2]);
+                    try expectCanonical(&table, bits, &lens, results);
+                }
             }
         }
-        try std.testing.expectEqual((@as(u16, 1) << @as(u4, 16 - @as(u5, width))) - 2, seen_heights);
     }
 }
 
-test "[property] - [deflate tables]: the worst complete codes fill the spill tables exactly" {
-    const Case = struct { width: u4, alphabet: usize, short: []const u4, long: []const [2]u16, fill: usize };
+test "[property] - [deflate tables]: the deepest complete codes stay within the table bound" {
+    const Case = struct { lit: bool, alphabet: usize, short: []const u4, long: []const [2]u16 };
     const cases = [_]Case{
-        .{ .width = 10, .alphabet = 286, .short = &.{ 1, 2, 3, 4 }, .long = &.{ .{ 11, 1 }, .{ 12, 229 }, .{ 13, 49 }, .{ 14, 1 }, .{ 15, 2 } }, .fill = LIT_SPILL_MAX },
-        .{ .width = 10, .alphabet = 286, .short = &.{ 1, 2, 3, 4 }, .long = &.{ .{ 11, 1 }, .{ 12, 237 }, .{ 13, 25 }, .{ 14, 17 }, .{ 15, 2 } }, .fill = LIT_SPILL_MAX },
-        .{ .width = 9, .alphabet = 32, .short = &.{ 1, 2, 3, 4, 5, 6 }, .long = &.{ .{ 10, 11 }, .{ 11, 9 }, .{ 12, 1 }, .{ 14, 3 }, .{ 15, 2 } }, .fill = DIST_SPILL_MAX },
-        .{ .width = 9, .alphabet = 32, .short = &.{ 1, 2, 3, 4, 5, 6, 7 }, .long = &.{ .{ 10, 3 }, .{ 11, 1 }, .{ 12, 17 }, .{ 13, 1 }, .{ 14, 1 }, .{ 15, 2 } }, .fill = DIST_SPILL_MAX },
+        .{ .lit = true, .alphabet = 286, .short = &.{ 1, 2, 3, 4 }, .long = &.{ .{ 11, 1 }, .{ 12, 229 }, .{ 13, 49 }, .{ 14, 1 }, .{ 15, 2 } } },
+        .{ .lit = true, .alphabet = 286, .short = &.{ 1, 2, 3, 4 }, .long = &.{ .{ 11, 1 }, .{ 12, 237 }, .{ 13, 25 }, .{ 14, 17 }, .{ 15, 2 } } },
+        .{ .lit = false, .alphabet = 32, .short = &.{ 1, 2, 3, 4, 5, 6 }, .long = &.{ .{ 10, 11 }, .{ 11, 9 }, .{ 12, 1 }, .{ 14, 3 }, .{ 15, 2 } } },
+        .{ .lit = false, .alphabet = 32, .short = &.{ 1, 2, 3, 4, 5, 6, 7 }, .long = &.{ .{ 10, 3 }, .{ 11, 1 }, .{ 12, 17 }, .{ 13, 1 }, .{ 14, 1 }, .{ 15, 2 } } },
     };
     inline for (cases) |c| {
         var lens: [c.alphabet]u4 = @splat(0);
@@ -1063,17 +1072,11 @@ test "[property] - [deflate tables]: the worst complete codes fill the spill tab
             n += 1;
         };
         try std.testing.expectEqual(c.alphabet, n);
-        var root: [@as(usize, 1) << c.width]Entry = undefined;
-        var spill: [c.fill]Entry = undefined;
-        const kind = if (c.width == 10) litKind else distKind;
-        const payload = if (c.width == 10) litPayload else distPayload;
-        try fillTwoLevel(&root, &spill, c.width, &lens, kind, payload, true);
-        var used: usize = 0;
-        for (root) |entry| {
-            if (entry.kind == .long) used = @max(used, entry.payload + (@as(usize, 1) << @intCast(entry.extra)));
-        }
-        try std.testing.expectEqual(c.fill, used);
-        try std.testing.expectError(error.BadHuffman, fillTwoLevel(&root, spill[0 .. c.fill - 1], c.width, &lens, kind, payload, true));
+        var table: [if (c.lit) LIT_ENOUGH else DIST_ENOUGH]u32 = undefined;
+        const results: []const u32 = if (c.lit) &lit_results else &dist_results;
+        const bits = try buildTable(&table, &lens, results, if (c.lit) LIT_TABLEBITS else DIST_TABLEBITS, c.lit);
+        try std.testing.expect(tableUse(&table, bits) <= table.len);
+        try expectCanonical(&table, bits, &lens, results);
     }
 }
 
@@ -1223,8 +1226,8 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
             }
             ends[i + 1] = position;
         }
-        for ([_]usize{ 0, 1, 2, 287, 288, 289, 290, 291, 320, 353 }) |room| {
-            @memset(decoder.buffer[WINDOW..][0..384], 0xa5);
+        for ([_]usize{ 0, 1, 2, FAST_ROOM - 2, FAST_ROOM - 1, FAST_ROOM, FAST_ROOM + 1, FAST_ROOM + 2, 330, 363 }) |room| {
+            @memset(decoder.buffer[WINDOW..][0..400], 0xa5);
             var reader = std.Io.Reader.fixed(&input);
             var br: BitReader = .{ .reader = &reader, .src = &input };
             var check: TestCheck = .{};
@@ -1237,13 +1240,13 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
                 .out_pos = WINDOW,
                 .max_output_bytes = std.math.maxInt(u64),
             };
-            const ended = try decodeFastImpl(TestCheck, &ctx, &FIXED_TABLES.lit, &FIXED_TABLES.dist, false);
+            const ended = try decodeFastImpl(TestCheck, &ctx, FIXED_HUFF, false);
             const written = ctx.out_pos - WINDOW;
             try std.testing.expect(written <= length and written <= room);
             if (ended) try std.testing.expectEqual(length, written);
             try std.testing.expectEqual(ends[if (ended) length + 1 else written], br.i * 8 - br.nbits);
             try std.testing.expectEqualSlices(u8, plain[0..written], decoder.buffer[WINDOW..][0..written]);
-            for (decoder.buffer[ctx.out_pos .. WINDOW + 384]) |byte| try std.testing.expectEqual(@as(u8, 0xa5), byte);
+            for (decoder.buffer[ctx.out_pos .. WINDOW + 400]) |byte| try std.testing.expectEqual(@as(u8, 0xa5), byte);
         }
     }
 }
@@ -1251,24 +1254,24 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
 test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-width match" {
     const decoder = try std.testing.allocator.create(Decoder);
     defer std.testing.allocator.destroy(decoder);
-    const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
-    @memset(&decoder.tables.lit_first, invalid);
-    @memset(&decoder.tables.dist_first, invalid);
-    @memset(&decoder.tables.lit_spill, invalid);
-    @memset(&decoder.tables.dist_spill, invalid);
-    decoder.tables.lit_first[0] = .{ .nbits = 10, .kind = .long, .extra = 5, .payload = 0 };
-    decoder.tables.lit_spill[0] = .{ .nbits = 15, .kind = .len, .extra = 5, .payload = 227 };
-    decoder.tables.dist_first[0] = .{ .nbits = 9, .kind = .long, .extra = 6, .payload = 0 };
-    decoder.tables.dist_spill[0] = .{ .nbits = 15, .kind = .dist, .extra = 13, .payload = 24577 };
-    decoder.tables.lit_first[1] = .{ .nbits = 1, .kind = .eob, .payload = 0 };
+    const tables = &decoder.tables;
+    @memset(&tables.lit, UNUSED);
+    @memset(&tables.dist, UNUSED);
+    tables.lit[0] = (2048 << 16) | EXCEPTIONAL | SUBTABLE | (4 << 8) | LIT_TABLEBITS;
+    tables.lit[2048] = lit_results[284] + (4 << 8) + 4;
+    tables.dist[0] = (256 << 16) | EXCEPTIONAL | SUBTABLE | (7 << 8) | DIST_TABLEBITS;
+    tables.dist[256] = dist_results[29] + (7 << 8) + 7;
+    var k: usize = 1;
+    while (k < 2048) : (k += 2) tables.lit[k] = lit_results[256] + (1 << 8) + 1;
     for (decoder.buffer[0..WINDOW], 0..) |*byte, i| byte.* = @truncate(i * 73 + i / 256);
-    for ([_]u4{ 10, 11 }) |literal_width| {
-        const literal: Entry = .{ .nbits = literal_width, .kind = .lit, .payload = 'A' };
-        decoder.tables.lit_first[512] = if (literal_width == 10) literal else .{ .nbits = 10, .kind = .long, .extra = 1, .payload = 32 };
-        decoder.tables.lit_spill[33] = literal;
+    const h: Huff = .{ .lit = &tables.lit, .dist = &tables.dist, .lit_mask = 2047 };
+    for ([_]u32{ 10, 11 }) |literal_width| {
+        const literal = lit_results['A'] + (literal_width << 8) + literal_width;
+        tables.lit[512] = if (literal_width == 10) literal else UNUSED;
+        tables.lit[1536] = literal;
         const literal_code: u64 = if (literal_width == 10) 512 else 1536;
         const consumed: usize = 48 + @as(usize, literal_width) + 1;
-        var input: [32]u8 = @splat(0);
+        var input: [64]u8 = @splat(0);
         const token_bits: u64 = (@as(u64, 31) << 15) | (@as(u64, 8191) << 35);
         std.mem.writeInt(u64, input[0..8], token_bits | (literal_code << 48) | (@as(u64, 1) << @intCast(consumed - 1)), .little);
         var reader = std.Io.Reader.fixed(&input);
@@ -1277,13 +1280,13 @@ test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-
         var ctx: Session(TestCheck) = .{
             .br = &br,
             .check = &check,
-            .tables = &decoder.tables,
+            .tables = tables,
             .storage = &decoder.buffer,
             .out = &decoder.buffer,
             .out_pos = WINDOW,
             .max_output_bytes = std.math.maxInt(u64),
         };
-        try std.testing.expect(try decodeFastImpl(TestCheck, &ctx, &decoder.tables.lit_first, &decoder.tables.dist_first, true));
+        try std.testing.expect(try decodeFastImpl(TestCheck, &ctx, h, true));
         try std.testing.expectEqual(WINDOW + 259, ctx.out_pos);
         try std.testing.expectEqual(consumed, br.i * 8 - br.nbits);
         try std.testing.expectEqualSlices(u8, decoder.buffer[0..258], decoder.buffer[WINDOW..][0..258]);

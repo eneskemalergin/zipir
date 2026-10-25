@@ -28,8 +28,8 @@ pub const Compressor = stream_writer.Compressor(CompressFraming);
 
 comptime {
     std.debug.assert(@sizeOf(Compressor) == 428624);
-    std.debug.assert(@sizeOf(Decompressor) == 171872);
-    std.debug.assert(@sizeOf(SliceDecoder) == 7704);
+    std.debug.assert(@sizeOf(Decompressor) == 175152);
+    std.debug.assert(@sizeOf(SliceDecoder) == 10980);
 }
 
 const format = @This();

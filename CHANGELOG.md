@@ -6,12 +6,13 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 ### Added
 
-- `bgzf.Decompressor.tell()` gives the virtual offset of the next byte a read returns, as htslib's `bgzf_tell` does: between blocks, the start of the next block with data. BAM indexes record these offsets. The decompressor keeps the last 16 decoded blocks with data to answer it, which makes `bgzf.Decompressor` 304 bytes larger (172,240 bytes), and a call costs the same however many blocks it keeps; a single peek longer than 16 such blocks loses the earlier ones, and `tell` then reports `PositionUnavailable`.
+- `bgzf.Decompressor.tell()` gives the virtual offset of the next byte a read returns, as htslib's `bgzf_tell` does: between blocks, the start of the next block with data. BAM indexes record these offsets. The decompressor keeps the last 16 decoded blocks with data to answer it, which makes `bgzf.Decompressor` 304 bytes larger, and a call costs the same however many blocks it keeps; a single peek longer than 16 such blocks loses the earlier ones, and `tell` then reports `PositionUnavailable`.
 
 ### Changed
 
 - Every decoder rejects a dynamic block that declares more than 30 distance codes with `BadHuffman`, as GNU gzip, zlib, zlib-ng, and igzip do; earlier versions accepted it when the extra codes were unused. RFC 1951 lets the header count reach 32, but only 30 distance codes exist.
 - `zlib.SliceDecoder.decode` and `deflate.SliceDecoder.decode` return the new `zlib.SliceError` and `deflate.SliceError`: the format's `DecompressError` without `ReadFailed`, `InputBufferTooSmall`, and `PeekTooLarge`, which a slice cannot raise. A `switch` over the old set drops those three prongs.
+- Every decompressor's workspace, `zlib.SliceDecoder`, `deflate.SliceDecoder`, and `bgzf.BlockDecoder` are 3,276 bytes larger: the decoding tables use an 11-bit literal/length root and an 8-bit distance root with subtables (`wiki/API.md`, "Workspace sizes").
 
 ### Fixed
 
