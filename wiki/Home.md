@@ -20,6 +20,6 @@ Every decompressor is a `std.Io.Reader` and every compressor a `std.Io.Writer`. 
 
 ## What comes next
 
-- Decode each BGZF block whole with its size known, the largest remaining gap on the bioinformatics path.
+- Write BGZF blocks as small as libdeflate's at the same speed.
 - Recover the few percent that gzip, zlib, and raw DEFLATE compression gave up for the writer interface in 0.2.0.
 - Extend the benchmark report: large files, more peers, and one command that reruns it.

@@ -7,7 +7,7 @@ zipir's module is named `zipir`. Every decompressor is a `std.Io.Reader` over an
 Fetch the release's source package into your project. It holds only the build files, the source, the tests, and the license:
 
 ```sh
-zig fetch --save=zipir https://github.com/eneskemalergin/zipir/releases/download/v0.2.1/zipir-0.2.1-source.tar.gz
+zig fetch --save=zipir https://github.com/eneskemalergin/zipir/releases/download/v0.3.0/zipir-0.3.0-source.tar.gz
 ```
 
 Zig records the package and its hash in your `build.zig.zon`. Fetch the archive, never a live checkout or `.`: a fetch copies what it is given into Zig's package cache.
@@ -78,7 +78,7 @@ try out.interface.flush();
 
 Every format namespace (`zipir.gzip`, `zipir.zlib`, `zipir.deflate`, `zipir.bgzf`) has the same `Decompressor`, `DecompressOptions`, `DecompressError`, `Compressor`, `CompressOptions`, and `CompressError`, so zlib and raw DEFLATE read and write exactly as above. `zipir.Decompressor(.zlib)` and `zipir.Compressor(.zlib)` name the same types when the format is a comptime value.
 
-For many independent streams already in memory, such as the binary arrays of an mzML file, `SliceDecoder` decodes one complete zlib or raw DEFLATE stream straight into a buffer you own, with a 7.7 KB workspace and up to about 16.3 KiB of stack:
+For many independent streams already in memory, such as the binary arrays of an mzML file, `SliceDecoder` decodes one complete zlib or raw DEFLATE stream straight into a buffer you own, with an 11 KB workspace and up to about 16.3 KiB of stack:
 
 ```zig
 // One whole zlib stream in memory, decoded into a buffer of the size you expect.
@@ -113,6 +113,8 @@ const line = try reader.reader.takeDelimiterExclusive('\n');
 ```
 
 The index storage is yours; when it is full, the compressor's writer fails and `writer.err` is `IndexFull`. `.split = .lines` gives exactly the block boundaries of `bgzip` 1.24 on text; `.fill` makes full blocks. `zipir.bgzf.IndexReader` reads a `.gzi` file back and rejects entries that do not increase strictly.
+
+`reader.tell()` gives the virtual offset of the next byte a read returns, the offset a BAM index records for each record: call it before reading a record, and `seek` to it later to come back. Between blocks it names the start of the next block with data, as htslib's `bgzf_tell` does. It answers from the last 16 blocks with data the decompressor decoded, so `PositionUnavailable` means a single peek held more than 16 of them.
 
 For work on single blocks, `zipir.bgzf.scan` walks block headers without decoding, `BlockDecoder` decodes one whole block, and `BlockSplitter` with `BlockEncoder` write blocks one at a time.
 

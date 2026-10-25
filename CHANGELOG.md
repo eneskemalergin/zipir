@@ -4,6 +4,17 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-25
+
+0.3.0 rebuilds the DEFLATE decoder on libdeflate's design: an 11-bit literal/length table and an 8-bit distance table with subtables, up to three literals per lookup, and copies a word at a time. Decoded and compressed bytes are the same as in 0.2.1, and a damaged stream fails with the same error, apart from the distance-code rule below. For BGZF readers it adds `tell`, the virtual offset that BAM indexes record, and `decodeBlockInto`, which decodes a block straight into your buffer.
+
+It is a minor version because two changes can reach your code:
+
+- A dynamic block that declares more than 30 distance codes is now `BadHuffman`, as GNU gzip, zlib, zlib-ng, and igzip already treat it. zlib, libdeflate, and zipir never write such a header.
+- `zlib.SliceDecoder.decode` and `deflate.SliceDecoder.decode` return `SliceError`, which leaves out three errors a slice cannot raise. A `switch` over the old set must drop those prongs.
+
+Every decompressor's workspace is 3,276 bytes larger for the new tables, and `bgzf.Decompressor` 304 bytes more for `tell`; the compressors are unchanged. The [API reference](https://github.com/eneskemalergin/zipir/wiki/API#workspace-sizes) lists every size.
+
 ### Added
 
 - `bgzf.Decompressor.tell()` gives the virtual offset of the next byte a read returns, as htslib's `bgzf_tell` does: between blocks, the start of the next block with data. BAM indexes record these offsets. The decompressor keeps the last 16 decoded blocks with data to answer it, which makes `bgzf.Decompressor` 304 bytes larger, and a call costs the same however many blocks it keeps; a single peek longer than 16 such blocks loses the earlier ones, and `tell` then reports `PositionUnavailable`.
@@ -89,7 +100,8 @@ The first version under the name zipir (it began as z-flate). It was tagged but 
 - Streaming zlib decompression with RFC 1950 header checks, Adler-32 (an AVX2 kernel when the CPU has it), a trailing-data policy, and an output limit.
 - The `zipir compress`, `decompress`, and `test` commands for gzip.
 
-[Unreleased]: https://github.com/eneskemalergin/zipir/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/eneskemalergin/zipir/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/eneskemalergin/zipir/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/eneskemalergin/zipir/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/eneskemalergin/zipir/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/eneskemalergin/zipir/tree/v0.1.2
