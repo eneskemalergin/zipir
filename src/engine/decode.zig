@@ -1,5 +1,6 @@
 //! DEFLATE decoding (RFC 1951) into bounded output storage that pauses when full. The owner gives a `Session` its
-//! tables and its storage, reads `storage[0..out_pos]`, then `rebase` keeps the unread bytes and 32 KiB of history;
+//! tables and its storage, reads `storage[0..out_pos]`, then `rebase` keeps the unread bytes and 32 KiB of history
+//! (`rebaseKeeping` any amount, such as none between independent BGZF blocks);
 //! bits, block state, and a match cut short by full storage carry over to the next `run`, and new bytes are in the
 //! check when `run` returns. Table entries, the table builder, and the decode loops follow libdeflate's decoder
 //! (MIT; its notice is in `LICENSE`): an 11-bit literal/length root and an 8-bit distance root with subtables.
@@ -268,7 +269,11 @@ pub fn Session(comptime Check: type) type {
         }
 
         pub fn rebase(self: *Self, keep_from: usize) usize {
-            const from = @min(keep_from, self.out_pos -| WINDOW);
+            return self.rebaseKeeping(keep_from, WINDOW);
+        }
+
+        pub fn rebaseKeeping(self: *Self, keep_from: usize, history: usize) usize {
+            const from = @min(keep_from, self.out_pos -| history);
             if (from != 0) {
                 const kept = self.out_pos - from;
                 @memmove(self.storage[0..kept], self.storage[from..self.out_pos]);

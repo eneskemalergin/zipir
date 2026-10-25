@@ -157,7 +157,7 @@ pub fn Decompressor(comptime Framing: type) type {
                 .header, .body => {},
             }
             if (r.buffer.len - r.end < min_room) {
-                r.seek -= self.session.rebase(r.seek);
+                r.seek -= self.session.rebaseKeeping(r.seek, if (whole_streams) 0 else codes.WINDOW);
                 r.end = self.session.out_pos;
             }
             const start = r.end;
