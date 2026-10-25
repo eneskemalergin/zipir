@@ -20,7 +20,7 @@ zlib-ng, ISA-L igzip, the Zig standard library, and htslib `bgzip` built with li
 
 ## This release
 
-The report predates 0.2.0's code: its zipir compression rows were measured at commit `5f25547` and its decompression rows at `ff8e9e8`. A matched run of the same peers on the small files at the release code showed decompression faster and gzip, zlib, and raw DEFLATE compression a few percent slower, the cost of making every compressor a `std.Io.Writer`. Compressed bytes did not change.
+The report measures 0.3.0. Every zipir row, compression and decompression, comes from commit `fca02df`, timed alone on the same core as the peers' rows, which come from an earlier run with unchanged peers. A control batch timed zipir and zlib-ng together on the gzip medium files: zipir's time relative to zlib-ng there agrees with the report's rows within 3%. The report's method section gives both runs.
 
 ## Run it yourself
 

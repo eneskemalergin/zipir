@@ -4,7 +4,7 @@ Published benchmark reports for users, one directory per measured target. Each r
 
 | Target | Host | zipir | Report |
 | --- | --- | --- | --- |
-| `linux-x86-avx2` | AMD Ryzen 9 3950X (Zen 2), Linux x86-64 | `5f25547` (compression), `ff8e9e8` (decompression and peers) | [linux-x86-avx2/README.md](linux-x86-avx2/README.md) |
+| `linux-x86-avx2` | AMD Ryzen 9 3950X (Zen 2), Linux x86-64 | `fca02df` (peers timed with `ff8e9e8`) | [linux-x86-avx2/README.md](linux-x86-avx2/README.md) |
 
 ## How the numbers are made
 
@@ -21,12 +21,12 @@ The measurements come from the comparison harness in [`tools/`](../tools/README.
 python3 bench/report.py prime-lanes --target linux-x86-avx2
 ```
 
-When only zipir's encoder changed, its compression rows can be re-timed without re-timing the peers: time the zipir adapters alone (`tools/bench.sh --op compress zipir-gzip zipir-zlib zipir-deflate zipir-bgzf` with the classes of the base run), re-time any batch disturbed by other jobs (a later run overrides an earlier one), then [`splice.py`](splice.py) writes a run with zipir's rows replaced and every other row as measured, and `report.py` states in the report that those rows were not timed in the same rounds as the peers:
+When only zipir changed, its rows can be re-timed without re-timing the peers: time the zipir adapters alone (`tools/bench.sh zipir-gzip zipir-zlib zipir-deflate zipir-bgzf` with the classes of the base run; add `--op compress` when only the encoder changed), re-time any batch disturbed by other jobs (a later run overrides an earlier one), then [`splice.py`](splice.py) writes a run with zipir's rows replaced and every other row as measured, and `report.py` states in the report which of zipir's rows were not timed in the same rounds as the peers. `--control FILE` adds a note on a batch that timed zipir next to one peer, to show how far the load moved between the runs:
 
 ```sh
-python3 bench/splice.py prime-lanes prime-lanes-5f25547 named-zipir-gzip+zipir-zlib+zipir-deflate+zipir-bgzf-lanes
-python3 tools/report.py prime-lanes-5f25547
-python3 bench/report.py prime-lanes-5f25547 --target linux-x86-avx2 \
+python3 bench/splice.py prime-lanes-ff8e9e8 prime-lanes-fca02df named-zipir-gzip+zipir-zlib+zipir-deflate+zipir-bgzf-lanes
+python3 tools/report.py prime-lanes-fca02df
+python3 bench/report.py prime-lanes-fca02df --target linux-x86-avx2 \
     --frontier named-zlib-ng+igzip+libdeflate-gzip-all --frontier named-bgzip-libdeflate+bgzip-zlib-ng-all
 ```
 

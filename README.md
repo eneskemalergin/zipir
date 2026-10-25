@@ -51,7 +51,7 @@ The library has no external dependencies, does not create threads, and does not 
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="bench/linux-x86-avx2/figures/memory-summary-dark.svg">
       <source media="(prefers-color-scheme: light)" srcset="bench/linux-x86-avx2/figures/memory-summary-light.svg">
-      <img src="bench/linux-x86-avx2/figures/memory-summary-light.svg" alt="Peak memory of zipir and every peer for each format and operation on Linux x86-64: zipir about 0.6 MiB on every path, the C peers 1.6 to 3.6 MiB" width="100%">
+      <img src="bench/linux-x86-avx2/figures/memory-summary-light.svg" alt="Peak memory of zipir and every peer for each format and operation on Linux x86-64: zipir about 0.6 MiB on every path, the C peers 1.6 to 5.0 MiB" width="100%">
     </picture>
   </a>
 </p>
@@ -64,7 +64,7 @@ The library has no external dependencies, does not create threads, and does not 
 >
 > Acceleration is x86-64 first. The CRC-32 (PCLMUL) and Adler-32 (AVX2) kernels are chosen at run time, and every speed number I publish is from Linux x86-64 with AVX2. On ARM64, CRC-32 uses the ARMv8 CRC instruction when the build targets a CPU that has it; the rest runs on the portable path. Every accelerated kernel keeps a portable fallback, so no feature depends on the CPU, only speed does.
 
-The benchmark report predates this release: its zipir compression rows were measured at commit `5f25547` and its decompression rows at `ff8e9e8`. A matched run of the same peers on the small files at the release code showed decompression faster and gzip, zlib, and raw DEFLATE compression a few percent slower, the cost of making every compressor a `std.Io.Writer`. Compressed bytes did not change.
+The benchmark report measures this release: every zipir row comes from commit `fca02df`, timed alone on the core the peers were timed on, with a control batch against zlib-ng to show how far the machine's load moved between the two runs.
 
 zipir lists, tests, and creates tar archives, but it does not extract them: writing files named by an archive needs a filesystem-safety policy, and GNU tar already has one. Zstandard, LZ4, XZ, and bzip2 are possible later formats, not promises.
 

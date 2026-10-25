@@ -71,13 +71,13 @@
 <text x="226.1" y="181.4" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
 <path d="M217.2,182.5 L224.1,195.6 L210.3,195.6 Z" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 9: 32.4 MB/s, ratio 5.944</title></path>
 <text x="225.2" y="183.1" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
-<path d="M326.8,262.5 L276.8,201.2 L243.9,192.5" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
-<circle cx="326.8" cy="262.5" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 265.0 MB/s, ratio 5.195</title></circle>
-<text x="334.8" y="255.5" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
-<circle cx="276.8" cy="201.2" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 101.6 MB/s, ratio 5.830</title></circle>
-<text x="284.8" y="194.2" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
-<circle cx="243.9" cy="192.5" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 54.0 MB/s, ratio 5.919</title></circle>
-<text x="251.9" y="185.5" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
+<path d="M327.7,262.5 L277.0,201.2 L244.0,192.5" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="327.7" cy="262.5" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 269.7 MB/s, ratio 5.195</title></circle>
+<text x="335.7" y="255.5" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="277.0" cy="201.2" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 101.9 MB/s, ratio 5.830</title></circle>
+<text x="285.0" y="194.2" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
+<circle cx="244.0" cy="192.5" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 54.1 MB/s, ratio 5.919</title></circle>
+<text x="252.0" y="185.5" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
 <text x="216.0" y="462.0" font-size="11" fill="#52514e" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
 <text x="396.0" y="112.0" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="600" >Sequencing: VCF, 11.5 MB</text>
 <line x1="402.8" y1="126.0" x2="402.8" y2="426.0" stroke="#e1e0d9" stroke-width="1" />
@@ -139,13 +139,13 @@
 <text x="556.4" y="191.4" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
 <path d="M572.8,205.2 L579.7,218.2 L565.9,218.2 Z" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 9: 37.7 MB/s, ratio 4.777</title></path>
 <text x="580.8" y="205.7" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
-<path d="M673.3,287.1 L620.8,201.2 L582.3,191.5" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
-<circle cx="673.3" cy="287.1" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 213.6 MB/s, ratio 3.973</title></circle>
-<text x="681.3" y="280.1" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
-<circle cx="620.8" cy="201.2" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 86.4 MB/s, ratio 4.902</title></circle>
-<text x="628.8" y="194.2" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
-<circle cx="582.3" cy="191.5" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 44.4 MB/s, ratio 5.006</title></circle>
-<text x="590.3" y="184.5" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
+<path d="M673.0,287.1 L620.7,201.2 L581.8,191.5" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="673.0" cy="287.1" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 212.6 MB/s, ratio 3.973</title></circle>
+<text x="681.0" y="280.1" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="620.7" cy="201.2" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 86.2 MB/s, ratio 4.902</title></circle>
+<text x="628.7" y="194.2" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
+<circle cx="581.8" cy="191.5" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 44.0 MB/s, ratio 5.006</title></circle>
+<text x="589.8" y="184.5" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
 <text x="546.0" y="462.0" font-size="11" fill="#52514e" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
 <text x="726.0" y="112.0" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="600" >Mass spectrometry: PRIDE XML, 48.0 MB</text>
 <line x1="752.5" y1="126.0" x2="752.5" y2="426.0" stroke="#e1e0d9" stroke-width="1" />
@@ -205,13 +205,13 @@
 <text x="873.8" y="165.0" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
 <path d="M903.6,182.2 L910.5,195.3 L896.8,195.3 Z" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 9: 68.0 MB/s, ratio 4.202</title></path>
 <text x="911.6" y="182.8" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
-<path d="M981.8,231.1 L937.3,183.7 L912.6,173.9" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
-<circle cx="981.8" cy="231.1" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 262.2 MB/s, ratio 4.009</title></circle>
-<text x="989.8" y="224.1" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
-<circle cx="937.3" cy="183.7" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 121.6 MB/s, ratio 4.230</title></circle>
-<text x="945.3" y="176.7" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
-<circle cx="912.6" cy="173.9" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 79.3 MB/s, ratio 4.276</title></circle>
-<text x="920.6" y="166.9" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
+<path d="M981.7,231.1 L936.8,183.7 L912.1,173.9" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="981.7" cy="231.1" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 261.6 MB/s, ratio 4.009</title></circle>
+<text x="989.7" y="224.1" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="936.8" cy="183.7" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 120.5 MB/s, ratio 4.230</title></circle>
+<text x="944.8" y="176.7" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
+<circle cx="912.1" cy="173.9" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 78.6 MB/s, ratio 4.276</title></circle>
+<text x="920.1" y="166.9" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
 <text x="876.0" y="462.0" font-size="11" fill="#52514e" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
 <text x="1056.0" y="112.0" font-size="13" fill="#0b0b0b" text-anchor="start" font-weight="600" >General: Canterbury tar, 2.8 MB</text>
 <line x1="1085.8" y1="126.0" x2="1085.8" y2="426.0" stroke="#e1e0d9" stroke-width="1" />
@@ -273,13 +273,13 @@
 <text x="1157.9" y="191.4" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >8</text>
 <path d="M1144.4,192.9 L1151.3,206.0 L1137.5,206.0 Z" fill="#e87ba4" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"><title>bgzip + zlib-ng 9: 12.3 MB/s, ratio 3.745</title></path>
 <text x="1152.4" y="193.5" font-size="10" fill="#898781" text-anchor="start" font-weight="400" >9</text>
-<path d="M1321.6,237.7 L1267.5,200.4 L1223.9,194.3" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
-<circle cx="1321.6" cy="237.7" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 186.4 MB/s, ratio 3.504</title></circle>
-<text x="1329.6" y="230.7" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
-<circle cx="1267.5" cy="200.4" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 81.3 MB/s, ratio 3.745</title></circle>
-<text x="1275.5" y="193.4" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
-<circle cx="1223.9" cy="194.3" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 41.6 MB/s, ratio 3.785</title></circle>
-<text x="1231.9" y="187.3" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
+<path d="M1313.3,237.7 L1260.7,200.4 L1216.7,194.3" fill="none" stroke="#e08e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
+<circle cx="1313.3" cy="237.7" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir fast: 164.2 MB/s, ratio 3.504</title></circle>
+<text x="1321.3" y="230.7" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >fast</text>
+<circle cx="1260.7" cy="200.4" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir even: 73.2 MB/s, ratio 3.745</title></circle>
+<text x="1268.7" y="193.4" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >even</text>
+<circle cx="1216.7" cy="194.3" r="5.5" fill="#e08e0b" stroke="#fcfcfb" stroke-width="2"><title>zipir dense: 37.3 MB/s, ratio 3.785</title></circle>
+<text x="1224.7" y="187.3" font-size="10" fill="#0b0b0b" text-anchor="start" font-weight="600" >dense</text>
 <text x="1206.0" y="462.0" font-size="11" fill="#52514e" text-anchor="middle" font-weight="400" >MB/s, log scale</text>
 <text x="24.0" y="276.0" font-size="11" fill="#52514e" text-anchor="middle" font-weight="400" transform="rotate(-90 24 276.0)">compression ratio</text>
 <text x="28.0" y="502.0" font-size="12" fill="#898781" text-anchor="start" font-weight="400" >Ratio is plaintext bytes / compressed bytes. MB/s is plaintext MB (10^6 bytes) per second of median wall time. Each panel has its own scales.</text>
