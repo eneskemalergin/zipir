@@ -287,8 +287,8 @@ def figure_summary(summary, meta, theme, path):
     svg.text(left, 38, 'zipir against the fastest peer on every path', 20, weight=650)
     svg.text(left, 62, 'Peer time divided by zipir time: geometric mean over the small and medium corpus files, '
              'whiskers across files. Left of 1 the peer is faster.', 13, 'ink2')
-    rounds = ('matched interleaved rounds (zipir compression re-timed separately)' if meta.get('splice')
-              else 'matched interleaved rounds')
+    rounds = (f'matched interleaved rounds (zipir {spliced_ops(meta["splice"])} re-timed separately)'
+              if meta.get('splice') else 'matched interleaved rounds')
     svg.text(left, 81, f'{meta["cpu"]} (Zen 2, AVX2), Linux, one thread per process, {rounds}. '
              f'zipir {meta["commit"][:7]}.', 13, 'ink2')
     x = log_scale(0.05, 5.0, plot_l, plot_r)
@@ -640,6 +640,18 @@ FRONTIER = {
 }
 
 
+def run_date(run):
+    """The host's local date of a run's last batch."""
+    stamp = max(p.stat().st_mtime for p in (ROOT / 'tools/.local/bench' / run).glob('*/*/*.json'))
+    return datetime.datetime.fromtimestamp(stamp).strftime('%Y-%m-%d')
+
+
+def spliced_ops(splice):
+    """The operations whose zipir rows a spliced run took from its zipir-only runs, in words."""
+    ops = splice.get('spliced_ops', 'compress').split()
+    return ' and '.join({'compress': 'compression', 'decompress': 'decompression'}[op] for op in sorted(ops))
+
+
 def load_frontier(runs):
     """Peer rows of runs that timed every level (zipir's rows there are older and are left out)."""
     rows = [r for run in runs for r in csv.DictReader(open(ROOT / 'tools/.local/report' / run / 'facts.tsv'), delimiter='\t')
@@ -790,8 +802,9 @@ def write_readme(target, rows, summary, meta, out):
     L = []
     L.append(f'# zipir benchmark: {target}')
     L.append('')
+    peers_on = f', its peers on {meta["peers_date"]}' if meta.get('peers_date') else ''
     L.append(f'zipir `{meta["commit"][:12]}` ({"clean tree" if meta["dirty"] == "false" else "uncommitted changes"}), '
-             f'measured on {meta["date"]}. One host: {meta["cpu"]}, {meta["kernel"]}.')
+             f'measured on {meta["date"]}{peers_on}. One host: {meta["cpu"]}, {meta["kernel"]}.')
     L.append('')
     L.append('This report shows where zipir stands against the fastest single-threaded tools on the same machine, on '
              'every format zipir writes and reads. Compression is a trade-off between speed and output size, so '
@@ -938,12 +951,16 @@ def write_readme(target, rows, summary, meta, out):
     if meta.get('splice'):
         sp = meta['splice']
         runs = ', '.join(f'`{n}`' for n in sp['new'].split())
-        L.append(f'- **zipir compression re-timed alone.** zipir\'s compression rows come from zipir-only runs '
+        what = spliced_ops(sp)
+        rest = ('every peer row' if what == 'compression and decompression'
+                else f'every peer row and zipir\'s {"decompression" if what == "compression" else "compression"} rows')
+        L.append(f'- **zipir {what} re-timed alone.** zipir\'s {what} rows come from zipir-only runs '
                  f'({runs}, zipir `{sp["zipir_commit"][:12]}`, CPU {sp.get("zipir_cpu", "?")}; batches disturbed by other jobs '
-                 f're-timed in the later runs); every peer row and zipir\'s decompression rows '
-                 f'come from `{sp["base"]}` (zipir `{sp["peers_commit"][:12]}`, CPU {sp.get("peers_cpu", "?")}), so they '
-                 f'describe zipir\'s decoder at that commit. '
-                 f'So zipir\'s compression was not timed in the same rounds as the peers: load that differed between '
+                 f're-timed in the later runs); {rest} '
+                 f'come{"s" if rest == "every peer row" else ""} from `{sp["base"]}` (zipir `{sp["peers_commit"][:12]}`, '
+                 f'CPU {sp.get("peers_cpu", "?")}). '
+                 f'So zipir\'s {what} {"were" if " and " in what else "was"} not timed in the same rounds as the '
+                 f'peers: load that differed between '
                  f'the two runs shifts zipir against every peer. {sp.get("control_note", "")}'.rstrip())
     L.extend(noise_lines(rows))
     L.append('')
@@ -1229,8 +1246,9 @@ def main():
     meta['kernel'] = meta['kernel'] or 'Linux'
     meta['governor'] = pathlib.Path('/sys/devices/system/cpu/cpu4/cpufreq/scaling_governor').read_text().strip()
     meta['gcc'] = subprocess.run(['gcc', '-dumpfullversion'], capture_output=True, text=True).stdout.strip()
-    stamp = max(p.stat().st_mtime for p in (ROOT / 'tools/.local/bench' / args.run).glob('*/*/*.json'))
-    meta['date'] = datetime.datetime.fromtimestamp(stamp).strftime('%Y-%m-%d')  # the host's local date
+    meta['date'] = run_date(args.run)
+    if meta.get('splice'):
+        meta['peers_date'] = run_date(meta['splice']['base'])
     if args.frontier:
         meta['frontier'] = load_frontier(args.frontier)
         meta['frontier_runs'] = args.frontier

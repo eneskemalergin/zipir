@@ -55,7 +55,7 @@ def main():
     news = [BENCH / n for n in args.new]
     if out.exists():
         sys.exit(f'{out} exists; choose a new name (nothing is deleted)')
-    spliced, copied, new_meta = 0, 0, None
+    spliced, copied, new_meta, ops = 0, 0, None, set()
     for tsv in sorted(base.glob('*/*/*.tsv')):
         if tsv.name.endswith('.part.tsv'):
             continue
@@ -101,11 +101,13 @@ def main():
         results['results'] = [x for _, x in zipir_new] + [x for _, x in peers]
         target.with_suffix('.json').write_text(json.dumps(results))
         spliced += 1
+        ops.add(meta['op'])
     if spliced == 0:
         sys.exit(f'{" ".join(args.new)} share no batch with {args.base}')
     old_commit = meta_of(read_batch(next(base.glob('*/*/*.tsv')))[0]).get('commit', '')
     lines = [f'base\t{args.base}', f'new\t{" ".join(args.new)}', f'zipir_commit\t{new_meta.get("commit", "")}',
              f'peers_commit\t{old_commit}', f'spliced_batches\t{spliced}', f'copied_batches\t{copied}',
+             f'spliced_ops\t{" ".join(sorted(ops))}',
              f'zipir_cpu\t{new_meta.get("cpu", "")}', f'peers_cpu\t{meta_of(read_batch(next(base.glob("*/*/*.tsv")))[0]).get("cpu", "")}']
     if args.control:
         lines += [line for line in pathlib.Path(args.control).read_text().splitlines() if line.strip()]
