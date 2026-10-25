@@ -11,6 +11,7 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 ### Changed
 
 - Every decoder rejects a dynamic block that declares more than 30 distance codes with `BadHuffman`, as GNU gzip, zlib, zlib-ng, and igzip do; earlier versions accepted it when the extra codes were unused. RFC 1951 lets the header count reach 32, but only 30 distance codes exist.
+- `zlib.SliceDecoder.decode` and `deflate.SliceDecoder.decode` return the new `zlib.SliceError` and `deflate.SliceError`: the format's `DecompressError` without `ReadFailed`, `InputBufferTooSmall`, and `PeekTooLarge`, which a slice cannot raise. A `switch` over the old set drops those three prongs.
 
 ### Fixed
 

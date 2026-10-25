@@ -4,11 +4,11 @@
 //! it is readable and may declare `streamError`, `VirtualOffset` and a `seeking` field (`seek`, `seekUncompressed`,
 //! `tell`). An input reader whose buffer is under `min_input_buffer` is read through a staging buffer in the workspace,
 //! which may take bytes past the stream from it, so with `trailing_data = .leave` it is `InputBufferTooSmall`.
-//! `SliceDecoder` decodes one complete stream from a slice into the caller's `output`, which is also the history;
-//! `output` past the returned length, and all of it after an error, is unspecified, and it must not overlap `input`
-//! (asserted). Outputs under `SMALL_OUTPUT` (16 KiB) decode into a stack buffer with the fast loop's room (about 16.3
-//! KiB of stack) and are copied, so running past `output` is reported in stream order, as the reader reports it. Its
-//! workspace is only tables.
+//! `SliceDecoder` decodes one complete stream from a slice into the caller's `output`, which is also the history, and
+//! returns its Framing's `SliceError`, which leaves out the reader's errors; `output` past the returned length, and all
+//! of it after an error, is unspecified, and it must not overlap `input` (asserted). Outputs under `SMALL_OUTPUT` (16
+//! KiB) decode into a stack buffer with the fast loop's room (about 16.3 KiB of stack) and are copied, so running past
+//! `output` is reported in stream order, as the reader reports it. Its workspace is only tables.
 
 const std = @import("std");
 const engine = @import("../engine/decode.zig");
@@ -316,13 +316,13 @@ pub fn SliceDecoder(comptime Framing: type) type {
 
         tables: engine.Tables = undefined,
 
-        pub fn decode(self: *Self, input: []const u8, output: []u8) Framing.DecompressError!usize {
+        pub fn decode(self: *Self, input: []const u8, output: []u8) Framing.SliceError!usize {
             const in_start = @intFromPtr(input.ptr);
             const out_start = @intFromPtr(output.ptr);
             std.debug.assert(input.len == 0 or output.len == 0 or in_start + input.len <= out_start or out_start + output.len <= in_start);
-            if (output.len >= SMALL_OUTPUT) return self.decodeInto(input, output, output.len);
+            if (output.len >= SMALL_OUTPUT) return @errorCast(self.decodeInto(input, output, output.len));
             var scratch: [SMALL_OUTPUT + engine.FAST_ROOM]u8 = undefined;
-            const n = try self.decodeInto(input, scratch[0 .. output.len + engine.FAST_ROOM], output.len);
+            const n = try @as(Framing.SliceError!usize, @errorCast(self.decodeInto(input, scratch[0 .. output.len + engine.FAST_ROOM], output.len)));
             @memcpy(output[0..n], scratch[0..n]);
             return n;
         }

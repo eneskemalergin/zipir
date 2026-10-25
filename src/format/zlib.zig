@@ -12,7 +12,7 @@ const stream_writer = @import("../stream/writer.zig");
 
 pub const DecompressOptions = stream_reader.Options;
 
-pub const DecompressError = decode.DecodeError || stream_reader.Error || error{
+pub const SliceError = decode.DataError || error{
     BadHeader,
     UnsupportedMethod,
     WindowTooLarge,
@@ -20,6 +20,8 @@ pub const DecompressError = decode.DecodeError || stream_reader.Error || error{
     BadAdler,
     TrailingData,
 };
+
+pub const DecompressError = SliceError || decode.DecodeError || stream_reader.Error;
 
 pub const Decompressor = stream_reader.Decompressor(DecompressFraming);
 
@@ -43,6 +45,7 @@ const DecompressFraming = struct {
     pub const Check = adler32.Adler32;
     pub const DecompressOptions = format.DecompressOptions;
     pub const DecompressError = format.DecompressError;
+    pub const SliceError = format.SliceError;
     pub const min_input_buffer = 16;
 
     options: format.DecompressOptions,

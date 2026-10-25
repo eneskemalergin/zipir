@@ -391,6 +391,12 @@ test "[unit] - [zlib]: the public error set names exactly the documented errors"
     try support.expectErrorNames(zlib.DecompressError, &expected);
 }
 
+test "[unit] - [zlib slice decoder]: the slice error set leaves out the reader's errors" {
+    const expected = [_][]const u8{ "BadAdler", "BadBlock", "BadDistance", "BadHeader", "BadHuffman", "BadStored", "BadSymbol", "DictionaryUnsupported", "OutputLimitExceeded", "TrailingData", "Truncated", "UnsupportedMethod", "WindowTooLarge" };
+    try support.expectErrorNames(zlib.SliceError, &expected);
+    try std.testing.expect(@typeInfo(@typeInfo(@TypeOf(zlib.SliceDecoder.decode)).@"fn".return_type.?).error_union.error_set == zlib.SliceError);
+}
+
 test "[property] - [zlib slice decoder]: every stream, truncation, and bit flip decodes as the reader does" {
     try support.expectSliceDecoderProperty(zlib, std.testing.allocator);
 }

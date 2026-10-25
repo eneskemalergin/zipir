@@ -31,7 +31,8 @@ Every decoder can fail with `Truncated`, `BadHuffman`, `BadSymbol`, `BadDistance
 
 `zipir.zlib` and `zipir.deflate` also declare `SliceDecoder`, for a complete stream held in memory:
 
-- `decode(self, input: []const u8, output: []u8) DecompressError!usize` decodes the stream in `input` into `output` and returns the decoded length. `OutputLimitExceeded` means the stream needs more room than `output`; bytes after the stream are `TrailingData`. `output` past the returned length, and all of it after an error, is unspecified. `input` and `output` must not overlap.
+- `decode(self, input: []const u8, output: []u8) SliceError!usize` decodes the stream in `input` into `output` and returns the decoded length. `OutputLimitExceeded` means the stream needs more room than `output`; bytes after the stream are `TrailingData`. `output` past the returned length, and all of it after an error, is unspecified. `input` and `output` must not overlap.
+- `SliceError` is the format's `DecompressError` without `ReadFailed`, `InputBufferTooSmall`, and `PeekTooLarge`, which a slice cannot raise.
 - The workspace holds only tables (7,704 bytes), keeps nothing between calls, and may be moved or copied between them. An output under 16 KiB is decoded into a stack buffer and copied, so a call uses up to about 16.3 KiB of stack.
 
 ## bgzf

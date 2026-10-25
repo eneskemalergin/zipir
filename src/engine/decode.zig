@@ -19,7 +19,9 @@ const FIXED_DIST_LENS = codes.FIXED_DIST_LENS;
 const bitReverse = codes.bitReverse;
 const buildCodes = codes.buildCodes;
 
-pub const DecodeError = error{ Truncated, BadHuffman, BadSymbol, BadDistance, BadStored, BadBlock, OutputLimitExceeded, ReadFailed };
+pub const DataError = error{ Truncated, BadHuffman, BadSymbol, BadDistance, BadStored, BadBlock, OutputLimitExceeded };
+
+pub const DecodeError = DataError || error{ReadFailed};
 
 const Kind = enum(u4) { invalid = 0, lit, eob, len, dist, long };
 

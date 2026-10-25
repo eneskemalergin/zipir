@@ -156,6 +156,12 @@ test "[unit] - [raw deflate]: the public error set names exactly the documented 
     try support.expectErrorNames(deflate.DecompressError, &expected);
 }
 
+test "[unit] - [raw deflate slice decoder]: the slice error set leaves out the reader's errors" {
+    const expected = [_][]const u8{ "BadBlock", "BadDistance", "BadHuffman", "BadStored", "BadSymbol", "OutputLimitExceeded", "TrailingData", "Truncated" };
+    try support.expectErrorNames(deflate.SliceError, &expected);
+    try std.testing.expect(@typeInfo(@typeInfo(@TypeOf(deflate.SliceDecoder.decode)).@"fn".return_type.?).error_union.error_set == deflate.SliceError);
+}
+
 test "[property] - [raw deflate slice decoder]: every stream, truncation, and bit flip decodes as the reader does" {
     try support.expectSliceDecoderProperty(deflate, std.testing.allocator);
 }
