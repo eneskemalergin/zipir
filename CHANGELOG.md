@@ -7,6 +7,7 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 ### Added
 
 - `bgzf.Decompressor.tell()` gives the virtual offset of the next byte a read returns, as htslib's `bgzf_tell` does: between blocks, the start of the next block with data. BAM indexes record these offsets. The decompressor keeps the last 16 decoded blocks with data to answer it, which makes `bgzf.Decompressor` 304 bytes larger, and a call costs the same however many blocks it keeps; a single peek longer than 16 such blocks loses the earlier ones, and `tell` then reports `PositionUnavailable`.
+- `bgzf.BlockDecoder.decodeBlockInto()` decodes a block straight into the caller's buffer, without the copy `decodeBlock` makes to keep that buffer untouched on failure; the buffer is unspecified after an error.
 
 ### Changed
 

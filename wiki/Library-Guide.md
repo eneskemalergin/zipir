@@ -152,6 +152,8 @@ try out.writeAll(block[0..encoder.compressBlock(plain[0..n], &block, .even)]);
 try out.writeAll(original[first.size..]);
 ```
 
+`decodeBlock` writes `plain` only once the block's checks pass. When the caller discards its buffer on any error anyway, as a block cache does, `decodeBlockInto` decodes straight into it and saves the copy of every byte.
+
 ## tar through any format
 
 `zipir.tar.Writer(Source)` is a reader of the archive it builds, so a compressor pulls from it, and `zipir.tar.Reader(Visitor)` is a writer that calls the visitor per entry, so a decompressor pushes into it. A `.tar.gz` round trip:

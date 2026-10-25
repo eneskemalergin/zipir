@@ -6,10 +6,10 @@
 //! with data loses earlier ones (`PositionUnavailable`). `Compressor` stages two blocks plus 32 KiB, so `.lines` gives
 //! exactly the block boundaries of `bgzip` 1.24 on text; boundaries depend only on the bytes, and `writer.flush()` ends
 //! the open block. Both assume their workspace stays in place while in use. `BlockDecoder.decodeBlock` writes `out`
-//! only once the block's checks pass. `BlockEncoder.compressBlock` asserts at most 65280 input bytes;
-//! `BlockSplitter.next` never returns 0. `Scanner` reads headers without decoding (an input buffer under 2 bytes with
-//! `trailing_data = .leave` is `InputBufferTooSmall`); `IndexBuilder` fills `.gzi` entries as htslib does (one per
-//! block with data, except the first); `IndexReader` rejects entries that do not increase strictly.
+//! only once the block's checks pass; `decodeBlockInto` does not. `BlockEncoder.compressBlock` asserts at most 65280
+//! input bytes; `BlockSplitter.next` never returns 0. `Scanner` reads headers without decoding (an input buffer under 2
+//! bytes with `.leave` is `InputBufferTooSmall`); `IndexBuilder` fills `.gzi` entries as htslib does (one per block
+//! with data, except the first); `IndexReader` rejects entries that do not increase strictly.
 
 const std = @import("std");
 const decode = @import("../engine/decode.zig");
@@ -141,6 +141,21 @@ pub const BlockDecoder = struct {
         try readBlockTrailer(&br, header, check.final(), size);
         if (header.block_size != block.len) return error.BlockSizeMismatch;
         @memcpy(out[0..size], self.buffer[0..size]);
+        return size;
+    }
+
+    pub fn decodeBlockInto(self: *BlockDecoder, block: []const u8, out: *[MAX_BLOCK]u8) DecompressError!usize {
+        if (block.len < EOF_MARKER.len) return error.BadBlockSize;
+        var reader = std.Io.Reader.fixed(block);
+        var br: decode.BitReader = .{ .reader = &reader };
+        const header = try readBlockHeader(&br);
+        var check: crc.Crc32 = .init();
+        var session: decode.Session(crc.Crc32) = .{ .tables = &self.tables, .storage = out, .max_output_bytes = std.math.maxInt(u64) };
+        session.begin(&br, &check);
+        if (try session.run() == .full) return error.BlockTooLarge;
+        const size = session.out_pos;
+        try readBlockTrailer(&br, header, check.final(), size);
+        if (header.block_size != block.len) return error.BlockSizeMismatch;
         return size;
     }
 };

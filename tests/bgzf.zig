@@ -250,6 +250,31 @@ test "[property] - [bgzf block decoder]: every block decoded alone concatenates 
     try std.testing.expectError(error.BlockSizeMismatch, decoder.decodeBlock(f.bytes[0 .. f.starts[1] + 1], &out));
 }
 
+test "[property] - [bgzf block decoder]: decoding into the caller's buffer gives what decodeBlock gives, damaged or not" {
+    const f = try standard();
+    defer std.testing.allocator.destroy(f);
+    const decoder = try std.testing.allocator.create(bgzf.BlockDecoder);
+    defer std.testing.allocator.destroy(decoder);
+    const outs = try std.testing.allocator.create([2][bgzf.MAX_BLOCK]u8);
+    defer std.testing.allocator.destroy(outs);
+    var damaged: [70000]u8 = undefined;
+    for (0..f.blocks) |i| {
+        const end = if (i + 1 < f.blocks) f.starts[i + 1] else f.len;
+        const bytes = f.bytes[f.starts[i]..end];
+        for ([_]?usize{ null, 0, 9, bytes.len / 2, bytes.len - 8, bytes.len - 4, bytes.len - 1 }) |at| {
+            @memcpy(damaged[0..bytes.len], bytes);
+            if (at) |k| damaged[k] ^= 0x21;
+            const want = decoder.decodeBlock(damaged[0..bytes.len], &outs[0]);
+            const got = decoder.decodeBlockInto(damaged[0..bytes.len], &outs[1]);
+            if (want) |n| {
+                try std.testing.expectEqual(n, try got);
+                try std.testing.expectEqualSlices(u8, outs[0][0..n], outs[1][0..n]);
+            } else |err| try std.testing.expectError(err, got);
+        }
+        try std.testing.expectError(error.BlockSizeMismatch, decoder.decodeBlockInto(f.bytes[f.starts[0] .. f.starts[1] + 1], &outs[1]));
+    }
+}
+
 test "[property] - [bgzf decompressor]: reads at every block start and inside blocks match the full output" {
     const io = std.testing.io;
     const f = try standard();

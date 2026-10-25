@@ -45,7 +45,7 @@ Every decoder can fail with `Truncated`, `BadHuffman`, `BadSymbol`, `BadDistance
 - `Split`: `enum { fill, lines }`. `.lines` gives the block boundaries of `bgzip` 1.24 on text.
 - `VirtualOffset`: `packed struct(u64) { uoffset: u16, coffset: u48 }`.
 - `scan(reader, options: ScanOptions) Scanner`; `Scanner.next() DecompressError!?Block`; `Block`: `coffset: u64`, `size: u32`, `data_size: u32`; `ScanOptions`: `trailing_data`, `require_eof_marker`. The scanner reads block headers and trailers without decoding.
-- `BlockDecoder`: `decodeBlock(self, block: []const u8, out: *[MAX_BLOCK]u8) DecompressError!usize` decodes one whole block and writes `out` only once the block's checks pass.
+- `BlockDecoder`: `decodeBlock(self, block: []const u8, out: *[MAX_BLOCK]u8) DecompressError!usize` decodes one whole block and writes `out` only once the block's checks pass. `decodeBlockInto(self, block, out)` decodes the same block straight into `out`, without the copy, and leaves `out` unspecified after an error.
 - `BlockSplitter`: `init(split)`, `next(self, available: []const u8, at_end: bool) ?usize` returns the length of the next block, never 0; `LOOKAHEAD`.
 - `BlockEncoder`: `compressBlock(self, input: []const u8, out: *[MAX_BLOCK]u8, preset) usize` asserts at most `BLOCK_INPUT` bytes of input.
 - `IndexEntry`: `coffset: u64`, `uoffset: u64`. `IndexBuilder`: `init(entries: []IndexEntry)`, `add(self, coffset, data_size) error{IndexFull}!void`, `slice(self)`. `writeIndex(writer, entries)`. `IndexReader`: `init(reader, file_size) DecompressError!IndexReader`, `next(self) DecompressError!?IndexEntry`.
