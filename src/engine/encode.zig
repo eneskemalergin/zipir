@@ -1,6 +1,8 @@
 //! DEFLATE encoding (RFC 1951), a window at a time: `codeWindow` codes `windowSpace()[0..n]`, 32 KiB except in the
 //! last window, and the `carried` bytes after it begin the next; `fullFlush` ends on a byte boundary and starts a new
-//! history. The preset tags are the zlib levels the CLI's hidden `--level 1|5|9` alias maps to.
+//! history. A stream begins with every head it can read at zero: a stream whole in its first window, at most 2048
+//! bytes, reads heads only at the hashes of its own positions and zeroes just those, whatever the workspace held;
+//! any other clears every head. The preset tags are the zlib levels the CLI's hidden `--level 1|5|9` alias maps to.
 
 const std = @import("std");
 const copy = @import("../kernel/copy.zig");
@@ -300,6 +302,7 @@ const ICF_LITERAL: u32 = 31;
 const ICF_CAP = WINDOW + 4;
 
 const FAST_HASH = 32768;
+const SPARSE_CLEAR = 2048;
 
 const LOG2_FRACTION: [256]f64 = blk: {
     @setEvalBranchQuota(10000);
@@ -337,6 +340,7 @@ pub const Encoder = struct {
     size: u64 = 0,
     skip_search: bool = false,
     pending: bool = false,
+    clear_due: bool = false,
     first_lit: [286]u32 = undefined,
     first_dist: [30]u32 = undefined,
     first_tokens: usize = 0,
@@ -361,8 +365,7 @@ pub const Encoder = struct {
     }
 
     pub fn begin(self: *Encoder, writer: *std.Io.Writer, preset: Preset, comptime block: bool) void {
-        copy.zero(std.mem.sliceAsBytes(self.headsFor(preset)));
-        if (block and preset == .fast) copy.zero(std.mem.asBytes(self.previous[0..FAST_HASH]));
+        self.clear_due = true;
         self.out = writer;
         self.bit_value = 0;
         self.bit_count = 0;
@@ -387,6 +390,7 @@ pub const Encoder = struct {
         const preset = self.preset;
         const history = self.history;
         const end = history + n;
+        if (self.clear_due) @call(.never_inline, clear, .{ self, n, last, preset, block });
         check.update(self.window[history..end]);
         self.size +%= n;
         if (history != 0) {
@@ -464,6 +468,34 @@ pub const Encoder = struct {
         const size = self.size;
         self.begin(self.out, self.preset, false);
         self.size = size;
+    }
+
+    fn clear(self: *Encoder, n: usize, last: bool, preset: Preset, comptime block: bool) void {
+        std.debug.assert(self.history == 0);
+        self.clear_due = false;
+        if (last and n <= SPARSE_CLEAR) self.clearHashed(n, preset, block) else self.clearTables(preset, block);
+    }
+
+    fn clearTables(self: *Encoder, preset: Preset, comptime block: bool) void {
+        copy.zero(std.mem.sliceAsBytes(self.headsFor(preset)));
+        if (block and preset == .fast) copy.zero(std.mem.asBytes(self.previous[0..FAST_HASH]));
+    }
+
+    fn clearHashed(self: *Encoder, end: usize, preset: Preset, comptime block: bool) void {
+        var p: usize = 0;
+        switch (preset) {
+            .fast => while (p + 4 <= end) : (p += 1) {
+                const h = fastHash(std.mem.readInt(u32, self.window[p..][0..4], .little));
+                self.head[h] = 0;
+                if (block) self.previous[h] = 0;
+            },
+            .even => while (p + 3 <= end) : (p += 1) {
+                self.head[self.hash(p, end, 5)] = 0;
+            },
+            .dense => while (p + 3 <= end) : (p += 1) {
+                self.head[self.hash(p, end, 4)] = 0;
+            },
+        }
     }
 
     fn headsFor(self: *Encoder, preset: Preset) []u16 {
@@ -1120,7 +1152,7 @@ test "[property] - [deflate encoder]: BGZF block output does not depend on stale
         @memset(&clean.previous, 0);
         for (&stale.head, 0..) |*slot, i| slot.* = @truncate(i *% 2654435761 +% 7);
         for (&stale.previous, 0..) |*slot, i| slot.* = @truncate(i *% 40503 +% 29);
-        for ([_]usize{ input.len, 20000 }) |len| {
+        for ([_]usize{ input.len, 20000, 4096, 4097, 300, 3, 0 }) |len| {
             var want_writer = std.Io.Writer.fixed(&expected);
             var want_check: NoCheck = .{};
             try clean.encodeBlock(NoCheck, input[0..len], &want_writer, &want_check, preset);
@@ -1167,7 +1199,7 @@ test "[property] - [deflate encoder]: output does not depend on stale chain entr
         @memset(&clean.previous, 0);
         for (&stale.head, 0..) |*slot, i| slot.* = @truncate(i *% 2654435761 +% 99);
         for (&stale.previous, 0..) |*slot, i| slot.* = @truncate(i *% 40503 +% 17);
-        for ([_]usize{ input.len, WINDOW / 3 }) |len| {
+        for ([_]usize{ input.len, WINDOW / 3, 4096, 300, 3, 0 }) |len| {
             var want_writer = std.Io.Writer.fixed(&expected);
             var want_check: NoCheck = .{};
             try clean.encodeSlice(NoCheck, input[0..len], &want_writer, &want_check, preset, false);

@@ -38,7 +38,7 @@ const FixedTables = struct {
 const FIXED_TABLES: FixedTables = fixedTables();
 
 fn fixedTables() FixedTables {
-    @setEvalBranchQuota(100000);
+    @setEvalBranchQuota(1000000);
     var tables: FixedTables = undefined;
     var no_spill: [0]Entry = .{};
     fillTwoLevel(&tables.lit, &no_spill, 10, &FIXED_LIT_LENS, litKind, litPayload, true) catch |err| @compileError(@errorName(err));
@@ -414,8 +414,14 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []cons
     const invalid: Entry = .{ .nbits = 0, .kind = .invalid, .payload = 0 };
     std.debug.assert(table.len == @as(usize, 1) << width);
     errdefer @memset(table, invalid);
-    var count: [17]u16 = @splat(0);
-    for (lens) |len| count[len] += 1;
+    var counts: [4][17]u16 = @splat(@splat(0));
+    var at: usize = 0;
+    while (at + 4 <= lens.len) : (at += 4) {
+        inline for (0..4) |k| counts[k][lens[at + k]] += 1;
+    }
+    while (at < lens.len) : (at += 1) counts[0][lens[at]] += 1;
+    var count: [17]u16 = undefined;
+    for (&count, 0..) |*c, len| c.* = counts[0][len] + counts[1][len] + counts[2][len] + counts[3][len];
     var left: i32 = 1;
     for (1..16) |len| {
         left = left * 2 - count[len];
@@ -505,8 +511,20 @@ fn fillTwoLevel(table: []Entry, spill: []Entry, comptime width: u4, lens: []cons
 }
 
 inline fn makeEntry(symbol: usize, len: u4, comptime kind_of: fn (usize) Kind, comptime payload_of: fn (usize) u16, comptime predecoded: bool) Entry {
-    const entry: Entry = .{ .nbits = len, .kind = kind_of(symbol), .payload = payload_of(symbol) };
-    return if (predecoded) predecode(entry) else entry;
+    const templates = comptime symbolEntries(kind_of, payload_of, predecoded);
+    var entry = templates[symbol];
+    entry.nbits = len;
+    return entry;
+}
+
+fn symbolEntries(comptime kind_of: fn (usize) Kind, comptime payload_of: fn (usize) u16, comptime predecoded: bool) [288]Entry {
+    @setEvalBranchQuota(10000);
+    var entries: [288]Entry = undefined;
+    for (&entries, 0..) |*entry, symbol| {
+        const plain: Entry = .{ .nbits = 0, .kind = kind_of(symbol), .payload = payload_of(symbol) };
+        entry.* = if (predecoded) predecode(plain) else plain;
+    }
+    return entries;
 }
 
 inline fn lookupLong(root: Entry, spill: []const Entry, bits: u64, comptime width: u4) Entry {
@@ -556,8 +574,8 @@ fn decodeClen(br: *BitReader, clen_tab: []const Entry) !u8 {
 }
 
 fn readDynLens(br: *BitReader, clen_tab: []const Entry, out: []u4) !void {
-    var i: usize = 0;
     var prev: u4 = 0;
+    var i = try @call(.never_inline, readDynLensFast, .{ br, clen_tab, out, &prev });
     while (i < out.len) {
         const s = try decodeClen(br, clen_tab);
         if (s <= 15) {
@@ -594,6 +612,52 @@ fn readDynLens(br: *BitReader, clen_tab: []const Entry, out: []u4) !void {
             }
         } else return error.BadHuffman;
     }
+}
+
+fn readDynLensFast(br: *BitReader, clen_tab: []const Entry, out: []u4, prev: *u4) DecodeError!usize {
+    const src = br.src;
+    var bits = br.bits;
+    var count = br.nbits;
+    var at = br.i;
+    var i: usize = 0;
+    defer {
+        br.bits = if (count < 64) bits & ((@as(u64, 1) << @intCast(count)) - 1) else bits;
+        br.nbits = count;
+        br.i = at;
+    }
+    while (i < out.len and src.len - at >= 8) {
+        if (count < 56) {
+            bits |= std.mem.readInt(u64, src[at..][0..8], .little) << @intCast(count);
+            at += (63 - count) >> 3;
+            count |= 56;
+        }
+        const e = clen_tab[@intCast(bits & ((1 << 7) - 1))];
+        if (e.kind == .invalid or e.kind == .long) return error.BadHuffman;
+        bits >>= @intCast(e.nbits);
+        count -= e.nbits;
+        if (e.payload <= 15) {
+            out[i] = @intCast(e.payload);
+            prev.* = @intCast(e.payload);
+            i += 1;
+            continue;
+        }
+        if (e.payload == 16 and i == 0) return error.BadHuffman;
+        const extra: u5, const base: usize, const value: u4 = switch (e.payload) {
+            16 => .{ 2, 3, prev.* },
+            17 => .{ 3, 3, 0 },
+            18 => .{ 7, 11, 0 },
+            else => return error.BadHuffman,
+        };
+        const n = base + @as(usize, @intCast(bits & ((@as(u64, 1) << extra) - 1)));
+        bits >>= extra;
+        count -= extra;
+        const fits = @min(n, out.len - i);
+        @memset(out[i..][0..fits], value);
+        i += fits;
+        if (fits < n) return error.BadHuffman;
+        prev.* = value;
+    }
+    return i;
 }
 
 fn predecode(entry: Entry) Entry {
@@ -691,8 +755,9 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), lit: []const Entry
 
 fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) DecodeError!Stop {
     const br = ctx.br;
+    var more = true;
     while (true) {
-        if (br.src.len - br.i < 8) {
+        if (more and br.src.len - br.i < 8) {
             if (br.nbits >= 10) {
                 const buffered = peekFirst(lit, 10, br.bits);
                 if (buffered.kind == .eob) {
@@ -700,9 +765,10 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
                     return .end;
                 }
             }
-            _ = try br.refill(8);
+            more = try br.refill(8);
         }
         if (try @call(.never_inline, decodeFast, .{ Check, ctx, lit, dist })) return .end;
+        if (ctx.out.len - ctx.out_pos < FAST_ROOM and try @call(.never_inline, decodeTail, .{ Check, ctx, lit, dist })) return .end;
         try br.fill(15);
         var e = peekFirst(lit, 10, br.bits);
         if (e.kind == .long) e = lookupLong(e, &ctx.tables.lit_spill, br.bits, 10);
@@ -734,6 +800,66 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), lit: []const Entry, di
             else => return error.BadSymbol,
         }
     }
+}
+
+fn decodeTail(comptime Check: type, ctx: *Session(Check), lit: []const Entry, dist: []const Entry) DecodeError!bool {
+    const br = ctx.br;
+    const input = br.src;
+    const output = ctx.out;
+    if (input.len - br.i < 8 or br.nbits >= 64) return false;
+    var bits = br.bits;
+    var count = br.nbits;
+    var at = br.i;
+    var out = ctx.out_pos;
+    const start = out;
+    const history = ctx.position() - ctx.stream_start;
+    defer {
+        br.bits = bits;
+        br.nbits = count;
+        br.i = at;
+        ctx.out_pos = out;
+    }
+    while (out < output.len and input.len - at >= 8) {
+        bits |= std.mem.readInt(u64, input[at..][0..8], .little) << @intCast(count);
+        at += 7 - (count >> 3);
+        count |= 56;
+        const symbol_bits = bits;
+        const symbol_count = count;
+        const symbol_at = at;
+        var e = lit[@intCast(bits & ((1 << 10) - 1))];
+        if (e.kind == .long) e = lookupLong(e, &ctx.tables.lit_spill, bits, 10);
+        if (e.kind == .invalid or e.kind == .dist) return error.BadSymbol;
+        bits >>= @intCast(e.nbits);
+        count -= e.nbits;
+        if (e.kind == .eob) return true;
+        if (e.kind == .lit) {
+            output[out] = @truncate(e.payload);
+            out += 1;
+            continue;
+        }
+        if (e.kind != .len) return error.BadSymbol;
+        const length: usize = e.payload + @as(usize, @intCast(bits & ((@as(u64, 1) << @intCast(e.extra)) - 1)));
+        bits >>= @intCast(e.extra);
+        count -= e.extra;
+        var d = dist[@intCast(bits & ((1 << 9) - 1))];
+        if (d.kind == .long) d = lookupLong(d, &ctx.tables.dist_spill, bits, 9);
+        if (d.kind != .dist) return error.BadSymbol;
+        bits >>= @intCast(d.nbits);
+        count -= d.nbits;
+        const distance: usize = d.payload + @as(usize, @intCast(bits & ((@as(u64, 1) << @intCast(d.extra)) - 1)));
+        bits >>= @intCast(d.extra);
+        count -= d.extra;
+        if (distance > history + (out - start)) return error.BadDistance;
+        if (length > output.len - out) {
+            bits = symbol_bits;
+            count = symbol_count;
+            at = symbol_at;
+            return false;
+        }
+        for (output[out..][0..length], out - distance..) |*byte, from| byte.* = output[from];
+        out += length;
+    }
+    return false;
 }
 
 const TestCheck = struct {
