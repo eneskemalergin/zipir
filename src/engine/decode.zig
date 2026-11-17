@@ -4,6 +4,8 @@
 //! bits, block state, and a match cut short by full storage carry over to the next `run`, and new bytes are in the
 //! check when `run` returns. Table entries, the table builder, and the decode loops follow libdeflate's decoder
 //! (MIT; its notice is in `LICENSE`): an 11-bit literal/length root and an 8-bit distance root with subtables.
+//! The owner of a `PairSession` that sets `pairs` before `begin` gets dynamic tables whose root entries also hold two
+//! literals where both codes fit the root. It pays when a table decodes many symbols; output and errors do not change.
 
 const std = @import("std");
 const copy = @import("../kernel/copy.zig");
@@ -45,6 +47,7 @@ const SUBTABLE: u32 = 0x4000;
 const END_OF_BLOCK: u32 = 0x2000;
 const RESERVED: u32 = 0x1000;
 const UNUSED: u32 = EXCEPTIONAL | RESERVED;
+const PAIR: u32 = 0x4000_0000;
 
 const lit_results: [288]u32 = blk: {
     var r: [288]u32 = undefined;
@@ -76,9 +79,9 @@ const FIXED_TABLES: FixedTables = fixedTables();
 fn fixedTables() FixedTables {
     @setEvalBranchQuota(1000000);
     var tables: FixedTables = undefined;
-    const lit_bits = buildTable(&tables.lit, &FIXED_LIT_LENS, &lit_results, 9, true) catch |err| @compileError(@errorName(err));
+    const lit_bits = buildTable(&tables.lit, &FIXED_LIT_LENS, &lit_results, 9, true, false) catch |err| @compileError(@errorName(err));
     std.debug.assert(lit_bits == 9);
-    _ = buildTable(&tables.dist, &FIXED_DIST_LENS, &dist_results, DIST_TABLEBITS, false) catch |err| @compileError(@errorName(err));
+    _ = buildTable(&tables.dist, &FIXED_DIST_LENS, &dist_results, DIST_TABLEBITS, false, false) catch |err| @compileError(@errorName(err));
     return tables;
 }
 
@@ -206,11 +209,17 @@ pub const BitReader = struct {
 
 const BATCH = 131072;
 
-pub const FAST_ROOM = 2 + 258 + 5 * 8 - 1;
+pub const FAST_ROOM = 4 + 258 + 5 * 8 - 1;
 
 const FAST_READ = (63 + 2 * LIT_TABLEBITS + 20 + 28 + 7) / 8 + 8;
 
 const TAIL_RUN = 16;
+
+const PAIRS_MIN_INPUT = 2048;
+
+pub fn pairsPay(compressed: usize, output: usize) bool {
+    return compressed >= PAIRS_MIN_INPUT and compressed *| 8 >= output;
+}
 
 pub const Tables = struct {
     lit: [LIT_ENOUGH]u32,
@@ -232,6 +241,14 @@ pub const Stop = enum { end, full };
 const Block = enum { header, stored, fixed, dynamic, end };
 
 pub fn Session(comptime Check: type) type {
+    return SessionOf(Check, false);
+}
+
+pub fn PairSession(comptime Check: type) type {
+    return SessionOf(Check, true);
+}
+
+fn SessionOf(comptime Check: type, comptime can_pair: bool) type {
     return struct {
         const Self = @This();
 
@@ -248,6 +265,7 @@ pub fn Session(comptime Check: type) type {
         max_stream_bytes: u64 = std.math.maxInt(u64),
         block: Block = .end,
         final: bool = false,
+        pairs: if (can_pair) bool else void = if (can_pair) false else {},
         stored_left: usize = 0,
         match_distance: usize = 0,
         match_left: usize = 0,
@@ -340,13 +358,17 @@ pub fn Session(comptime Check: type) type {
                     }
                     self.block = .header;
                 },
-                .fixed => switch (try decodeHuff(Check, self, FIXED_HUFF)) {
+                .fixed => switch (try decodeHuff(self, FIXED_HUFF, false)) {
                     .end => self.block = .header,
                     .full => return self.full(),
                 },
-                .dynamic => switch (try decodeHuff(Check, self, .{ .lit = &self.tables.lit, .dist = &self.tables.dist, .lit_mask = (@as(u64, 1) << @intCast(self.tables.lit_bits)) - 1 })) {
-                    .end => self.block = .header,
-                    .full => return self.full(),
+                .dynamic => {
+                    const h: Huff = .{ .lit = &self.tables.lit, .dist = &self.tables.dist, .lit_mask = (@as(u64, 1) << @intCast(self.tables.lit_bits)) - 1 };
+                    const stop = if (can_pair and self.pairs) try @call(.never_inline, decodeHuff, .{ self, h, true }) else try decodeHuff(self, h, false);
+                    switch (stop) {
+                        .end => self.block = .header,
+                        .full => return self.full(),
+                    }
                 },
                 .end => return .end,
             };
@@ -369,8 +391,11 @@ pub fn Session(comptime Check: type) type {
             const total_lens: usize = hlit + hdist;
             try readDynLens(br, clen_first[0..], lens[0..total_lens]);
             if (lens[256] == 0) return error.BadHuffman;
-            self.tables.lit_bits = try buildTable(&self.tables.lit, lens[0..hlit], &lit_results, LIT_TABLEBITS, true);
-            _ = try buildTable(&self.tables.dist, lens[hlit..total_lens], &dist_results, DIST_TABLEBITS, false);
+            self.tables.lit_bits = if (can_pair and self.pairs)
+                try @call(.never_inline, buildTable, .{ &self.tables.lit, lens[0..hlit], &lit_results, LIT_TABLEBITS, true, true })
+            else
+                try buildTable(&self.tables.lit, lens[0..hlit], &lit_results, LIT_TABLEBITS, true, false);
+            _ = try buildTable(&self.tables.dist, lens[hlit..total_lens], &dist_results, DIST_TABLEBITS, false, false);
         }
 
         fn catchup(self: *Self) void {
@@ -443,7 +468,20 @@ fn fillFirst(table: []Entry, width: u4, lens: []const u4) !void {
     }
 }
 
-fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bits: u32, comptime shrink: bool) error{BadHuffman}!u32 {
+fn addPairs(table: []u32, lits: *const [256]u32, starts: *const [17]u16, span: u32) void {
+    var first_len: u32 = 1;
+    while (first_len < span) : (first_len += 1) {
+        const second_len = span - first_len;
+        for (lits[starts[first_len]..starts[first_len + 1]]) |first| {
+            const entry = LITERAL | PAIR | (first_len << 24) | (first & 0xff_0000) | span;
+            for (lits[starts[second_len]..starts[second_len + 1]]) |second| {
+                table[(first & 0xffff) | ((second & 0xffff) << @intCast(first_len))] = entry | ((second >> 8) & 0xff00);
+            }
+        }
+    }
+}
+
+fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bits: u32, comptime shrink: bool, comptime pairs: bool) error{BadHuffman}!u32 {
     var counts: [16]u32 = @splat(0);
     for (lens) |len| counts[len] += 1;
     var max_len: u32 = 15;
@@ -489,14 +527,31 @@ fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bi
         count = counts[len];
     }
     var end: u32 = @as(u32, 1) << @intCast(len);
+    var lits: [256]u32 = undefined;
+    var lit_starts: [17]u16 = @splat(0);
+    var lit_count: u16 = 0;
     while (len <= table_bits) {
         while (true) {
-            table[codeword] = results[sorted[0]] + (len << 8) + len;
+            const result = results[sorted[0]];
+            table[codeword] = result + (len << 8) + len;
+            if (pairs and result & LITERAL != 0) {
+                lits[lit_count] = codeword | (result & 0xff_0000);
+                lit_count += 1;
+            }
             sorted = sorted[1..];
             if (codeword == end - 1) {
-                while (len < table_bits) : (len += 1) {
+                if (pairs) {
+                    lit_starts[len + 1] = lit_count;
+                    addPairs(table, &lits, &lit_starts, len);
+                }
+                while (len < table_bits) {
                     @memcpy(table[end..][0..end], table[0..end]);
                     end <<= 1;
+                    len += 1;
+                    if (pairs) {
+                        lit_starts[len + 1] = lit_count;
+                        addPairs(table, &lits, &lit_starts, len);
+                    }
                 }
                 return table_bits;
             }
@@ -504,6 +559,10 @@ fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bi
             codeword = (codeword & (bit - 1)) | bit;
             count -= 1;
             if (count == 0) break;
+        }
+        if (pairs) {
+            lit_starts[len + 1] = lit_count;
+            addPairs(table, &lits, &lit_starts, len);
         }
         while (true) {
             len += 1;
@@ -513,6 +572,10 @@ fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bi
             }
             count = counts[len];
             if (count != 0) break;
+            if (pairs and len <= table_bits) {
+                lit_starts[len + 1] = lit_count;
+                addPairs(table, &lits, &lit_starts, len);
+            }
         }
     }
     const root_mask = (@as(u32, 1) << @intCast(table_bits)) - 1;
@@ -533,7 +596,8 @@ fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bi
             if (end > table.len) return error.BadHuffman;
             table[prefix] = (start << 16) | EXCEPTIONAL | SUBTABLE | (sub_bits << 8) | table_bits;
         }
-        const entry = results[sorted[0]] + ((len - table_bits) << 8) + (len - table_bits);
+        const result = results[sorted[0]];
+        const entry = result + ((len - table_bits) << 8) + (len - table_bits);
         sorted = sorted[1..];
         const stride = @as(u32, 1) << @intCast(len - table_bits);
         var k = start + (codeword >> @intCast(table_bits));
@@ -657,12 +721,26 @@ inline fn subtableEntry(table: [*]const u32, entry: u32, bits: u64) u32 {
     return table[(entry >> 16) + @as(u32, @intCast(varbits(bits, (entry >> 8) & 0x3f)))];
 }
 
-fn decodeFast(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!bool {
-    if (ctx.position() - ctx.stream_start >= WINDOW) return decodeFastImpl(Check, ctx, h, true);
-    return decodeFastImpl(Check, ctx, h, false);
+inline fn putLiteral(out: [*]u8, entry: anytype, comptime pairs: bool) [*]u8 {
+    if (!pairs) {
+        out[0] = entry;
+        return out + 1;
+    }
+    std.mem.writeInt(u16, out[0..2], @truncate(entry >> 8), .big);
+    return out + (entry >> 30) - 1;
 }
 
-fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), h: Huff, comptime full_history: bool) DecodeError!bool {
+fn decodeFast(ctx: anytype, h: Huff) DecodeError!bool {
+    if (ctx.position() - ctx.stream_start >= WINDOW) return decodeFastImpl(ctx, h, true, false);
+    return decodeFastImpl(ctx, h, false, false);
+}
+
+fn decodeFastPairs(ctx: anytype, h: Huff) DecodeError!bool {
+    if (ctx.position() - ctx.stream_start >= WINDOW) return decodeFastImpl(ctx, h, true, true);
+    return decodeFastImpl(ctx, h, false, true);
+}
+
+fn decodeFastImpl(ctx: anytype, h: Huff, comptime full_history: bool, comptime pairs: bool) DecodeError!bool {
     const br = ctx.br;
     const output = ctx.out;
     const input = br.src;
@@ -678,6 +756,7 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), h: Huff, comptime 
     const lit = h.lit;
     const dist = h.dist;
     const mask = h.lit_mask;
+    const Held = if (pairs) u32 else u8;
     defer {
         br.bits = bitbuf;
         br.nbits = bitsleft & 0xff;
@@ -693,29 +772,26 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), h: Huff, comptime 
         bitbuf >>= @as(u6, @truncate(entry));
         bitsleft -%= entry;
         if (entry & LITERAL != 0) {
-            var byte: u8 = @truncate(entry >> 16);
+            var literal: Held = if (pairs) entry else @truncate(entry >> 16);
             entry = lit[@intCast(bitbuf & mask)];
             saved = bitbuf;
             bitbuf >>= @as(u6, @truncate(entry));
             bitsleft -%= entry;
-            out[0] = byte;
-            out += 1;
+            out = putLiteral(out, literal, pairs);
             if (entry & LITERAL != 0) {
-                byte = @truncate(entry >> 16);
+                literal = if (pairs) entry else @truncate(entry >> 16);
                 entry = lit[@intCast(bitbuf & mask)];
                 saved = bitbuf;
                 bitbuf >>= @as(u6, @truncate(entry));
                 bitsleft -%= entry;
-                out[0] = byte;
-                out += 1;
+                out = putLiteral(out, literal, pairs);
                 if (entry & LITERAL != 0) {
-                    byte = @truncate(entry >> 16);
+                    literal = if (pairs) entry else @truncate(entry >> 16);
                     entry = lit[@intCast(bitbuf & mask)];
                     bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
                     in += 7 - ((bitsleft >> 3) & 7);
                     bitsleft |= 56;
-                    out[0] = byte;
-                    out += 1;
+                    out = putLiteral(out, literal, pairs);
                     continue;
                 }
             }
@@ -820,36 +896,37 @@ fn decodeFastImpl(comptime Check: type, ctx: *Session(Check), h: Huff, comptime 
 
 const Code = struct { entry: u32, bits: u32, ok: bool };
 
-fn lookupCareful(table: [*]const u32, mask: u64, main_bits: u32, bits: u64) Code {
+fn lookupCareful(table: [*]const u32, mask: u64, main_bits: u32, bits: u64, comptime pairs: bool) Code {
     var entry = table[@intCast(bits & mask)];
     var used: u32 = 0;
-    if (entry & SUBTABLE != 0) {
+    if (if (pairs) entry & (LITERAL | SUBTABLE) == SUBTABLE else entry & SUBTABLE != 0) {
         used = main_bits;
         entry = subtableEntry(table, entry, bits >> @as(u6, @truncate(main_bits)));
     }
+    if (pairs and entry & LITERAL != 0) return .{ .entry = entry, .bits = used + ((entry >> @as(u5, @intCast(8 + ((entry >> 26) & 16)))) & 0xf), .ok = true };
     if (entry & EXCEPTIONAL != 0 and entry & END_OF_BLOCK == 0) return .{ .entry = entry, .bits = 0, .ok = false };
     return .{ .entry = entry, .bits = used + ((entry >> 8) & 0xf), .ok = true };
 }
 
-fn decodeHuff(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!Stop {
+fn decodeHuff(ctx: anytype, h: Huff, comptime pairs: bool) DecodeError!Stop {
     const br = ctx.br;
     const lit_bits: u32 = @intCast(@popCount(h.lit_mask));
     var more = true;
     while (true) {
         if (more and br.src.len - br.i < 8) {
             if (br.nbits >= 1) {
-                const code = lookupCareful(h.lit, h.lit_mask, lit_bits, br.bits);
-                if (code.ok and code.entry & END_OF_BLOCK != 0 and code.bits <= br.nbits) {
+                const code = lookupCareful(h.lit, h.lit_mask, lit_bits, br.bits, pairs);
+                if (code.ok and (if (pairs) code.entry & (LITERAL | END_OF_BLOCK) == END_OF_BLOCK else code.entry & END_OF_BLOCK != 0) and code.bits <= br.nbits) {
                     br.consume(code.bits);
                     return .end;
                 }
             }
             more = try br.refill(8);
         }
-        if (try @call(.never_inline, decodeFast, .{ Check, ctx, h })) return .end;
-        if (try @call(.never_inline, decodeTail, .{ Check, ctx, h })) return .end;
+        if (try @call(.never_inline, if (pairs) decodeFastPairs else decodeFast, .{ ctx, h })) return .end;
+        if (try @call(.never_inline, decodeTail, .{ ctx, h, pairs })) return .end;
         try br.fill(15);
-        const code = lookupCareful(h.lit, h.lit_mask, lit_bits, br.bits);
+        const code = lookupCareful(h.lit, h.lit_mask, lit_bits, br.bits, pairs);
         if (br.nbits < 15 and (!code.ok or code.bits > br.nbits)) return error.Truncated;
         if (!code.ok) return error.BadSymbol;
         const entry = code.entry;
@@ -869,7 +946,7 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!S
         const add = if (extra != 0) try br.get(extra) else 0;
         const length: usize = (entry >> 16) + add;
         try br.fill(15);
-        const d = lookupCareful(h.dist, 0xff, DIST_TABLEBITS, br.bits);
+        const d = lookupCareful(h.dist, 0xff, DIST_TABLEBITS, br.bits, false);
         if (br.nbits < 15 and (!d.ok or d.bits > br.nbits)) return error.Truncated;
         if (!d.ok) return error.BadSymbol;
         br.consume(d.bits);
@@ -879,7 +956,7 @@ fn decodeHuff(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!S
     }
 }
 
-fn decodeTail(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!bool {
+fn decodeTail(ctx: anytype, h: Huff, comptime pairs: bool) DecodeError!bool {
     const br = ctx.br;
     const input = br.src;
     const output = ctx.out;
@@ -904,7 +981,7 @@ fn decodeTail(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!b
         const symbol_bits = bitbuf;
         const symbol_left = bitsleft;
         const symbol_in = in;
-        const code = lookupCareful(h.lit, h.lit_mask, lit_bits, bitbuf);
+        const code = lookupCareful(h.lit, h.lit_mask, lit_bits, bitbuf, pairs);
         if (!code.ok) return error.BadSymbol;
         const entry = code.entry;
         if (entry & LITERAL != 0) {
@@ -925,7 +1002,7 @@ fn decodeTail(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!b
         const length: usize = (entry >> 16) + @as(u32, @intCast(varbits(bitbuf, extra)));
         bitbuf >>= @as(u6, @truncate(extra));
         bitsleft -%= extra;
-        const d = lookupCareful(h.dist, 0xff, DIST_TABLEBITS, bitbuf);
+        const d = lookupCareful(h.dist, 0xff, DIST_TABLEBITS, bitbuf, false);
         if (!d.ok) return error.BadSymbol;
         bitbuf >>= @as(u6, @truncate(d.bits));
         bitsleft -%= d.bits;
@@ -978,7 +1055,7 @@ test {
 fn resolve(table: []const u32, table_bits: u32, bits: u64) struct { entry: u32, len: u32 } {
     var entry = table[@intCast(bits & ((@as(u64, 1) << @intCast(table_bits)) - 1))];
     var used: u32 = 0;
-    if (entry & SUBTABLE != 0) {
+    if (entry & (LITERAL | SUBTABLE) == SUBTABLE) {
         used = table_bits;
         entry = subtableEntry(table.ptr, entry, bits >> @intCast(table_bits));
     }
@@ -988,7 +1065,7 @@ fn resolve(table: []const u32, table_bits: u32, bits: u64) struct { entry: u32, 
 fn tableUse(table: []const u32, table_bits: u32) usize {
     var used: usize = @as(usize, 1) << @intCast(table_bits);
     for (table[0..used]) |entry| {
-        if (entry & SUBTABLE != 0) used = @max(used, (entry >> 16) + (@as(usize, 1) << @intCast((entry >> 8) & 0xf)));
+        if (entry & (LITERAL | SUBTABLE) == SUBTABLE) used = @max(used, (entry >> 16) + (@as(usize, 1) << @intCast((entry >> 8) & 0xf)));
     }
     return used;
 }
@@ -1021,7 +1098,7 @@ test "[property] - [deflate tables]: rejected trees leave the table as it was" {
     const sentinel: u32 = 0x5a5a_a5a5;
     for ([_][]const u4{ &.{ 1, 1, 1 }, &.{ 2, 2, 2 }, &.{ 1, 2, 2, 2 }, &.{2} }) |lens| {
         var table: [LIT_ENOUGH]u32 = @splat(sentinel);
-        try std.testing.expectError(error.BadHuffman, buildTable(&table, lens, &lit_results, LIT_TABLEBITS, true));
+        try std.testing.expectError(error.BadHuffman, buildTable(&table, lens, &lit_results, LIT_TABLEBITS, true, false));
         for (table) |entry| try std.testing.expectEqual(sentinel, entry);
     }
 }
@@ -1034,7 +1111,7 @@ test "[property] - [deflate tables]: every code resolves to its canonical symbol
         for (0..2) |single| {
             @memset(&lens, 0);
             lens[0] = @intCast(single);
-            const bits = try buildTable(&table, &lens, results, c[1], c[3]);
+            const bits = try buildTable(&table, &lens, results, c[1], c[3], false);
             for (table[0 .. @as(usize, 1) << @intCast(bits)], 0..) |entry, prefix| {
                 const want: u32 = if (single != 0 and prefix & 1 == 0) results[0] + (1 << 8) + 1 else UNUSED;
                 try std.testing.expectEqual(want, entry);
@@ -1061,12 +1138,54 @@ test "[property] - [deflate tables]: every code resolves to its canonical symbol
                 lens[count] = lens[selected];
                 count += 1;
                 if (count <= 17 or count % 32 == 0 or count == c[0]) {
-                    const bits = try buildTable(&table, &lens, results, c[1], c[3]);
+                    const bits = try buildTable(&table, &lens, results, c[1], c[3], false);
                     try std.testing.expect(tableUse(&table, bits) <= c[2]);
                     try expectCanonical(&table, bits, &lens, results);
                 }
             }
         }
+    }
+}
+
+fn expectPairs(plain: []const u32, paired: []const u32, table_bits: u32) !void {
+    const size = @as(usize, 1) << @intCast(table_bits);
+    try std.testing.expectEqualSlices(u32, plain[size..tableUse(plain, table_bits)], paired[size..tableUse(plain, table_bits)]);
+    for (plain[0..size], paired[0..size], 0..) |first, got, index| {
+        var want = first;
+        if (first & LITERAL != 0) {
+            const first_len = first & 0xff;
+            const second = plain[index >> @intCast(first_len)];
+            if (second & LITERAL != 0 and first_len + (second & 0xff) <= table_bits) {
+                want = LITERAL | PAIR | (first_len << 24) | (first & 0xff_0000) | ((second >> 8) & 0xff00) | (first_len + (second & 0xff));
+            }
+        }
+        try std.testing.expectEqual(want, got);
+    }
+}
+
+test "[property] - [deflate tables]: a root entry holds two literals exactly where both codes fit the root" {
+    var lens: [288]u4 = @splat(0);
+    var plain: [LIT_ENOUGH]u32 = undefined;
+    var paired: [LIT_ENOUGH]u32 = undefined;
+    for (0..48) |trial| {
+        @memset(&lens, 0);
+        var random = std.Random.DefaultPrng.init(0x9a1 + trial);
+        lens[0] = 1;
+        lens[1] = 1;
+        var count: usize = 2;
+        const symbols: usize = if (trial % 3 == 0) 40 else 288;
+        while (count < symbols) : (count += 1) {
+            var selected = random.random().uintLessThan(usize, count);
+            if (trial % 4 == 1) selected = count - 1;
+            while (lens[selected] == 15) selected = (selected + 1) % count;
+            lens[selected] += 1;
+            lens[count] = lens[selected];
+        }
+        random.random().shuffle(u4, lens[0..symbols]);
+        const bits = try buildTable(&plain, &lens, &lit_results, LIT_TABLEBITS, true, false);
+        try std.testing.expectEqual(bits, try buildTable(&paired, &lens, &lit_results, LIT_TABLEBITS, true, true));
+        try expectCanonical(&plain, bits, &lens, &lit_results);
+        try expectPairs(&plain, &paired, bits);
     }
 }
 
@@ -1092,7 +1211,7 @@ test "[property] - [deflate tables]: the deepest complete codes stay within the 
         try std.testing.expectEqual(c.alphabet, n);
         var table: [if (c.lit) LIT_ENOUGH else DIST_ENOUGH]u32 = undefined;
         const results: []const u32 = if (c.lit) &lit_results else &dist_results;
-        const bits = try buildTable(&table, &lens, results, if (c.lit) LIT_TABLEBITS else DIST_TABLEBITS, c.lit);
+        const bits = try buildTable(&table, &lens, results, if (c.lit) LIT_TABLEBITS else DIST_TABLEBITS, c.lit, false);
         try std.testing.expect(tableUse(&table, bits) <= table.len);
         try expectCanonical(&table, bits, &lens, results);
     }
@@ -1129,7 +1248,7 @@ const SumCheck = struct {
     }
 };
 
-fn pumpSession(session: *Session(SumCheck), size: usize, expected: []const u8) !void {
+fn pumpSession(session: *PairSession(SumCheck), size: usize, expected: []const u8) !void {
     var seek: usize = 0;
     var got: usize = 0;
     var stop = try session.run();
@@ -1174,12 +1293,13 @@ test "[property] - [deflate decoder]: paused decoding returns the stream at ever
         var writer = std.Io.Writer.fixed(compressed);
         var encode_check: TestCheck = .{};
         try encoder.encodeSlice(TestCheck, plain, &writer, &encode_check, preset, false);
-        for ([_]usize{ 1, 7, 4093, 65536, 1 << 20 }) |size| {
+        for ([_]usize{ 1, 7, 4093, 65536, 1 << 20, 6, 4094, 65537 }, 0..) |size, case| {
             if (size == 1 and preset != .even) continue;
             var reader = std.Io.Reader.fixed(writer.buffered());
             var br: BitReader = .{ .reader = &reader };
             var check: SumCheck = .{};
-            var session: Session(SumCheck) = .{ .tables = &decoder.tables, .storage = &decoder.buffer, .max_output_bytes = std.math.maxInt(u64) };
+            var session: PairSession(SumCheck) = .{ .tables = &decoder.tables, .storage = &decoder.buffer, .max_output_bytes = std.math.maxInt(u64) };
+            session.pairs = case % 2 == 1 or case >= 5;
             session.begin(&br, &check);
             try pumpSession(&session, size, plain);
             try std.testing.expectEqual(@as(u64, plain.len), session.position());
@@ -1189,13 +1309,65 @@ test "[property] - [deflate decoder]: paused decoding returns the stream at ever
             var reader = std.Io.Reader.fixed(writer.buffered());
             var br: BitReader = .{ .reader = &reader };
             var check: SumCheck = .{};
-            var session: Session(SumCheck) = .{ .tables = &decoder.tables, .storage = &decoder.buffer, .max_output_bytes = max };
+            var session: PairSession(SumCheck) = .{ .tables = &decoder.tables, .storage = &decoder.buffer, .max_output_bytes = max };
+            session.pairs = preset != .fast;
             session.begin(&br, &check);
             if (max == plain.len) {
                 try pumpSession(&session, 65536, plain);
             } else {
                 try std.testing.expectError(error.OutputLimitExceeded, pumpSession(&session, 65536, plain));
             }
+        }
+    }
+}
+
+test "[property] - [deflate decoder]: damaged streams decode or fail the same with and without pairs" {
+    const allocator = std.testing.allocator;
+    const decoders = try allocator.create([2]Decoder);
+    defer allocator.destroy(decoders);
+    const encoder = try allocator.create(encode.Encoder);
+    defer allocator.destroy(encoder);
+    var plain: [90_000]u8 = undefined;
+    var random = std.Random.DefaultPrng.init(0x7a1c);
+    for (&plain, 0..) |*b, i| b.* = switch ((i / 15_000) % 3) {
+        0 => "ACGTTGCA\n"[(i * i / 3 + i / 11) % 9],
+        1 => @truncate(i / 300),
+        else => random.random().uintLessThan(u8, 40) + '!',
+    };
+    const compressed = try allocator.alloc(u8, plain.len + 4096);
+    defer allocator.free(compressed);
+    const damaged = try allocator.alloc(u8, plain.len + 4096);
+    defer allocator.free(damaged);
+    for ([_]encode.Preset{ .fast, .even, .dense }) |preset| {
+        var writer = std.Io.Writer.fixed(compressed);
+        var encode_check: TestCheck = .{};
+        try encoder.encodeSlice(TestCheck, &plain, &writer, &encode_check, preset, false);
+        const stream = writer.buffered();
+        for (0..300) |trial| {
+            @memcpy(damaged[0..stream.len], stream);
+            var input: []u8 = damaged[0..stream.len];
+            switch (trial % 3) {
+                0 => {},
+                1 => input[random.random().uintLessThan(usize, input.len)] ^= @as(u8, 1) << random.random().int(u3),
+                else => input = input[0..random.random().uintLessThan(usize, input.len)],
+            }
+            var results: [2]struct { failure: ?DecodeError, stop: Stop, len: usize } = undefined;
+            for (&results, decoders, 0..) |*result, *decoder, pairs| {
+                var reader = std.Io.Reader.fixed(input);
+                var br: BitReader = .{ .reader = &reader };
+                var check: TestCheck = .{};
+                var session: PairSession(TestCheck) = .{ .tables = &decoder.tables, .storage = &decoder.buffer, .max_output_bytes = std.math.maxInt(u64) };
+                session.pairs = pairs == 1;
+                session.begin(&br, &check);
+                result.* = .{ .failure = null, .stop = .end, .len = 0 };
+                if (session.run()) |stop| {
+                    result.stop = stop;
+                } else |err| result.failure = err;
+                result.len = session.out_pos;
+            }
+            try std.testing.expectEqual(results[0], results[1]);
+            try std.testing.expectEqualSlices(u8, decoders[0].buffer[0..results[0].len], decoders[1].buffer[0..results[1].len]);
+            if (trial % 3 == 0) try std.testing.expectEqualSlices(u8, &plain, decoders[1].buffer[0..results[1].len]);
         }
     }
 }
@@ -1258,7 +1430,7 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
                 .out_pos = WINDOW,
                 .max_output_bytes = std.math.maxInt(u64),
             };
-            const ended = try decodeFastImpl(TestCheck, &ctx, FIXED_HUFF, false);
+            const ended = try decodeFastImpl(&ctx, FIXED_HUFF, false, false);
             const written = ctx.out_pos - WINDOW;
             try std.testing.expect(written <= length and written <= room);
             if (ended) try std.testing.expectEqual(length, written);
@@ -1320,7 +1492,7 @@ test "[property] - [deflate decoder]: tail matches of every short distance equal
                     .out_pos = WINDOW,
                     .max_output_bytes = std.math.maxInt(u64),
                 };
-                try std.testing.expectEqual(spare != 0, try decodeTail(TestCheck, &ctx, FIXED_HUFF));
+                try std.testing.expectEqual(spare != 0, try decodeTail(&ctx, FIXED_HUFF, false));
                 try std.testing.expectEqual(WINDOW + total, ctx.out_pos);
                 try std.testing.expectEqual(if (spare != 0) position else position - 7, br.i * 8 - br.nbits);
                 try std.testing.expectEqualSlices(u8, expected[WINDOW..][0..total], decoder.buffer[WINDOW..][0..total]);
@@ -1365,7 +1537,7 @@ test "[edge] - [deflate decoder]: lookahead retains unread bits after a maximum-
             .out_pos = WINDOW,
             .max_output_bytes = std.math.maxInt(u64),
         };
-        try std.testing.expect(try decodeFastImpl(TestCheck, &ctx, h, true));
+        try std.testing.expect(try decodeFastImpl(&ctx, h, true, false));
         try std.testing.expectEqual(WINDOW + 259, ctx.out_pos);
         try std.testing.expectEqual(consumed, br.i * 8 - br.nbits);
         try std.testing.expectEqualSlices(u8, decoder.buffer[0..258], decoder.buffer[WINDOW..][0..258]);

@@ -134,7 +134,8 @@ pub const BlockDecoder = struct {
         var br: decode.BitReader = .{ .reader = &reader };
         const header = try readBlockHeader(&br);
         var check: crc.Crc32 = .init();
-        var session: decode.Session(crc.Crc32) = .{ .tables = &self.tables, .storage = &self.buffer, .max_output_bytes = std.math.maxInt(u64) };
+        var session: decode.PairSession(crc.Crc32) = .{ .tables = &self.tables, .storage = &self.buffer, .max_output_bytes = std.math.maxInt(u64) };
+        session.pairs = decode.pairsPay(block.len, std.mem.readInt(u32, block[block.len - 4 ..][0..4], .little));
         session.begin(&br, &check);
         if (try session.run() == .full) return error.BlockTooLarge;
         const size = session.out_pos;
@@ -150,7 +151,8 @@ pub const BlockDecoder = struct {
         var br: decode.BitReader = .{ .reader = &reader };
         const header = try readBlockHeader(&br);
         var check: crc.Crc32 = .init();
-        var session: decode.Session(crc.Crc32) = .{ .tables = &self.tables, .storage = out, .max_output_bytes = std.math.maxInt(u64) };
+        var session: decode.PairSession(crc.Crc32) = .{ .tables = &self.tables, .storage = out, .max_output_bytes = std.math.maxInt(u64) };
+        session.pairs = decode.pairsPay(block.len, std.mem.readInt(u32, block[block.len - 4 ..][0..4], .little));
         session.begin(&br, &check);
         if (try session.run() == .full) return error.BlockTooLarge;
         const size = session.out_pos;
@@ -502,6 +504,10 @@ const DecompressFraming = struct {
         if (self.blocks == 0) self.first_size = size;
         self.blocks += 1;
         self.eof_marker = self.current.marker;
+    }
+
+    pub fn pairs(self: *const DecompressFraming) bool {
+        return decode.pairsPay(@intCast(self.current.block_size), MAX_BLOCK);
     }
 
     pub fn streamError(self: *const DecompressFraming, err: format.DecompressError, start: u64) format.DecompressError {

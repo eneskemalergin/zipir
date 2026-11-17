@@ -1,9 +1,9 @@
 //! The `std.Io.Reader` every decompressor is: decoded bytes are read from the workspace's own buffer. A `Framing`
 //! declares `Check`, `DecompressOptions` (with `trailing_data`), `DecompressError`, `min_input_buffer`, `init`,
 //! `header` (true when a stream follows), and `trailer`. One with `max_stream_bytes` decodes each stream whole before
-//! it is readable and may declare `streamError`, `VirtualOffset` and a `seeking` field (`seek`, `seekUncompressed`,
-//! `tell`). An input reader whose buffer is under `min_input_buffer` is read through a staging buffer in the workspace,
-//! which may take bytes past the stream from it, so with `trailing_data = .leave` it is `InputBufferTooSmall`.
+//! it is readable and may declare `streamError`, `pairs` (asked after each `header`), `VirtualOffset` and a `seeking`
+//! field (`seek`, `seekUncompressed`, `tell`). An input reader whose buffer is under `min_input_buffer` is read through
+//! a staging buffer in the workspace, which may take bytes past the stream; with `.leave` it is `InputBufferTooSmall`.
 //! `SliceDecoder` decodes one complete stream from a slice into the caller's `output`, which is also the history, and
 //! returns its Framing's `SliceError`, which leaves out the reader's errors; `output` past the returned length, and all
 //! of it after an error, is unspecified, and it must not overlap `input` (asserted). Outputs under `SMALL_OUTPUT` (16
@@ -39,7 +39,7 @@ pub fn Decompressor(comptime Framing: type) type {
         decoder: engine.Decoder align(8),
         input: *std.Io.Reader,
         staging: Staging,
-        session: engine.Session(Check),
+        session: if (@hasDecl(Framing, "pairs")) engine.PairSession(Check) else engine.Session(Check),
         br: engine.BitReader,
         check: Check,
         phase: Phase,
@@ -173,6 +173,7 @@ pub fn Decompressor(comptime Framing: type) type {
                             break;
                         }
                         self.check = Check.init();
+                        if (@hasDecl(Framing, "pairs")) self.session.pairs = self.framing.pairs();
                         self.session.begin(&self.br, &self.check);
                         self.phase = .body;
                     },
