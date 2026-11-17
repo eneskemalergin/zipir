@@ -217,6 +217,15 @@ const TAIL_RUN = 16;
 
 const PAIRS_MIN_INPUT = 2048;
 
+const RUN_SLACK = 144;
+
+const REVERSED: [1 << LIT_TABLEBITS]u16 = blk: {
+    @setEvalBranchQuota(100000);
+    var r: [1 << LIT_TABLEBITS]u16 = undefined;
+    for (&r, 0..) |*e, i| e.* = @bitReverse(@as(u16, i)) >> (16 - LIT_TABLEBITS);
+    break :blk r;
+};
+
 pub fn pairsPay(compressed: usize, output: usize) bool {
     return compressed >= PAIRS_MIN_INPUT and compressed *| 8 >= output;
 }
@@ -387,7 +396,7 @@ fn SessionOf(comptime Check: type, comptime can_pair: bool) type {
             }
             var clen_first: [1 << 7]Entry = undefined;
             try fillFirst(clen_first[0..], 7, clens[0..19]);
-            var lens: [318]u4 = undefined;
+            var lens: [318 + RUN_SLACK]u4 = undefined;
             const total_lens: usize = hlit + hdist;
             try readDynLens(br, clen_first[0..], lens[0..total_lens]);
             if (lens[256] == 0) return error.BadHuffman;
@@ -482,26 +491,41 @@ fn addPairs(table: []u32, lits: *const [256]u32, starts: *const [17]u16, span: u
 }
 
 fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bits: u32, comptime shrink: bool, comptime pairs: bool) error{BadHuffman}!u32 {
-    var counts: [16]u32 = @splat(0);
-    for (lens) |len| counts[len] += 1;
+    var quarter_counts: [4][16]u32 = @splat(@splat(0));
+    const quarter = lens.len / 4;
+    for (0..quarter) |i| {
+        inline for (0..4) |k| quarter_counts[k][lens[k * quarter + i]] += 1;
+    }
+    for (lens[4 * quarter ..]) |len| quarter_counts[3][len] += 1;
+    var counts: [16]u32 = undefined;
+    for (&counts, 0..) |*count, len| count.* = quarter_counts[0][len] + quarter_counts[1][len] + quarter_counts[2][len] + quarter_counts[3][len];
     var max_len: u32 = 15;
     while (max_len > 1 and counts[max_len] == 0) max_len -= 1;
     const table_bits = if (shrink) @min(max_table_bits, max_len) else max_table_bits;
-    var offsets: [16]u32 = undefined;
-    offsets[0] = 0;
-    offsets[1] = counts[0];
     var used: u32 = 0;
     var len: u32 = 1;
-    while (len < max_len) : (len += 1) {
-        offsets[len + 1] = offsets[len] + counts[len];
-        used = (used << 1) + counts[len];
-    }
+    while (len < max_len) : (len += 1) used = (used << 1) + counts[len];
     used = (used << 1) + counts[len];
     if (used > (@as(u32, 1) << @intCast(max_len))) return error.BadHuffman;
+    var next: [4][16]u32 = undefined;
+    var placed: u32 = 0;
+    for (0..16) |l| {
+        inline for (0..4) |k| {
+            next[k][l] = placed;
+            placed += quarter_counts[k][l];
+        }
+    }
     var sorted_buf: [288]u16 = undefined;
-    for (lens, 0..) |l, symbol| {
-        sorted_buf[offsets[l]] = @intCast(symbol);
-        offsets[l] += 1;
+    for (0..quarter) |i| {
+        inline for (0..4) |k| {
+            const l = lens[k * quarter + i];
+            sorted_buf[next[k][l]] = @intCast(k * quarter + i);
+            next[k][l] += 1;
+        }
+    }
+    for (lens[4 * quarter ..], 4 * quarter..) |l, symbol| {
+        sorted_buf[next[3][l]] = @intCast(symbol);
+        next[3][l] += 1;
     }
     var sorted: []const u16 = sorted_buf[counts[0]..];
     const size = @as(usize, 1) << @intCast(table_bits);
@@ -519,7 +543,7 @@ fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bi
         }
         return table_bits;
     }
-    var codeword: u32 = 0;
+    var code: u32 = 0;
     len = 1;
     var count = counts[len];
     while (count == 0) {
@@ -531,41 +555,37 @@ fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bi
     var lit_starts: [17]u16 = @splat(0);
     var lit_count: u16 = 0;
     while (len <= table_bits) {
-        while (true) {
-            const result = results[sorted[0]];
-            table[codeword] = result + (len << 8) + len;
+        const down: u4 = @intCast(LIT_TABLEBITS - len);
+        for (sorted[0..count]) |symbol| {
+            const result = results[symbol];
+            const reversed = REVERSED[code] >> down;
+            table[reversed] = result + (len << 8) + len;
             if (pairs and result & LITERAL != 0) {
-                lits[lit_count] = codeword | (result & 0xff_0000);
+                lits[lit_count] = reversed | (result & 0xff_0000);
                 lit_count += 1;
             }
-            sorted = sorted[1..];
-            if (codeword == end - 1) {
-                if (pairs) {
-                    lit_starts[len + 1] = lit_count;
-                    addPairs(table, &lits, &lit_starts, len);
-                }
-                while (len < table_bits) {
-                    @memcpy(table[end..][0..end], table[0..end]);
-                    end <<= 1;
-                    len += 1;
-                    if (pairs) {
-                        lit_starts[len + 1] = lit_count;
-                        addPairs(table, &lits, &lit_starts, len);
-                    }
-                }
-                return table_bits;
-            }
-            const bit = @as(u32, 1) << @intCast(31 - @clz(codeword ^ (end - 1)));
-            codeword = (codeword & (bit - 1)) | bit;
-            count -= 1;
-            if (count == 0) break;
+            code += 1;
         }
+        sorted = sorted[count..];
         if (pairs) {
             lit_starts[len + 1] = lit_count;
             addPairs(table, &lits, &lit_starts, len);
         }
+        if (code == end) {
+            while (len < table_bits) {
+                @memcpy(table[end..][0..end], table[0..end]);
+                end <<= 1;
+                len += 1;
+                if (pairs) {
+                    lit_starts[len + 1] = lit_count;
+                    addPairs(table, &lits, &lit_starts, len);
+                }
+            }
+            return table_bits;
+        }
         while (true) {
             len += 1;
+            code <<= 1;
             if (len <= table_bits) {
                 @memcpy(table[end..][0..end], table[0..end]);
                 end <<= 1;
@@ -578,6 +598,7 @@ fn buildTable(table: []u32, lens: []const u4, results: []const u32, max_table_bi
             }
         }
     }
+    var codeword: u32 = @bitReverse(code) >> @intCast(32 - len);
     const root_mask = (@as(u32, 1) << @intCast(table_bits)) - 1;
     end = @as(u32, 1) << @intCast(table_bits);
     var prefix: u32 = std.math.maxInt(u32);
@@ -669,14 +690,17 @@ fn readDynLens(br: *BitReader, clen_tab: []const Entry, out: []u4) !void {
 
 fn readDynLensFast(br: *BitReader, clen_tab: []const Entry, out: []u4, prev: *u4) DecodeError!usize {
     const src = br.src;
+    const bytes: [*]u8 = @ptrCast(out.ptr);
     var bits = br.bits;
     var count = br.nbits;
     var at = br.i;
     var i: usize = 0;
+    var last: u4 = prev.*;
     defer {
         br.bits = if (count < 64) bits & ((@as(u64, 1) << @intCast(count)) - 1) else bits;
         br.nbits = count;
         br.i = at;
+        prev.* = last;
     }
     while (i < out.len and src.len - at >= 8) {
         if (count < 56) {
@@ -690,13 +714,13 @@ fn readDynLensFast(br: *BitReader, clen_tab: []const Entry, out: []u4, prev: *u4
         count -= e.nbits;
         if (e.payload <= 15) {
             out[i] = @intCast(e.payload);
-            prev.* = @intCast(e.payload);
+            last = @intCast(e.payload);
             i += 1;
             continue;
         }
         if (e.payload == 16 and i == 0) return error.BadHuffman;
         const extra: u5, const base: usize, const value: u4 = switch (e.payload) {
-            16 => .{ 2, 3, prev.* },
+            16 => .{ 2, 3, last },
             17 => .{ 3, 3, 0 },
             18 => .{ 7, 11, 0 },
             else => return error.BadHuffman,
@@ -704,11 +728,18 @@ fn readDynLensFast(br: *BitReader, clen_tab: []const Entry, out: []u4, prev: *u4
         const n = base + @as(usize, @intCast(bits & ((@as(u64, 1) << extra) - 1)));
         bits >>= extra;
         count -= extra;
-        const fits = @min(n, out.len - i);
-        @memset(out[i..][0..fits], value);
-        i += fits;
-        if (fits < n) return error.BadHuffman;
-        prev.* = value;
+        if (n > out.len - i) {
+            @memset(out[i..], value);
+            i = out.len;
+            return error.BadHuffman;
+        }
+        const run: @Vector(16, u8) = @splat(value);
+        bytes[i..][0..16].* = run;
+        inline for (1..9) |k| {
+            if (n > 16 * k) bytes[i + 16 * k ..][0..16].* = run;
+        }
+        i += n;
+        last = value;
     }
     return i;
 }
