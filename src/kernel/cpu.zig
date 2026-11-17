@@ -4,13 +4,15 @@ const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("kernel_options");
 
-pub const Feature = enum { sse4_1, pclmul, avx2 };
+pub const Feature = enum { sse4_1, pclmul, avx2, bmi, bmi2 };
 
 pub const Features = packed struct(u8) {
     sse4_1: bool = false,
     pclmul: bool = false,
     avx2: bool = false,
-    _: u5 = 0,
+    bmi: bool = false,
+    bmi2: bool = false,
+    _: u3 = 0,
 };
 
 var cached_features: std.atomic.Value(u16) = .init(0);
@@ -91,6 +93,8 @@ fn detectX86Features() Features {
         .sse4_1 = leaf1.ecx & (1 << 19) != 0,
         .pclmul = leaf1.ecx & (1 << 1) != 0,
         .avx2 = maximum >= 7 and avx_state and cpuid(7, 0).ebx & (1 << 5) != 0,
+        .bmi = maximum >= 7 and cpuid(7, 0).ebx & (1 << 3) != 0,
+        .bmi2 = maximum >= 7 and cpuid(7, 0).ebx & (1 << 8) != 0,
     };
 }
 

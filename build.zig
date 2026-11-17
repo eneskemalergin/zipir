@@ -12,6 +12,7 @@ const Mode = enum { direct, object, absent };
 const BACKENDS = [_]struct { name: []const u8, features: []const std.Target.x86.Feature }{
     .{ .name = "crc32_x86_pclmul", .features = &.{ .pclmul, .sse4_1 } },
     .{ .name = "adler32_x86_avx2", .features = &.{.avx2} },
+    .{ .name = "huff_loop_x86_bmi2", .features = &.{ .bmi, .bmi2 } },
 };
 
 pub fn build(b: *std.Build) void {

@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const copy = @import("../kernel/copy.zig");
+const loop = @import("../kernel/huff_loop.zig");
 const codes = @import("codes.zig");
 const encode = @import("encode.zig");
 
@@ -36,18 +37,18 @@ const Entry = packed struct(u32) {
     payload: u16,
 };
 
-const LIT_TABLEBITS = 11;
-const DIST_TABLEBITS = 8;
+const LIT_TABLEBITS = loop.LIT_TABLEBITS;
+const DIST_TABLEBITS = loop.DIST_TABLEBITS;
 const LIT_ENOUGH = 2342;
 const DIST_ENOUGH = 402;
 
-const LITERAL: u32 = 0x8000_0000;
-const EXCEPTIONAL: u32 = 0x8000;
-const SUBTABLE: u32 = 0x4000;
-const END_OF_BLOCK: u32 = 0x2000;
+const LITERAL = loop.LITERAL;
+const EXCEPTIONAL = loop.EXCEPTIONAL;
+const SUBTABLE = loop.SUBTABLE;
+const END_OF_BLOCK = loop.END_OF_BLOCK;
 const RESERVED: u32 = 0x1000;
 const UNUSED: u32 = EXCEPTIONAL | RESERVED;
-const PAIR: u32 = 0x4000_0000;
+const PAIR = loop.PAIR;
 
 const lit_results: [288]u32 = blk: {
     var r: [288]u32 = undefined;
@@ -209,9 +210,9 @@ pub const BitReader = struct {
 
 const BATCH = 131072;
 
-pub const FAST_ROOM = 4 + 258 + 5 * 8 - 1;
+pub const FAST_ROOM = loop.ROOM;
 
-const FAST_READ = (63 + 2 * LIT_TABLEBITS + 20 + 28 + 7) / 8 + 8;
+const FAST_READ = loop.READ;
 
 const TAIL_RUN = 16;
 
@@ -744,22 +745,8 @@ fn readDynLensFast(br: *BitReader, clen_tab: []const Entry, out: []u4, prev: *u4
     return i;
 }
 
-inline fn varbits(word: u64, count: u32) u64 {
-    return word & ((@as(u64, 1) << @as(u6, @truncate(count))) - 1);
-}
-
-inline fn subtableEntry(table: [*]const u32, entry: u32, bits: u64) u32 {
-    return table[(entry >> 16) + @as(u32, @intCast(varbits(bits, (entry >> 8) & 0x3f)))];
-}
-
-inline fn putLiteral(out: [*]u8, entry: anytype, comptime pairs: bool) [*]u8 {
-    if (!pairs) {
-        out[0] = entry;
-        return out + 1;
-    }
-    std.mem.writeInt(u16, out[0..2], @truncate(entry >> 8), .big);
-    return out + (entry >> 30) - 1;
-}
+const varbits = loop.varbits;
+const subtableEntry = loop.subtableEntry;
 
 fn decodeFast(ctx: anytype, h: Huff) DecodeError!bool {
     if (ctx.position() - ctx.stream_start >= WINDOW) return decodeFastImpl(ctx, h, true, false);
@@ -772,157 +759,34 @@ fn decodeFastPairs(ctx: anytype, h: Huff) DecodeError!bool {
 }
 
 fn decodeFastImpl(ctx: anytype, h: Huff, comptime full_history: bool, comptime pairs: bool) DecodeError!bool {
+    if (loop.has_backend and loop.useBackend()) return viaBackend(ctx, h, full_history, pairs);
+    return loop.run(ctx, h.lit, h.dist, h.lit_mask, full_history, pairs);
+}
+
+fn viaBackend(ctx: anytype, h: Huff, comptime full_history: bool, comptime pairs: bool) loop.Error!bool {
     const br = ctx.br;
-    const output = ctx.out;
-    const input = br.src;
-    if (output.len - ctx.out_pos < FAST_ROOM or input.len - br.i < FAST_READ or br.nbits >= 64) return false;
-    var bitbuf = br.bits;
-    var bitsleft: u32 = br.nbits;
-    var in: [*]const u8 = input.ptr + br.i;
-    const in_stop: [*]const u8 = input.ptr + (input.len - FAST_READ);
-    var out: [*]u8 = output.ptr + ctx.out_pos;
-    const out_start = out;
-    const out_stop: [*]u8 = output.ptr + (output.len - FAST_ROOM);
-    const history = ctx.position() - ctx.stream_start;
-    const lit = h.lit;
-    const dist = h.dist;
-    const mask = h.lit_mask;
-    const Held = if (pairs) u32 else u8;
+    if (ctx.out.len - ctx.out_pos < FAST_ROOM or br.src.len - br.i < FAST_READ or br.nbits >= 64) return false;
+    var state: loop.State = .{
+        .src = br.src.ptr,
+        .src_len = br.src.len,
+        .at = br.i,
+        .out = ctx.out.ptr,
+        .out_len = ctx.out.len,
+        .out_pos = ctx.out_pos,
+        .lit = h.lit,
+        .dist = h.dist,
+        .mask = h.lit_mask,
+        .history = ctx.position() - ctx.stream_start,
+        .bits = br.bits,
+        .nbits = br.nbits,
+    };
     defer {
-        br.bits = bitbuf;
-        br.nbits = bitsleft & 0xff;
-        br.i = @intFromPtr(in) - @intFromPtr(input.ptr);
-        ctx.out_pos = @intFromPtr(out) - @intFromPtr(output.ptr);
+        br.i = state.at;
+        br.bits = state.bits;
+        br.nbits = state.nbits;
+        ctx.out_pos = state.out_pos;
     }
-    bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
-    in += 7 - ((bitsleft >> 3) & 7);
-    bitsleft |= 56;
-    var entry = lit[@intCast(bitbuf & mask)];
-    while (@intFromPtr(in) <= @intFromPtr(in_stop) and @intFromPtr(out) <= @intFromPtr(out_stop)) {
-        var saved = bitbuf;
-        bitbuf >>= @as(u6, @truncate(entry));
-        bitsleft -%= entry;
-        if (entry & LITERAL != 0) {
-            var literal: Held = if (pairs) entry else @truncate(entry >> 16);
-            entry = lit[@intCast(bitbuf & mask)];
-            saved = bitbuf;
-            bitbuf >>= @as(u6, @truncate(entry));
-            bitsleft -%= entry;
-            out = putLiteral(out, literal, pairs);
-            if (entry & LITERAL != 0) {
-                literal = if (pairs) entry else @truncate(entry >> 16);
-                entry = lit[@intCast(bitbuf & mask)];
-                saved = bitbuf;
-                bitbuf >>= @as(u6, @truncate(entry));
-                bitsleft -%= entry;
-                out = putLiteral(out, literal, pairs);
-                if (entry & LITERAL != 0) {
-                    literal = if (pairs) entry else @truncate(entry >> 16);
-                    entry = lit[@intCast(bitbuf & mask)];
-                    bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
-                    in += 7 - ((bitsleft >> 3) & 7);
-                    bitsleft |= 56;
-                    out = putLiteral(out, literal, pairs);
-                    continue;
-                }
-            }
-        }
-        if (entry & EXCEPTIONAL != 0) {
-            if (entry & SUBTABLE == 0) {
-                if (entry & END_OF_BLOCK != 0) return true;
-                return error.BadSymbol;
-            }
-            entry = subtableEntry(lit, entry, bitbuf);
-            saved = bitbuf;
-            bitbuf >>= @as(u6, @truncate(entry));
-            bitsleft -%= entry;
-            if (entry & LITERAL != 0) {
-                const byte: u8 = @truncate(entry >> 16);
-                entry = lit[@intCast(bitbuf & mask)];
-                bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
-                in += 7 - ((bitsleft >> 3) & 7);
-                bitsleft |= 56;
-                out[0] = byte;
-                out += 1;
-                continue;
-            }
-            if (entry & EXCEPTIONAL != 0) {
-                if (entry & END_OF_BLOCK != 0) return true;
-                return error.BadSymbol;
-            }
-        }
-        const length: usize = (entry >> 16) + @as(u32, @intCast(varbits(saved, entry) >> @as(u6, @truncate(entry >> 8))));
-        entry = dist[@intCast(bitbuf & 0xff)];
-        if (entry & EXCEPTIONAL != 0) {
-            if (entry & SUBTABLE == 0) return error.BadSymbol;
-            if (@as(u8, @truncate(bitsleft)) < 28 + LIT_TABLEBITS - 1) {
-                bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
-                in += 7 - ((bitsleft >> 3) & 7);
-                bitsleft |= 56;
-            }
-            bitbuf >>= DIST_TABLEBITS;
-            bitsleft -%= DIST_TABLEBITS;
-            entry = subtableEntry(dist, entry, bitbuf);
-            if (entry & EXCEPTIONAL != 0) return error.BadSymbol;
-        } else if (@as(u8, @truncate(bitsleft)) < 21 + LIT_TABLEBITS - 1) {
-            bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
-            in += 7 - ((bitsleft >> 3) & 7);
-            bitsleft |= 56;
-        }
-        saved = bitbuf;
-        bitbuf >>= @as(u6, @truncate(entry));
-        bitsleft -%= entry;
-        const distance: usize = (entry >> 16) + @as(u32, @intCast(varbits(saved, entry) >> @as(u6, @truncate(entry >> 8))));
-        if (!full_history and distance > history + (@intFromPtr(out) - @intFromPtr(out_start))) return error.BadDistance;
-        var src = out - distance;
-        var dst = out;
-        out += length;
-        entry = lit[@intCast(bitbuf & mask)];
-        bitbuf |= std.mem.readInt(u64, in[0..8], .little) << @as(u6, @truncate(bitsleft));
-        in += 7 - ((bitsleft >> 3) & 7);
-        bitsleft |= 56;
-        if (distance >= 8) {
-            inline for (0..5) |_| {
-                dst[0..8].* = src[0..8].*;
-                src += 8;
-                dst += 8;
-            }
-            while (@intFromPtr(dst) < @intFromPtr(out)) {
-                inline for (0..5) |_| {
-                    dst[0..8].* = src[0..8].*;
-                    src += 8;
-                    dst += 8;
-                }
-            }
-        } else if (distance == 1) {
-            const v: @Vector(8, u8) = @splat(src[0]);
-            inline for (0..4) |_| {
-                dst[0..8].* = v;
-                dst += 8;
-            }
-            while (@intFromPtr(dst) < @intFromPtr(out)) {
-                inline for (0..4) |_| {
-                    dst[0..8].* = v;
-                    dst += 8;
-                }
-            }
-        } else {
-            inline for (0..2) |_| {
-                std.mem.writeInt(u64, dst[0..8], std.mem.readInt(u64, src[0..8], .little), .little);
-                src += distance;
-                dst += distance;
-            }
-            while (true) {
-                inline for (0..2) |_| {
-                    std.mem.writeInt(u64, dst[0..8], std.mem.readInt(u64, src[0..8], .little), .little);
-                    src += distance;
-                    dst += distance;
-                }
-                if (@intFromPtr(dst) >= @intFromPtr(out)) break;
-            }
-        }
-    }
-    return false;
+    return loop.backend(&state, full_history, pairs);
 }
 
 const Code = struct { entry: u32, bits: u32, ok: bool };
@@ -1399,6 +1263,61 @@ test "[property] - [deflate decoder]: damaged streams decode or fail the same wi
             try std.testing.expectEqual(results[0], results[1]);
             try std.testing.expectEqualSlices(u8, decoders[0].buffer[0..results[0].len], decoders[1].buffer[0..results[1].len]);
             if (trial % 3 == 0) try std.testing.expectEqualSlices(u8, &plain, decoders[1].buffer[0..results[1].len]);
+        }
+    }
+}
+
+test "[property] - [deflate decoder]: the BMI2 loop decodes as the loop built for the target does" {
+    if (!loop.has_backend or !loop.useBackend()) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const decoders = try allocator.create([2]Decoder);
+    defer allocator.destroy(decoders);
+    const encoder = try allocator.create(encode.Encoder);
+    defer allocator.destroy(encoder);
+    var plain: [60_000]u8 = undefined;
+    var random = std.Random.DefaultPrng.init(0xb312);
+    for (&plain, 0..) |*b, i| b.* = switch ((i / 10_000) % 3) {
+        0 => "ACGTTGCA\n"[(i * i / 3 + i / 11) % 9],
+        1 => @truncate(i / 300),
+        else => random.random().uintLessThan(u8, 40) + '!',
+    };
+    var compressed: [70_000]u8 = undefined;
+    for ([_]encode.Preset{ .fast, .even, .dense }) |preset| {
+        var writer = std.Io.Writer.fixed(&compressed);
+        var encode_check: TestCheck = .{};
+        try encoder.encodeSlice(TestCheck, &plain, &writer, &encode_check, preset, false);
+        const stream = writer.buffered();
+        for (0..120) |trial| {
+            var input: [70_000]u8 = undefined;
+            @memcpy(input[0..stream.len], stream);
+            if (trial != 0) input[random.random().uintLessThan(usize, stream.len)] ^= @as(u8, 1) << random.random().int(u3);
+            inline for (.{ false, true }) |pairs| {
+                var ends: [2]struct { failure: ?loop.Error, ended: bool, at: usize, bits: u64, nbits: u32, len: usize } = undefined;
+                for (&ends, decoders, 0..) |*end, *decoder, backend| {
+                    var reader = std.Io.Reader.fixed(input[0..stream.len]);
+                    var br: BitReader = .{ .reader = &reader };
+                    var check: TestCheck = .{};
+                    var session: PairSession(TestCheck) = .{ .tables = &decoder.tables, .storage = &decoder.buffer, .max_output_bytes = std.math.maxInt(u64) };
+                    session.pairs = pairs;
+                    session.begin(&br, &check);
+                    end.* = .{ .failure = null, .ended = false, .at = 0, .bits = 0, .nbits = 0, .len = 0 };
+                    const header = br.get(3) catch continue;
+                    if (header >> 1 != 2) continue;
+                    session.readTables() catch continue;
+                    _ = br.refill(8) catch continue;
+                    const h: Huff = .{ .lit = &decoder.tables.lit, .dist = &decoder.tables.dist, .lit_mask = (@as(u64, 1) << @intCast(decoder.tables.lit_bits)) - 1 };
+                    const outcome = if (backend == 1) viaBackend(&session, h, false, pairs) else loop.run(&session, h.lit, h.dist, h.lit_mask, false, pairs);
+                    if (outcome) |ended| {
+                        end.ended = ended;
+                    } else |err| end.failure = err;
+                    end.at = br.i;
+                    end.bits = br.bits;
+                    end.nbits = br.nbits;
+                    end.len = session.out_pos;
+                }
+                try std.testing.expectEqual(ends[0], ends[1]);
+                try std.testing.expectEqualSlices(u8, decoders[0].buffer[0..ends[0].len], decoders[1].buffer[0..ends[1].len]);
+            }
         }
     }
 }
