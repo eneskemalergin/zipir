@@ -555,6 +555,33 @@ pub const Encoder = struct {
         return best;
     }
 
+    noinline fn findLonger(self: *const Encoder, p: usize, end: usize, budget: usize, nice: usize, h: usize, beat: usize) Match {
+        var best: Match = .{ .len = beat };
+        if (p + 3 > end) return best;
+        const limit = @min(258, end - p);
+        if (beat >= limit) return best;
+        const lower = p -| WINDOW;
+        var entry = self.head[h];
+        var attempts = budget;
+        while (entry != 0 and attempts != 0) : (attempts -= 1) {
+            const q: usize = entry - 1;
+            if (q < lower or q >= p) break;
+            if (std.mem.readInt(u32, self.window[q + best.len - 3 ..][0..4], .little) == std.mem.readInt(u32, self.window[p + best.len - 3 ..][0..4], .little) and
+                std.mem.readInt(u16, self.window[q..][0..2], .little) == std.mem.readInt(u16, self.window[p..][0..2], .little))
+            {
+                const len = matchLength(self.window[p..][0..limit], self.window[q..][0..limit]);
+                if (len > best.len) {
+                    best = .{ .len = len, .dist = p - q };
+                    if (len >= nice or len == limit) break;
+                }
+            }
+            const next = self.previous[q & (WINDOW - 1)];
+            if (next >= entry) break;
+            entry = next;
+        }
+        return best;
+    }
+
     fn entropyBits(counts: *const [256]u32, n: usize) f64 {
         if (n == 0) return 0;
         const total: f64 = @floatFromInt(n);
@@ -830,14 +857,14 @@ pub const Encoder = struct {
             if (p + 3 <= end) self.insert(p, m_hash);
             if (m.len >= 3 and m.len < lazy_below and p + 3 < end) {
                 pending_hash = self.hash(p + 1, end, key);
-                const next = self.find(p + 1, end, if (preset == .dense) 64 else if (block) 16 else @min(budget, 8), nice, pending_hash);
+                const next = self.findLonger(p + 1, end, if (preset == .dense) 64 else if (block) 16 else @min(budget, 8), nice, pending_hash, m.len);
                 if (next.len > m.len) {
                     pending = next;
                     pending_pos = p + 1;
                     m.len = 2;
                 } else if (preset == .dense and p + 4 < end) {
                     const hash2 = self.hash(p + 2, end, key);
-                    const next2 = self.find(p + 2, end, 16, nice, hash2);
+                    const next2 = self.findLonger(p + 2, end, 16, nice, hash2, m.len + 1);
                     if (next2.len > m.len + 1) {
                         pending = next2;
                         pending_hash = hash2;
