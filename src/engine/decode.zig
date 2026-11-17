@@ -210,6 +210,8 @@ pub const FAST_ROOM = 2 + 258 + 5 * 8 - 1;
 
 const FAST_READ = (63 + 2 * LIT_TABLEBITS + 20 + 28 + 7) / 8 + 8;
 
+const TAIL_RUN = 16;
+
 pub const Tables = struct {
     lit: [LIT_ENOUGH]u32,
     dist: [DIST_ENOUGH]u32,
@@ -945,12 +947,23 @@ fn decodeTail(comptime Check: type, ctx: *Session(Check), h: Huff) DecodeError!b
                 from += 8;
                 to += 8;
             }) output[to..][0..8].* = output[from..][0..8].*;
+        } else if (distance < 8 and length >= TAIL_RUN and output.len - out >= length + 8) {
+            @call(.never_inline, copyRun, .{ output, out, distance, length });
         } else {
             for (output[out..][0..length], out - distance..) |*byte, from| byte.* = output[from];
         }
         out += length;
     }
     return false;
+}
+
+fn copyRun(output: []u8, out: usize, distance: usize, length: usize) void {
+    var period: [8]u8 = undefined;
+    for (&period, 0..) |*byte, k| byte.* = if (k < distance) output[out - distance + k] else period[k - distance];
+    const word = std.mem.readInt(u64, &period, .little);
+    const step: usize = ([_]u8{ 8, 8, 8, 6, 8, 5, 6, 7 })[distance];
+    var to = out;
+    while (to < out + length) : (to += step) std.mem.writeInt(u64, output[to..][0..8], word, .little);
 }
 
 const TestCheck = struct {
@@ -1252,6 +1265,67 @@ test "[property] - [deflate decoder]: fast literals consume exact bits within ou
             try std.testing.expectEqual(ends[if (ended) length + 1 else written], br.i * 8 - br.nbits);
             try std.testing.expectEqualSlices(u8, plain[0..written], decoder.buffer[WINDOW..][0..written]);
             for (decoder.buffer[ctx.out_pos .. WINDOW + 400]) |byte| try std.testing.expectEqual(@as(u8, 0xa5), byte);
+        }
+    }
+}
+
+fn putFixed(input: []u8, position: *usize, code: u32, width: usize, comptime order: enum { code, extra }) void {
+    for (0..width) |j| {
+        const shift: u5 = @intCast(if (order == .code) width - 1 - j else j);
+        const bit: u8 = @intCast((code >> shift) & 1);
+        input[position.* / 8] |= bit << @intCast(position.* % 8);
+        position.* += 1;
+    }
+}
+
+fn putFixedMatch(input: []u8, position: *usize, distance: usize, length: usize) void {
+    var l: usize = LEN_BASE.len - 1;
+    while (LEN_BASE[l] > length) l -= 1;
+    if (l < 23) putFixed(input, position, @intCast(l + 1), 7, .code) else putFixed(input, position, @intCast(0xc0 + l - 23), 8, .code);
+    putFixed(input, position, @intCast(length - LEN_BASE[l]), LEN_EXTRA[l], .extra);
+    var d: usize = DIST_BASE.len - 1;
+    while (DIST_BASE[d] > distance) d -= 1;
+    putFixed(input, position, @intCast(d), 5, .code);
+    putFixed(input, position, @intCast(distance - DIST_BASE[d]), DIST_EXTRA[d], .extra);
+}
+
+test "[property] - [deflate decoder]: tail matches of every short distance equal a byte copy within the output" {
+    const decoder = try std.testing.allocator.create(Decoder);
+    defer std.testing.allocator.destroy(decoder);
+    var expected: [WINDOW + 600]u8 = undefined;
+    for (1..41) |distance| {
+        for ([_]usize{ 3, 4, 7, 8, 9, 15, 16, 17, 64, 257, 258 }) |length| {
+            const second: [2]usize = .{ (distance * 7) % 40 + 1, 3 + distance % 6 };
+            const total = length + second[1];
+            var input: [64]u8 = @splat(0);
+            var position: usize = 0;
+            putFixedMatch(&input, &position, distance, length);
+            putFixedMatch(&input, &position, second[0], second[1]);
+            putFixed(&input, &position, 0, 7, .code);
+            for ([_]usize{ 0, 1, 7, 8, 9, 39, 40, 300 }) |spare| {
+                for (decoder.buffer[0..WINDOW], 0..) |*byte, i| byte.* = @truncate(i * 73 + i / 256);
+                @memset(decoder.buffer[WINDOW..][0..640], 0xa5);
+                @memcpy(expected[0..WINDOW], decoder.buffer[0..WINDOW]);
+                for (WINDOW..WINDOW + length) |i| expected[i] = expected[i - distance];
+                for (WINDOW + length..WINDOW + total) |i| expected[i] = expected[i - second[0]];
+                var reader = std.Io.Reader.fixed(&input);
+                var br: BitReader = .{ .reader = &reader, .src = &input };
+                var check: TestCheck = .{};
+                var ctx: Session(TestCheck) = .{
+                    .br = &br,
+                    .check = &check,
+                    .tables = &decoder.tables,
+                    .storage = &decoder.buffer,
+                    .out = decoder.buffer[0 .. WINDOW + total + spare],
+                    .out_pos = WINDOW,
+                    .max_output_bytes = std.math.maxInt(u64),
+                };
+                try std.testing.expectEqual(spare != 0, try decodeTail(TestCheck, &ctx, FIXED_HUFF));
+                try std.testing.expectEqual(WINDOW + total, ctx.out_pos);
+                try std.testing.expectEqual(if (spare != 0) position else position - 7, br.i * 8 - br.nbits);
+                try std.testing.expectEqualSlices(u8, expected[WINDOW..][0..total], decoder.buffer[WINDOW..][0..total]);
+                for (decoder.buffer[WINDOW + total + spare ..][0..64]) |byte| try std.testing.expectEqual(@as(u8, 0xa5), byte);
+            }
         }
     }
 }
