@@ -826,6 +826,12 @@ pub const Encoder = struct {
             while (q + 3 <= end) : (q += 4) self.insert(q, self.hash(q, end, key));
             for (0..256) |b| self.lit_freq[b] += total[b];
             q = start;
+            while (q + 8 <= end) : (q += 8) {
+                inline for (0..4) |k| {
+                    self.icf[n + k] = @as(u32, self.window[q + 2 * k]) | (ICF_LITERAL + @as(u32, self.window[q + 2 * k + 1])) << 10;
+                }
+                n += 4;
+            }
             while (q + 2 <= end) : (q += 2) {
                 self.icf[n] = @as(u32, self.window[q]) | (ICF_LITERAL + @as(u32, self.window[q + 1])) << 10;
                 n += 1;
