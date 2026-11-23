@@ -93,7 +93,7 @@ The [wiki](https://github.com/eneskemalergin/zipir/wiki/Home) holds the guides a
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Notices for third-party work zipir derives from are in [NOTICE](NOTICE).
 
 ---
 

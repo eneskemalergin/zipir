@@ -11,6 +11,7 @@
         "tests",
         "README.md",
         "LICENSE",
+        "NOTICE",
         "assets/logo-readme.svg",
     },
 }

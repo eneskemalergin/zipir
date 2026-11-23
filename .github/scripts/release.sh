@@ -94,7 +94,7 @@ package_binary() {
     zig build -Doptimize=ReleaseFast -Dcpu=baseline --prefix "$work/install"
     stage="$work/$name"
     mkdir "$stage"
-    cp "$work/install/bin/zipir" LICENSE "$stage/"
+    cp "$work/install/bin/zipir" LICENSE NOTICE "$stage/"
     size=$(wc -c < "$stage/zipir" | tr -d ' ')
     [[ "$size" -le 1048576 ]] || die "release binary is $size bytes; a stripped ReleaseFast build is under 1 MiB"
     tar -czf "$work/$name.tar.gz" -C "$work" "$name"
@@ -105,6 +105,7 @@ package_binary() {
     tar -xzf "$work/$name.tar.gz" -C "$smoke"
     binary="$smoke/$name/zipir"
     cmp LICENSE "$smoke/$name/LICENSE"
+    cmp NOTICE "$smoke/$name/NOTICE"
     (
         cd "$smoke"
         export PATH=/usr/bin:/bin

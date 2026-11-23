@@ -66,7 +66,7 @@ jobs:
             while IFS= read -r -d '' path; do
               case "$path" in
                 .github/*) tests=true; workflows=true ;;
-                *.md|LICENSE|assets/*|bench/*|wiki/*) ;;
+                *.md|LICENSE|NOTICE|assets/*|bench/*|wiki/*) ;;
                 *) tests=true ;;
               esac
             done < <(git diff --no-renames --name-only -z "$BASE" HEAD)

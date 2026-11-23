@@ -1,6 +1,6 @@
 //! The DEFLATE fast decode loop as a leaf routine: it decodes from `State` while one worst-case step fits in both
 //! buffers and reports why it stopped. A build whose target lacks BMI2 also carries the loop compiled with it and
-//! takes that copy when the running CPU has BMI1 and BMI2. Table entries are libdeflate's (MIT; notice in `LICENSE`):
+//! takes that copy when the running CPU has BMI1 and BMI2. Table entries are libdeflate's (MIT; notice in `NOTICE`):
 //! low byte the bits to consume, bits 8 to 11 the code length, bit 31 a literal in bits 16 to 23, and with `PAIR` a
 //! second literal in bits 8 to 15 and the first code's length in bits 24 to 27. The caller assumes nothing about
 //! `out[0..]` past the returned position.

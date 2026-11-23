@@ -3,7 +3,7 @@
 //! (`rebaseKeeping` any amount, such as none between independent BGZF blocks);
 //! bits, block state, and a match cut short by full storage carry over to the next `run`, and new bytes are in the
 //! check when `run` returns. Table entries, the table builder, and the decode loops follow libdeflate's decoder
-//! (MIT; its notice is in `LICENSE`): an 11-bit literal/length root and an 8-bit distance root with subtables.
+//! (MIT; its notice is in `NOTICE`): an 11-bit literal/length root and an 8-bit distance root with subtables.
 //! The owner of a `PairSession` that sets `pairs` before `begin` gets dynamic tables whose root entries also hold two
 //! literals where both codes fit the root. It pays when a table decodes many symbols; output and errors do not change.
 
