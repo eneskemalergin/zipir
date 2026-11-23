@@ -1,8 +1,10 @@
 //! Bounded input and output adapters and shared checks for the contract suites. A long property takes its size
 //! from `pick(unit, full, long)` at the suite's `scale`: `unit` in `zig build test`, the size it was written for at
-//! `full`, and a campaign at `long`; `validation/` compiles the suites at `full` and `long`.
+//! `full`, and a campaign at `long`; `validation/` compiles the suites at `full` and `long`. `bgzfBlock` frames a gzip
+//! member of any decoded size as a BGZF block, past what `bgzf.BlockEncoder` takes, for blocks a writer would refuse.
 
 const std = @import("std");
+const zipir = @import("zipir");
 const scale = @import("scale").scale;
 
 pub fn pick(comptime T: type, unit: T, full: T, long: T) T {
@@ -256,4 +258,25 @@ pub fn expectSliceDecoderProperty(comptime Namespace: type, allocator: std.mem.A
             }
         }
     }
+}
+
+pub fn bgzfBlock(out: []u8, plain: []const u8, extra: []const u8, bsize_delta: i32) ![]u8 {
+    const member_buffer = try std.testing.allocator.alloc(u8, plain.len + plain.len / 8 + 1024);
+    defer std.testing.allocator.free(member_buffer);
+    var reader = std.Io.Reader.fixed(plain);
+    var writer = std.Io.Writer.fixed(member_buffer);
+    const encoder = try std.testing.allocator.create(zipir.Compressor(.gzip));
+    defer std.testing.allocator.destroy(encoder);
+    _ = try compressAll(encoder, &reader, &writer, .{});
+    const body = writer.buffered()[10..];
+    const xlen = extra.len + 6;
+    const size = 12 + xlen + body.len;
+    if (size > out.len or size > 1 << 16) return error.NoSpaceLeft;
+    @memcpy(out[0..10], "\x1f\x8b\x08\x04\x00\x00\x00\x00\x00\xff");
+    std.mem.writeInt(u16, out[10..12], @intCast(xlen), .little);
+    @memcpy(out[12..][0..extra.len], extra);
+    @memcpy(out[12 + extra.len ..][0..4], "BC\x02\x00");
+    std.mem.writeInt(u16, out[16 + extra.len ..][0..2], @intCast(@as(i32, @intCast(size)) - 1 + bsize_delta), .little);
+    @memcpy(out[12 + xlen ..][0..body.len], body);
+    return out[0..size];
 }

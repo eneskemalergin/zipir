@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const budget = b.option(Budget, "budget", "seed: seconds; full: the suites at full size; long: a campaign") orelse .seed;
     const planted = b.option(bool, "planted", "Build only the fuzz target with a planted crash (fuzz.sh --self-check)") orelse false;
+    const filter = b.option([]const u8, "filter", "Build only the fuzz targets whose name contains this text");
     const zipir = b.dependency("zipir", .{ .target = target, .optimize = optimize });
 
     const scale_options = b.addOptions();
@@ -41,7 +42,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = zipir.path("tests/support.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "scale", .module = scale }},
+        .imports = &.{ .{ .name = "scale", .module = scale }, .{ .name = "zipir", .module = zipir.module("zipir") } },
     });
     const fixture_files = b.addWriteFiles();
     var fixture_source: std.ArrayList(u8) = .empty;
@@ -56,7 +57,7 @@ pub fn build(b: *std.Build) void {
     fuzz_options.addOption(bool, "planted", planted);
     const fuzz = b.addTest(.{
         .name = "fuzz",
-        .filters = if (planted) &.{"planted"} else &.{},
+        .filters = if (planted) &.{"planted"} else if (filter) |text| b.dupeStrings(&.{text}) else &.{},
         .root_module = b.createModule(.{
             .root_source_file = b.path("fuzz.zig"),
             .target = target,

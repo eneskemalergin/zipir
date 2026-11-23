@@ -193,6 +193,77 @@ test "[fuzz] - [deflate tables]: zipir and std's flate decode to the same bytes 
     try std.testing.fuzz({}, tables, .{ .corpus = &.{ "ACGT\nACGA\n", "abc" ** 40, "" } });
 }
 
+fn bgzfFiles(_: void, smith: *Smith) anyerror!void {
+    const sizes = [_]usize{ 0, 1, 1000, 32_768, 65_280, 65_535, 65_536, 65_537, 98_304, 131_072 };
+    const count = @as(usize, smith.valueRangeAtMost(u32, 1, 6));
+    var lens: [6]usize = undefined;
+    var total: usize = 0;
+    for (lens[0..count]) |*len| {
+        len.* = if (smith.boolWeighted(3, 1)) sizes[smith.index(sizes.len)] else @as(usize, smith.valueRangeAtMost(u32, 0, 140_000));
+        total += len.*;
+    }
+    const plain = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(plain);
+    const seed = smith.value(u64);
+    var rng = std.Random.DefaultPrng.init(seed);
+    const symbols = @as(u8, smith.valueRangeAtMost(u8, 1, 255));
+    for (plain) |*byte| byte.* = rng.random().uintLessThan(u8, symbols);
+
+    const file = try std.testing.allocator.alloc(u8, count * (1 << 16) + bgzf.EOF_MARKER.len);
+    defer std.testing.allocator.free(file);
+    var len: usize = 0;
+    var at: usize = 0;
+    var oversized = false;
+    for (lens[0..count]) |n| {
+        const framed = support.bgzfBlock(file[len..], plain[at..][0..n], "", 0) catch |err| switch (err) {
+            error.NoSpaceLeft => return,
+            else => return err,
+        };
+        len += framed.len;
+        at += n;
+        oversized = oversized or n > bgzf.MAX_BLOCK;
+    }
+    @memcpy(file[len..][0..bgzf.EOF_MARKER.len], &bgzf.EOF_MARKER);
+    len += bgzf.EOF_MARKER.len;
+    const damaged = smith.boolWeighted(3, 1);
+    if (damaged) file[smith.index(len)] ^= @as(u8, 1) << smith.value(u3);
+    const bytes = file[0..len];
+
+    const decoder = try std.testing.allocator.create(bgzf.Decompressor);
+    defer std.testing.allocator.destroy(decoder);
+    const shape = readerShape(smith);
+    var buffer: [4096]u8 = undefined;
+    var source = support.Source.init(bytes, buffer[0..shape[0]], shape[1]);
+    const out = try std.testing.allocator.alloc(u8, total + 1);
+    defer std.testing.allocator.free(out);
+    var sink = std.Io.Writer.fixed(out);
+    const got = support.decompressAll(decoder, &source.reader, &sink, .{});
+    if (got) |n| {
+        try std.testing.expect(!oversized or damaged);
+        if (!damaged) {
+            try std.testing.expectEqual(@as(u64, total), n);
+            try std.testing.expectEqualSlices(u8, plain, sink.buffered());
+        }
+    } else |err| {
+        try support.expectDataError(bgzf.DecompressError, err);
+        if (!damaged) try std.testing.expectEqual(error.BlockTooLarge, err);
+        if (!damaged) try std.testing.expect(oversized);
+    }
+
+    if (!damaged and !oversized) {
+        const gzip = try std.testing.allocator.create(zipir.gzip.Decompressor);
+        defer std.testing.allocator.destroy(gzip);
+        var whole = std.Io.Reader.fixed(bytes);
+        var gzip_sink = std.Io.Writer.fixed(out);
+        try std.testing.expectEqual(@as(u64, total), try support.decompressAll(gzip, &whole, &gzip_sink, .{}));
+        try std.testing.expectEqualSlices(u8, plain, gzip_sink.buffered());
+    }
+}
+
+test "[fuzz] - [bgzf files]: blocks of any decoded size decode whole, or an oversized one is BlockTooLarge" {
+    try std.testing.fuzz({}, bgzfFiles, .{ .corpus = &.{ "", "\x03\x00\x00" } });
+}
+
 const Visitor = struct {
     pub fn entry(_: *Visitor, _: zipir.tar.Entry) !zipir.tar.Action {
         return .read;

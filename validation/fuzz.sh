@@ -3,6 +3,7 @@
 # runner saves a crashing input and still exits 0, so the log and the saved input decide.
 #   validation/fuzz.sh RUNS [LOG]      a campaign of RUNS (zig build fuzz --fuzz=RUNS) in ReleaseSafe
 #   validation/fuzz.sh --self-check    builds the planted target and requires the campaign to find its crash
+# FUZZ_FILTER=TEXT limits a campaign to the targets whose test name contains TEXT.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -23,7 +24,11 @@ if [[ -e "$crash" ]]; then
 fi
 
 status=0
-zig build fuzz -Doptimize=ReleaseSafe -Dplanted="$self_check" --fuzz="$runs" >"$log" 2>&1 || status=$?
+filter=()
+if [[ -n "${FUZZ_FILTER:-}" ]]; then
+    filter=("-Dfilter=$FUZZ_FILTER")
+fi
+zig build fuzz -Doptimize=ReleaseSafe -Dplanted="$self_check" "${filter[@]}" --fuzz="$runs" >"$log" 2>&1 || status=$?
 grep -E '^(Fuzz test|Runs|Unique runs|Coverage):' "$log" || true
 
 found=false

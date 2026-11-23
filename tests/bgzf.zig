@@ -8,23 +8,7 @@ const bgzf = zipir.bgzf;
 
 const EOF = &bgzf.EOF_MARKER;
 
-fn block(out: []u8, plain: []const u8, extra: []const u8, bsize_delta: i32) ![]u8 {
-    var member_buffer: [70000]u8 = undefined;
-    var reader = std.Io.Reader.fixed(plain);
-    var writer = std.Io.Writer.fixed(&member_buffer);
-    var encoder: zipir.Compressor(.gzip) = undefined;
-    _ = try support.compressAll(&encoder, &reader, &writer, .{});
-    const body = writer.buffered()[10..];
-    const xlen = extra.len + 6;
-    const size = 12 + xlen + body.len;
-    @memcpy(out[0..10], "\x1f\x8b\x08\x04\x00\x00\x00\x00\x00\xff");
-    std.mem.writeInt(u16, out[10..12], @intCast(xlen), .little);
-    @memcpy(out[12..][0..extra.len], extra);
-    @memcpy(out[12 + extra.len ..][0..4], "BC\x02\x00");
-    std.mem.writeInt(u16, out[16 + extra.len ..][0..2], @intCast(@as(i32, @intCast(size)) - 1 + bsize_delta), .little);
-    @memcpy(out[12 + xlen ..][0..body.len], body);
-    return out[0..size];
-}
+const block = support.bgzfBlock;
 
 const Fixture = struct {
     bytes: [140000]u8 = undefined,
