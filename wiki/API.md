@@ -8,6 +8,7 @@ Everything below is reached through `@import("zipir")`. The [library guide](Libr
 - `Format`: `enum { gzip, zlib, deflate }`.
 - `Decompressor(format)`, `Compressor(format)`: the namespace's `Decompressor` or `Compressor` for a comptime `Format`.
 - `Preset`: `enum { fast = 1, even = 5, dense = 9 }`. The tag values are what the command's `--level 1|5|9` spelling maps onto, not zlib levels: compare presets with another compressor by measured speed and size, not by number.
+- `Crc32`, `Adler32`: gzip's CRC-32 and zlib's Adler-32, the same checks the codecs run, with the fastest kernel the CPU has (PCLMUL CRC-32 and AVX2 Adler-32 on x86-64, chosen at run time). `init()`, `update(self, bytes)` any number of times, then `final(self) u32`. `Crc32.init().final()` is `0` and `Adler32.init().final()` is `1`, the values of empty input.
 - `version`: a `std.SemanticVersion`.
 
 ## The shared shape of gzip, zlib, and deflate

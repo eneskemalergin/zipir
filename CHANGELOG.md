@@ -4,6 +4,10 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 ## [Unreleased]
 
+### Added
+
+- `zipir.Crc32` and `zipir.Adler32`: the CRC-32 and Adler-32 checks the codecs use, with the same kernels chosen for the CPU, for callers that frame or verify their own data. Each has `init`, `update`, and `final`.
+
 ### Changed
 
 - `LICENSE` holds only zipir's MIT license. The libdeflate notice moved to a new `NOTICE` file, which now reproduces libdeflate 1.26's copyright lines in full and names both files derived from it; the source package and the release archives ship `NOTICE` beside `LICENSE`.

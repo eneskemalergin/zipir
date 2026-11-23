@@ -25,4 +25,4 @@ Run heavy budgets under a memory and CPU cap, for example `systemd-run --user --
 
 ## Checks
 
-- `suites`: the contract suites `gzip`, `zlib`, `deflate`, `bgzf`, `tar`, `reader`, and `writer` from `tests/`. A test that is bounded in `tests/` takes its sizes from `support.pick(unit, full, long)`; this package compiles it at `full` or `long`.
+- `suites`: the contract suites `gzip`, `zlib`, `deflate`, `bgzf`, `tar`, `reader`, `writer`, and `checksum` from `tests/`. A test that is bounded in `tests/` takes its sizes from `support.pick(unit, full, long)`; this package compiles it at `full` or `long`.

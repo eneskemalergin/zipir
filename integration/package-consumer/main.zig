@@ -1,6 +1,6 @@
 //! Public contracts of the `zipir` module as a dependent package sees them: streaming round trips for every format
-//! namespace, slice decoding for zlib and raw DEFLATE, BGZF indexing and seeking through a file, and a tar archive
-//! inside gzip.
+//! namespace, slice decoding for zlib and raw DEFLATE, BGZF indexing and seeking through a file, a tar archive inside
+//! gzip, and the public checks.
 
 const std = @import("std");
 const zipir = @import("zipir");
@@ -146,4 +146,28 @@ test "[integration] - [package]: a tar archive inside gzip reads back entry for 
     try std.testing.expect(summary.end_marker);
     try std.testing.expectEqualStrings("notes/text.txt", visitor.name[0..visitor.name_len]);
     try std.testing.expectEqualStrings(TEXT, visitor.bytes.written());
+}
+
+test "[integration] - [package]: the public checks equal a member's trailer and a stream's Adler-32" {
+    const allocator = std.testing.allocator;
+    var crc = zipir.Crc32.init();
+    crc.update(TEXT[0..1000]);
+    crc.update(TEXT[1000..]);
+    var adler = zipir.Adler32.init();
+    adler.update(TEXT);
+    inline for (.{ .gzip, .zlib }) |format| {
+        const compressor = try allocator.create(zipir.Compressor(format));
+        defer allocator.destroy(compressor);
+        var stream: [TEXT.len]u8 = undefined;
+        var sink: std.Io.Writer = .fixed(&stream);
+        try compressor.init(&sink, .{});
+        try compressor.writer.writeAll(TEXT);
+        _ = try compressor.finish();
+        const bytes = sink.buffered();
+        if (format == .gzip) {
+            try std.testing.expectEqual(crc.final(), std.mem.readInt(u32, bytes[bytes.len - 8 ..][0..4], .little));
+        } else {
+            try std.testing.expectEqual(adler.final(), std.mem.readInt(u32, bytes[bytes.len - 4 ..][0..4], .big));
+        }
+    }
 }

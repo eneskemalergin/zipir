@@ -10,7 +10,7 @@ const std = @import("std");
 const Budget = enum { seed, full, long };
 const TestScale = enum { unit, full, long };
 
-const SUITES = [_][]const u8{ "gzip", "zlib", "deflate", "bgzf", "tar", "reader", "writer" };
+const SUITES = [_][]const u8{ "gzip", "zlib", "deflate", "bgzf", "tar", "reader", "writer", "checksum" };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
