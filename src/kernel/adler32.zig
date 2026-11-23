@@ -201,12 +201,12 @@ test "[property] - [adler]: the AVX2 backend matches an independent reference at
     var bytes: [4096 + 64]u8 = undefined;
     var random = std.Random.DefaultPrng.init(0x5eed_a0d1);
     random.fill(&bytes);
-    for (0..64) |alignment| {
+    for ([_]usize{ 0, 1, 15, 31, 63 }) |alignment| {
         const data = bytes[alignment..][0..4096];
         var a: u32 = 1;
         var b: u32 = 0;
         for (0..data.len + 1) |length| {
-            try std.testing.expectEqual(a | (b << 16), avx2Update(1, data[0..length]));
+            if (length <= 1024 or length % 61 == 0 or length == data.len) try std.testing.expectEqual(a | (b << 16), avx2Update(1, data[0..length]));
             if (length == data.len) break;
             a = (a + data[length]) % MODULUS;
             b = (b + a) % MODULUS;

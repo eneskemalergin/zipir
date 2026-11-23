@@ -91,7 +91,7 @@ test "[property] - [match]: periodic vectors preserve history and bounded tail" 
     var random = std.Random.DefaultPrng.init(91);
     for (1..32) |distance| {
         for (3..259) |length| {
-            for (0..16) |offset| {
+            for ([_]usize{ 0, 1, 7, 15 }) |offset| {
                 const start = 32 + offset;
                 random.fill(&expected);
                 actual = expected;

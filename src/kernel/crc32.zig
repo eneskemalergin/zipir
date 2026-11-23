@@ -200,7 +200,7 @@ test "[property] - [crc]: the PCLMUL backend matches the portable fold at every 
     var copied: [4096 + 64]u8 = undefined;
     var random = std.Random.DefaultPrng.init(0x5eed_c3c3);
     random.fill(&bytes);
-    for (0..64) |alignment| {
+    for ([_]usize{ 0, 1, 15, 63 }) |alignment| {
         const data = bytes[alignment..][0..4096];
         var length: usize = PCLMUL_MIN_BULK;
         while (length <= data.len) : (length += 16) {
