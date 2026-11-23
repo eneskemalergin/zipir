@@ -4,6 +4,18 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-23
+
+0.3.1 makes decoding faster, most of all for BGZF and for streams of a few KiB, and makes `even` and `dense` compression do less work for the same result. Every decoded and compressed byte, every error, every workspace size, and the API are the same as in 0.3.0.
+
+### Changed
+
+- BGZF decoding, through `bgzf.Decompressor` and `bgzf.BlockDecoder`, reads two literals per table lookup in blocks large enough to repay building those entries. Blocks that end in long runs, such as BAM files of long reads with constant qualities, gain the most.
+- Matches with a distance under 8 near the end of the input are copied a word at a time instead of a byte at a time.
+- Building the decoding tables and reading a dynamic block's code lengths take fewer steps, which helps streams of a few KiB, such as the binary arrays of an mzML file.
+- A build for the baseline x86-64 CPU, such as the release binaries, also carries the fast decode loop compiled with BMI1 and BMI2 and uses it when the running CPU has them.
+- `even` and `dense` compression look for a longer match after a found one with less work, and incompressible data goes through the stored-block path faster. The compressed output is unchanged.
+
 ## [0.3.0] - 2026-10-25
 
 0.3.0 rebuilds the DEFLATE decoder on libdeflate's design: an 11-bit literal/length table and an 8-bit distance table with subtables, up to three literals per lookup, and copies a word at a time. Decoded and compressed bytes are the same as in 0.2.1, and a damaged stream fails with the same error, apart from the distance-code rule below. For BGZF readers it adds `tell`, the virtual offset that BAM indexes record, and `decodeBlockInto`, which decodes a block straight into your buffer.
