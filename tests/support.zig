@@ -155,17 +155,19 @@ pub fn expectBoundedFlips(decoder: anytype, stream: []const u8, trials: usize, s
         var sink = Sink{ .output = &scratch };
         if (decompressAll(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = limit })) |n| {
             try std.testing.expect(n <= limit);
-        } else |err| {
-            switch (err) {
-                error.ReadFailed, error.InputBufferTooSmall, error.PeekTooLarge, error.WriteFailed => return err,
-                else => {},
-            }
-            const documented = @typeInfo(Decoder.DecompressError).error_set.?;
-            for (documented) |e| {
-                if (std.mem.eql(u8, e.name, @errorName(err))) break;
-            } else return err;
-        }
+        } else |err| try expectDataError(Decoder.DecompressError, err);
     }
+}
+
+pub fn expectDataError(comptime Documented: type, err: anyerror) !void {
+    switch (err) {
+        error.ReadFailed, error.InputBufferTooSmall, error.PeekTooLarge, error.WriteFailed => return err,
+        else => {},
+    }
+    for (@typeInfo(Documented).error_set.?) |e| {
+        if (std.mem.eql(u8, e.name, @errorName(err))) return;
+    }
+    return err;
 }
 
 pub fn expectErrorNames(comptime Set: type, expected: []const []const u8) !void {
