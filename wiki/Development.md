@@ -8,14 +8,15 @@
 - `src/archive/`: tar.
 - `src/kernel/`: CRC-32, Adler-32, and match copies, with their CPU-specific paths.
 - `src/cli/`: the `zipir` command.
-- `tests/`: the public contract tests and their fixtures.
+- `tests/`: the public contract tests and their fixtures, kept quick: under 250 ms a test and 3 s a test binary in Debug.
+- `validation/`: the long and heavy checks, as their own package; not part of the source package (its `README.md`).
 - `integration/package-consumer/`: an outside package that depends on zipir by path and tests the public module.
 - `tools/` and `bench/`: the peer comparison and the published benchmark report.
 
 ## Tests
 
 ```sh
-zig fmt --check src tests build.zig tools/build.zig tools/zig integration
+zig fmt --check src tests build.zig tools/build.zig tools/zig integration validation
 zig build test --summary all
 zig build test -Doptimize=ReleaseFast --summary all
 zig build test -Dkernel-backend=portable --summary all
@@ -23,11 +24,13 @@ zig build test -Dcpu=baseline --summary all
 cd integration/package-consumer && zig build test --summary all
 ```
 
+The long checks run from `validation/`: `zig build check` builds them and runs their seeds in seconds, and `-Dbudget=full` runs the contract suites with every long property at the size it was written for, which `tests/` bounds to stay quick.
+
 Every test is named `[type] - [target]: behavior`, for example `[failure] - [gzip decompressor]: ...`, with the type one of `unit`, `edge`, `failure`, `property`, `fuzz`, `regression`, `integration`, or `cli`.
 
 ## CI
 
-Each push to `main` or `dev` and each pull request runs one graph. A quick job checks formatting, scripts, and the version, and decides from the changed files what else must run; documentation-only changes skip the tests. Then, in parallel: the tests on Linux and macOS for x86-64 and ARM64, the source package (built, fetched into a fresh project, and tested there), and, when workflows change, `actionlint` and `zizmor`.
+Each push to `main` or `dev` and each pull request runs one graph. A quick job checks formatting, scripts, and the version, and decides from the changed files what else must run; documentation-only changes skip the tests. Then, in parallel: the tests on Linux and macOS for x86-64 and ARM64 (with the `validation/` seed pass on Linux x86-64), the source package (built, fetched into a fresh project, and tested there), and, when workflows change, `actionlint` and `zizmor`.
 
 ## Releases
 

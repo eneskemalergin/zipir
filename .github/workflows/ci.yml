@@ -97,7 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(zig version)" = "$ZIG_VERSION"
-          zig fmt --check src tests build.zig tools/build.zig tools/zig integration
+          zig fmt --check src tests build.zig tools/build.zig tools/zig integration validation
           while IFS= read -r -d '' script; do
             bash -n "$script"
             shellcheck -x "$script"
@@ -187,6 +187,12 @@ jobs:
       - name: Test portable kernels
         if: matrix.extra
         run: zig build test -Dkernel-backend=portable --summary all
+
+      # The long checks build here and run over their seeds only; their full and long budgets run locally.
+      - name: Validation seed pass
+        if: matrix.extra
+        working-directory: validation
+        run: zig build check --summary all
 
       - name: Test baseline dispatch
         if: matrix.extra

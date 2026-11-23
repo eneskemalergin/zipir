@@ -207,7 +207,7 @@ test "[property] - [zlib decompressor]: splits pass while truncations and bit fl
             var sink: std.Io.Writer.Discarding = .init(&.{});
             try std.testing.expectError(error.Truncated, support.decompressAll(decoder, &source.reader, &sink.writer, .{}));
         }
-        for (0..256) |_| {
+        for (0..support.pick(usize, 64, 256, 20_000)) |_| {
             @memcpy(mutated, stream);
             const position = random.random().uintLessThan(usize, stream.len);
             mutated[position] ^= @as(u8, 1) << random.random().int(u3);
@@ -346,7 +346,7 @@ test "[property] - [zlib compressor]: payload equals the gzip payload across blo
     var gzip_bytes: [131073 + 64]u8 = undefined;
     var input_buffer: [17]u8 = undefined;
     for ([_]zlib.CompressOptions{ .{ .preset = .fast }, .{}, .{ .preset = .dense } }) |options| {
-        for ([_]usize{ 1, 257, 32767, 32768, 32769, 65537, 131073 }) |n| {
+        for (support.pick([]const usize, &.{ 1, 32769, 65537 }, &.{ 1, 257, 32767, 32768, 32769, 65537, 131073 }, &.{ 1, 257, 32767, 32768, 32769, 65535, 65536, 65537, 98304, 131072, 131073 })) |n| {
             const stream = try encodeRoundtrip(encoder, plain[0..n], options, 997, 17, encoded);
             var reader = std.Io.Reader.fixed(plain[0..n]);
             var writer = std.Io.Writer.fixed(&gzip_bytes);
@@ -357,7 +357,7 @@ test "[property] - [zlib compressor]: payload equals the gzip payload across blo
             defer std.testing.allocator.free(output);
             try decode(decoder, stream, plain[0..n], &input_buffer, output, 257, .{});
         }
-        for ([_]usize{ 0, 1 }) |capacity| _ = try encodeRoundtrip(encoder, plain[0..65537], options, 997, capacity, encoded);
+        for ([_]usize{ 0, 1 }) |capacity| _ = try encodeRoundtrip(encoder, plain[0..support.pick(usize, 8_193, 65_537, 131_073)], options, 997, capacity, encoded);
     }
 }
 
@@ -398,7 +398,7 @@ test "[unit] - [zlib slice decoder]: the slice error set leaves out the reader's
 }
 
 test "[property] - [zlib slice decoder]: every stream, truncation, and bit flip decodes as the reader does" {
-    try support.expectSliceDecoderProperty(zlib, std.testing.allocator);
+    try support.expectSliceDecoderPropertyScaled(zlib);
 }
 
 test "[failure] - [zlib slice decoder]: too little room, trailing bytes, a bad Adler-32, and truncation are rejected" {

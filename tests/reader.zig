@@ -8,9 +8,13 @@ const Format = zipir.Format;
 const FORMATS = [_]Format{ .gzip, .zlib, .deflate };
 
 fn makePlain(allocator: std.mem.Allocator) ![]u8 {
-    const plain = try allocator.alloc(u8, 700_001);
+    return makePlainSized(allocator, 700_001);
+}
+
+fn makePlainSized(allocator: std.mem.Allocator, len: usize) ![]u8 {
+    const plain = try allocator.alloc(u8, len);
     var random = std.Random.DefaultPrng.init(17);
-    for (plain, 0..) |*b, i| b.* = switch (i / 100_000) {
+    for (plain, 0..) |*b, i| b.* = switch (i / (len / 7)) {
         0, 1, 2 => if (i % 61 == 60) '\n' else "ACGTNacgt"[(i * 7 + i / 13) % 9],
         3 => 'r',
         4 => random.random().int(u8),
@@ -83,14 +87,14 @@ fn readAll(reader: *std.Io.Reader, pattern: Pattern, expected: []const u8) !void
 
 test "[integration] - [reader]: every read pattern returns the decoded stream in every format" {
     const allocator = std.testing.allocator;
-    const plain = try makePlain(allocator);
+    const plain = try makePlainSized(allocator, support.pick(usize, 140_001, 700_001, 2_100_001));
     defer allocator.free(plain);
     inline for (FORMATS) |format| {
         const stream = try compress(allocator, format, plain);
         defer allocator.free(stream);
         const decoder = try allocator.create(zipir.Decompressor(format));
         defer allocator.destroy(decoder);
-        const patterns = [_]Pattern{ .borrow, .{ .copy = 7 }, .{ .copy = 4093 }, .{ .copy = 65536 }, .lines, .{ .skip = 333_333 }, .{ .limited = 1 }, .{ .limited = 1000 } };
+        const patterns = [_]Pattern{ .borrow, .{ .copy = 7 }, .{ .copy = 4093 }, .{ .copy = 65536 }, .lines, .{ .skip = plain.len * 10 / 21 }, .{ .limited = 1 }, .{ .limited = 1000 } };
         for (patterns) |pattern| {
             for ([_][2]usize{ .{ 16, 1 }, .{ 17, 5 }, .{ 4096, 4096 }, .{ 65536, 65536 } }) |shape| {
                 if (shape[1] < 4096 and pattern != .borrow and pattern != .lines) continue;

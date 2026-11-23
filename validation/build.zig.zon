@@ -1,0 +1,14 @@
+.{
+    .name = .zipir_validation,
+    .version = "0.0.0",
+    .fingerprint = 0x463a768e9130fd30,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zipir = .{ .path = ".." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "README.md",
+    },
+}

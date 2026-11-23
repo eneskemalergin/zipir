@@ -1,6 +1,7 @@
 //! Build zipir. `BACKENDS` lists every CPU-specific kernel; they are wired here and nowhere else. `zig build source`
 //! writes the package that dependents fetch: every `.paths` entry of `build.zig.zon`, archived by zipir's own
 //! `tar create` (owner 0, time 0, directory contents sorted), so the same tree gives the same bytes on every host.
+//! The contract suites run at `TestScale.unit`; `validation/` compiles the same suite files at `full` and `long`.
 
 const std = @import("std");
 
@@ -8,6 +9,8 @@ const PACKAGE = @import("build.zig.zon");
 
 const KernelBackend = enum { dispatch, portable };
 const Mode = enum { direct, object, absent };
+
+pub const TestScale = enum { unit, full, long };
 
 const BACKENDS = [_]struct { name: []const u8, features: []const std.Target.x86.Feature }{
     .{ .name = "crc32_x86_pclmul", .features = &.{ .pclmul, .sse4_1 } },
@@ -78,13 +81,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    const scale_options = b.addOptions();
+    scale_options.addOption(TestScale, "scale", .unit);
+    const scale = scale_options.createModule();
     for ([_][]const u8{ "tests/gzip.zig", "tests/zlib.zig", "tests/deflate.zig", "tests/bgzf.zig", "tests/tar.zig", "tests/reader.zig", "tests/writer.zig" }) |suite| {
         const contracts = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path(suite),
                 .target = target,
                 .optimize = optimize,
-                .imports = &.{.{ .name = "zipir", .module = mod }},
+                .imports = &.{ .{ .name = "zipir", .module = mod }, .{ .name = "scale", .module = scale } },
             }),
         });
         test_step.dependOn(&b.addRunArtifact(contracts).step);

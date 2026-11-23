@@ -224,6 +224,8 @@ test "[failure] - [tar reader]: a stream cut anywhere but a block boundary betwe
         const first_end = archive.len - 1024;
         var boundaries: usize = 0;
         for (0..archive.len) |cut| {
+            const near_edge = cut % 512 <= 1 or cut % 512 == 511 or cut % 97 == 0;
+            if (support.pick(bool, !near_edge, false, false)) continue;
             if (transcribe(archive[0..cut], 509, &storage)) |result| {
                 try std.testing.expect(!result.summary.end_marker);
                 try std.testing.expect(std.mem.startsWith(u8, whole.transcript, result.transcript));

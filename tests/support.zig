@@ -1,6 +1,17 @@
-//! Bounded input and output adapters and shared checks for the contract suites.
+//! Bounded input and output adapters and shared checks for the contract suites. A long property takes its size
+//! from `pick(unit, full, long)` at the suite's `scale`: `unit` in `zig build test`, the size it was written for at
+//! `full`, and a campaign at `long`; `validation/` compiles the suites at `full` and `long`.
 
 const std = @import("std");
+const scale = @import("scale").scale;
+
+pub fn pick(comptime T: type, unit: T, full: T, long: T) T {
+    return switch (scale) {
+        .unit => unit,
+        .full => full,
+        .long => long,
+    };
+}
 
 pub const Source = struct {
     reader: std.Io.Reader,
@@ -129,6 +140,34 @@ pub fn encodeRoundtripOut(
     return stream;
 }
 
+pub fn expectBoundedFlips(decoder: anytype, stream: []const u8, trials: usize, seed: u64) !void {
+    const Decoder = std.meta.Child(@TypeOf(decoder));
+    const mutated = try std.testing.allocator.dupe(u8, stream);
+    defer std.testing.allocator.free(mutated);
+    var rng = std.Random.DefaultPrng.init(seed);
+    var scratch: [64]u8 = undefined;
+    var buffer: [17]u8 = undefined;
+    const limit = 1 << 20;
+    for (0..trials) |_| {
+        @memcpy(mutated, stream);
+        mutated[rng.random().uintLessThan(usize, mutated.len)] ^= @as(u8, 1) << rng.random().int(u3);
+        var source = Source.init(mutated, &buffer, 7);
+        var sink = Sink{ .output = &scratch };
+        if (decompressAll(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = limit })) |n| {
+            try std.testing.expect(n <= limit);
+        } else |err| {
+            switch (err) {
+                error.ReadFailed, error.InputBufferTooSmall, error.PeekTooLarge, error.WriteFailed => return err,
+                else => {},
+            }
+            const documented = @typeInfo(Decoder.DecompressError).error_set.?;
+            for (documented) |e| {
+                if (std.mem.eql(u8, e.name, @errorName(err))) break;
+            } else return err;
+        }
+    }
+}
+
 pub fn expectErrorNames(comptime Set: type, expected: []const []const u8) !void {
     const actual = @typeInfo(Set).error_set.?;
     try std.testing.expectEqual(expected.len, actual.len);
@@ -161,14 +200,27 @@ pub fn expectSliceMatchesReader(
     }
 }
 
-pub fn expectSliceDecoderProperty(comptime Namespace: type, allocator: std.mem.Allocator) !void {
+pub const slice_sizes = [_]usize{ 0, 1, 2, 17, 288, 289, 290, 1000, 5000, 16_383, 16_384, 40_000, 200_000 };
+const slice_sizes_unit = [_]usize{ 0, 1, 2, 17, 288, 289, 290, 16_383, 16_384, 40_000, 140_000 };
+const slice_sizes_long = slice_sizes ++ [_]usize{ 65_535, 65_536, 131_072, 131_073, 500_000 };
+
+pub fn expectSliceDecoderPropertyScaled(comptime Namespace: type) !void {
+    try expectSliceDecoderProperty(
+        Namespace,
+        std.testing.allocator,
+        pick([]const usize, &slice_sizes_unit, &slice_sizes, &slice_sizes_long),
+        pick(usize, 1, 64, 1024),
+    );
+}
+
+pub fn expectSliceDecoderProperty(comptime Namespace: type, allocator: std.mem.Allocator, sizes: []const usize, positions: usize) !void {
     const slicer = try allocator.create(Namespace.SliceDecoder);
     defer allocator.destroy(slicer);
     const reader_decoder = try allocator.create(Namespace.Decompressor);
     defer allocator.destroy(reader_decoder);
     const encoder = try allocator.create(Namespace.Compressor);
     defer allocator.destroy(encoder);
-    const plain = try allocator.alloc(u8, 200_000);
+    const plain = try allocator.alloc(u8, std.mem.max(usize, sizes));
     defer allocator.free(plain);
     var rng = std.Random.DefaultPrng.init(0x511ce);
     for (plain, 0..) |*b, i| b.* = if (i % 5000 < 3500) "ACGTN\n"[(i * 7 + i / 13) % 6] else rng.random().int(u8);
@@ -178,7 +230,7 @@ pub fn expectSliceDecoderProperty(comptime Namespace: type, allocator: std.mem.A
     defer allocator.free(scratch);
     var stream_buffer: std.Io.Writer.Allocating = .init(allocator);
     defer stream_buffer.deinit();
-    for ([_]usize{ 0, 1, 2, 17, 288, 289, 290, 1000, 5000, 16_383, 16_384, 40_000, 200_000 }) |size| {
+    for (sizes) |size| {
         for ([_]Namespace.CompressOptions{ .{ .preset = .fast }, .{ .preset = .even }, .{ .preset = .dense } }) |options| {
             stream_buffer.clearRetainingCapacity();
             var source = std.Io.Reader.fixed(plain[0..size]);
@@ -191,7 +243,7 @@ pub fn expectSliceDecoderProperty(comptime Namespace: type, allocator: std.mem.A
             const small = stream.len <= 400;
             const damaged = try allocator.dupe(u8, stream);
             defer allocator.free(damaged);
-            for (0..if (small) stream.len else 64) |k| {
+            for (0..if (small) stream.len else positions) |k| {
                 const at = if (small) k else rng.random().uintLessThan(usize, stream.len);
                 for (room) |len| try expectSliceMatchesReader(Namespace, slicer, reader_decoder, stream[0..at], output[0..len], scratch[0..len]);
                 for ([_]u8{ 0x01, 0x80 }) |bit| {

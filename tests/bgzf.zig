@@ -658,7 +658,7 @@ test "[property] - [bgzf decompressor]: reads at uncompressed offsets through a 
     decoder.init(&reader.interface, .{});
     const got = try std.testing.allocator.alloc(u8, 70000);
     defer std.testing.allocator.free(got);
-    for (0..100) |k| {
+    for (0..support.pick(usize, 20, 100, 2000)) |k| {
         const at = if (k < 8) (if (k < index.len) index.slice()[k].uoffset else plain.len) else rng.random().uintAtMost(u64, plain.len);
         const length = rng.random().uintAtMost(u64, 70000);
         const n = try readAtUncompressed(decoder, &reader, index.slice(), at, got[0..@intCast(length)]);
@@ -666,7 +666,7 @@ test "[property] - [bgzf decompressor]: reads at uncompressed offsets through a 
         try std.testing.expectEqualSlices(u8, plain[@intCast(at)..][0..n], got[0..n]);
     }
     for ([_][]const bgzf.IndexEntry{ index.slice()[1..2], &.{} }) |sparse| {
-        for (0..20) |_| {
+        for (0..support.pick(usize, 5, 20, 400)) |_| {
             const at = rng.random().uintAtMost(u64, plain.len);
             const length = rng.random().uintAtMost(u64, 70000);
             const n = try readAtUncompressed(decoder, &reader, sparse, at, got[0..@intCast(length)]);

@@ -21,6 +21,7 @@ test "[integration] - [gzip decompressor]: bounded refills and partial drains pr
         const got = try std.testing.allocator.alloc(u8, case[1].len);
         defer std.testing.allocator.free(got);
         for ([_][3]usize{ .{ 16, 1, 1 }, .{ 17, 3, 17 }, .{ 257, 257, 4096 }, .{ 32768, 65536, 65536 } }) |shape| {
+            if (support.pick(bool, shape[1] == 1 and case[1].len > 1_000_000, false, false)) continue;
             var source = support.Source.init(case[0], input[0..shape[0]], shape[1]);
             var sink: support.Sink = .{ .output = output[0..shape[2]], .sink = got, .max_drain = 317 };
             const n = try support.decompressAll(work, &source.reader, &sink.writer, .{});
@@ -327,13 +328,14 @@ test "[property] - [gzip compressor]: reused workspaces match fresh output acros
     for (&plain) |*b| b.* = 'a' + rng.random().uintLessThan(u8, 4);
     var expected: [100000]u8 = undefined;
     var actual: [100000]u8 = undefined;
+    const used = plain[0..support.pick(usize, 65_537, plain.len, plain.len)];
     for ([_]zipir.gzip.CompressOptions{ .{ .preset = .fast }, .{ .preset = .dense }, .{ .preset = .fast }, .{}, .{ .preset = .dense } }) |options| {
-        var reader = std.Io.Reader.fixed(&plain);
+        var reader = std.Io.Reader.fixed(used);
         var writer = std.Io.Writer.fixed(&expected);
         _ = try support.compressAll(fresh, &reader, &writer, options);
         const want = writer.buffered();
         fresh.* = undefined;
-        reader = .fixed(&plain);
+        reader = .fixed(used);
         writer = .fixed(&actual);
         _ = try support.compressAll(encoder, &reader, &writer, options);
         try std.testing.expectEqualSlices(u8, want, writer.buffered());
@@ -386,7 +388,7 @@ test "[property] - [gzip compressor]: long-distance matches survive small writer
     }
     const encoded = try std.testing.allocator.alloc(u8, plain.len + 64);
     defer std.testing.allocator.free(encoded);
-    for ([_]usize{ 13, 16, 17, 23, 24, 31, 40, 64 }) |out_capacity| {
+    for (support.pick([]const usize, &.{ 13, 64 }, &.{ 13, 16, 17, 23, 24, 31, 40, 64 }, &.{ 13, 14, 15, 16, 17, 18, 23, 24, 25, 31, 32, 40, 63, 64 })) |out_capacity| {
         for ([_]usize{ 7, std.math.maxInt(usize) }) |max_drain| {
             for ([_]zipir.gzip.CompressOptions{ .{ .preset = .fast }, .{}, .{ .preset = .dense } }) |options| {
                 _ = try support.encodeRoundtripOut(zipir.gzip, encoder, .gzip, &plain, options, 8191, 17, out_capacity, max_drain, encoded);

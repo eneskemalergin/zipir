@@ -58,7 +58,7 @@ fn decode(allocator: std.mem.Allocator, comptime format: Format, stream: []const
 
 test "[property] - [writer]: output depends only on the bytes, whatever the write sizes" {
     const allocator = std.testing.allocator;
-    const plain = try makePlain(allocator, 230_000);
+    const plain = try makePlain(allocator, support.pick(usize, 66_000, 230_000, 1_000_000));
     defer allocator.free(plain);
     inline for (FORMATS) |format| {
         const encoder = try allocator.create(zipir.Compressor(format));

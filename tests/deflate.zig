@@ -50,7 +50,7 @@ test "[property] - [raw deflate]: output equals the gzip payload and decodes wit
     const member = try std.testing.allocator.alloc(u8, plain.len + 64);
     defer std.testing.allocator.free(member);
     for ([_]deflate.CompressOptions{ .{ .preset = .fast }, .{}, .{ .preset = .dense } }) |options| {
-        for ([_]usize{ 1, 257, 32768, 32769, 65537, 131073 }) |n| {
+        for (support.pick([]const usize, &.{ 1, 32769, 65537 }, &.{ 1, 257, 32768, 32769, 65537, 131073 }, &.{ 1, 257, 32767, 32768, 32769, 65535, 65536, 65537, 98304, 131072, 131073 })) |n| {
             const stream = try support.encodeRoundtrip(deflate, encoder, .raw, plain[0..n], options, 997, 17, raw);
             var reader = std.Io.Reader.fixed(plain[0..n]);
             var gzip_writer = std.Io.Writer.fixed(member);
@@ -76,9 +76,10 @@ test "[integration] - [raw deflate decompressor]: streams from std's compressor 
     for ([_]std.compress.flate.Compress.Options{ .level_1, .level_6, .level_9 }) |options| {
         var writer = std.Io.Writer.fixed(stream);
         compressor.* = try .init(&writer, window, .raw, options);
-        try compressor.writer.writeAll(&plain);
+        const used = plain[0..support.pick(usize, 40_001, plain.len, plain.len)];
+        try compressor.writer.writeAll(used);
         try compressor.finish();
-        for ([_]usize{ 1, 17, 4099 }) |chunk| try decode(decoder, writer.buffered(), &plain, chunk, .{});
+        for ([_]usize{ 1, 17, 4099 }) |chunk| try decode(decoder, writer.buffered(), used, chunk, .{});
     }
 }
 
@@ -130,25 +131,7 @@ test "[property] - [raw deflate decompressor]: bounded bit flips end in success 
     const decoder = try std.testing.allocator.create(Decompressor);
     defer std.testing.allocator.destroy(decoder);
     const seed = @embedFile("data/synthetic/copy-boundaries.gz");
-    const stream = seed[10 .. seed.len / 2 - 8];
-    const mutated = try std.testing.allocator.dupe(u8, stream);
-    defer std.testing.allocator.free(mutated);
-    var rng = std.Random.DefaultPrng.init(91240);
-    var scratch: [64]u8 = undefined;
-    var buffer: [17]u8 = undefined;
-    for (0..2000) |_| {
-        @memcpy(mutated, stream);
-        mutated[rng.random().uintLessThan(usize, mutated.len)] ^= @as(u8, 1) << rng.random().int(u3);
-        var source = support.Source.init(mutated, &buffer, 7);
-        var sink = support.Sink{ .output = &scratch };
-        const limit = 1 << 20;
-        if (support.decompressAll(decoder, &source.reader, &sink.writer, .{ .max_output_bytes = limit })) |n| {
-            try std.testing.expect(n <= limit);
-        } else |err| switch (err) {
-            error.Truncated, error.BadHuffman, error.BadSymbol, error.BadDistance, error.BadStored, error.BadBlock, error.OutputLimitExceeded, error.TrailingData => {},
-            else => return err,
-        }
-    }
+    try support.expectBoundedFlips(decoder, seed[10 .. seed.len / 2 - 8], support.pick(usize, 60, 2000, 200_000), 91240);
 }
 
 test "[unit] - [raw deflate]: the public error set names exactly the documented errors" {
@@ -163,7 +146,7 @@ test "[unit] - [raw deflate slice decoder]: the slice error set leaves out the r
 }
 
 test "[property] - [raw deflate slice decoder]: every stream, truncation, and bit flip decodes as the reader does" {
-    try support.expectSliceDecoderProperty(deflate, std.testing.allocator);
+    try support.expectSliceDecoderPropertyScaled(deflate);
 }
 
 test "[edge] - [raw deflate slice decoder]: an empty slice that points into the other slice does not overlap it" {
