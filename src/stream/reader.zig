@@ -1,9 +1,10 @@
 //! The `std.Io.Reader` every decompressor is: decoded bytes are read from the workspace's own buffer. A `Framing`
 //! declares `Check`, `DecompressOptions` (with `trailing_data`), `DecompressError`, `min_input_buffer`, `init`,
 //! `header` (true when a stream follows), and `trailer`. One with `max_stream_bytes` decodes each stream whole before
-//! it is readable and may declare `streamError`, `pairs` (asked after each `header`), `VirtualOffset` and a `seeking`
-//! field (`seek`, `seekUncompressed`, `tell`). An input reader whose buffer is under `min_input_buffer` is read through
-//! a staging buffer in the workspace, which may take bytes past the stream; with `.leave` it is `InputBufferTooSmall`.
+//! it is readable (starting one only with room for more than that, so an oversized stream fails its limit) and may
+//! declare `streamError`, `pairs` (asked after each `header`), `VirtualOffset`, and a `seeking` field (`seek`,
+//! `seekUncompressed`, `tell`). An input reader whose buffer is under `min_input_buffer` is read through a staging
+//! buffer in the workspace, which may take bytes past the stream; with `.leave` it is `InputBufferTooSmall`.
 //! `SliceDecoder` decodes one complete stream from a slice into the caller's `output`, which is also the history, and
 //! returns its Framing's `SliceError`, which leaves out the reader's errors; `output` past the returned length, and all
 //! of it after an error, is unspecified, and it must not overlap `input` (asserted). Outputs under `SMALL_OUTPUT` (16
@@ -28,7 +29,7 @@ pub fn Decompressor(comptime Framing: type) type {
         const Self = @This();
         const Check = Framing.Check;
         const whole_streams = @hasDecl(Framing, "max_stream_bytes");
-        const min_room = if (whole_streams) Framing.max_stream_bytes else codes.WINDOW;
+        const min_room = if (whole_streams) Framing.max_stream_bytes + 1 else codes.WINDOW;
         const positioned = @hasField(Framing, "seeking");
         pub const DecompressOptions = Framing.DecompressOptions;
         pub const DecompressError = Framing.DecompressError;

@@ -156,6 +156,24 @@ test "[failure] - [bgzf decompressor]: a block decoding past 65536 bytes is too 
     try std.testing.expectError(error.BlockTooLarge, decoder.decodeBlock(big, &out));
 }
 
+test "[regression] - [bgzf decompressor]: a block too large is BlockTooLarge when it starts with exactly one block of room" {
+    const reader = try std.testing.allocator.create(bgzf.Decompressor);
+    defer std.testing.allocator.destroy(reader);
+    const zeros = try std.testing.allocator.alloc(u8, 2 * bgzf.MAX_BLOCK);
+    defer std.testing.allocator.free(zeros);
+    @memset(zeros, 0);
+    var bytes: [4096]u8 = undefined;
+    var len: usize = 0;
+    for ([_]usize{ bgzf.MAX_BLOCK, bgzf.MAX_BLOCK / 2, 2 * bgzf.MAX_BLOCK }) |size| {
+        len += (try block(bytes[len..], zeros[0..size], "", 0)).len;
+    }
+    @memcpy(bytes[len..][0..EOF.len], EOF);
+    len += EOF.len;
+    var source = std.Io.Reader.fixed(bytes[0..len]);
+    var sink: std.Io.Writer.Discarding = .init(&.{});
+    try std.testing.expectError(error.BlockTooLarge, support.decompressAll(reader, &source, &sink.writer, .{}));
+}
+
 test "[failure] - [bgzf decompressor]: an extra subfield that overruns XLEN is BadHeader in every reader" {
     const reader = try std.testing.allocator.create(bgzf.Decompressor);
     defer std.testing.allocator.destroy(reader);

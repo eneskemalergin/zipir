@@ -12,6 +12,10 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 - `LICENSE` holds only zipir's MIT license. The libdeflate notice moved to a new `NOTICE` file, which now reproduces libdeflate 1.26's copyright lines in full and names both files derived from it; the source package and the release archives ship `NOTICE` beside `LICENSE`.
 
+### Fixed
+
+- `bgzf.Decompressor` reports a block that decodes past 65,536 bytes as `BlockTooLarge` also when the block starts with exactly 65,536 bytes free in its buffer, which a crafted file of earlier blocks can arrange. That case panicked in Debug and ReleaseSafe builds and was undefined behavior in ReleaseFast builds.
+
 ## [0.3.1] - 2026-11-23
 
 0.3.1 makes decoding faster, most of all for BGZF and for streams of a few KiB, and makes `even` and `dense` compression do less work for the same result. Every decoded and compressed byte, every error, every workspace size, and the API are the same as in 0.3.0.
