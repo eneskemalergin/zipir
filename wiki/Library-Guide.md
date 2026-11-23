@@ -52,6 +52,8 @@ while (decoder.reader.peekGreedy(1)) |chunk| {
 }
 ```
 
+A borrowed chunk is a view of the decompressor's own buffer, so this loop copies no decoded byte; the chunk stays valid until the next call on `decoder.reader`. Reading into a buffer of your own (`readSliceShort`, `readSliceAll`) copies each byte once more, and a record that spans two chunks can be taken whole, still borrowed, with `takeDelimiterInclusive` or `take(n)`, as long as it is at most 128 KiB (64 KiB for BGZF): a peek of that size always fits.
+
 A failed read is always `error.ReadFailed`; `decoder.err` then holds the reason, such as `CrcMismatch`, `Truncated`, `TrailingData`, or the input reader's own `ReadFailed`. Bytes read before that error came before the failed check, so treat them as unverified until the end of the stream ([when decoded bytes become readable](Formats-and-Limits#when-decoded-bytes-become-readable)). To decode a whole stream into a writer, use one pump: `decoder.reader.streamRemaining(writer)`. The input reader's buffer can be any size, except that `trailing_data = .leave` needs 16 bytes (28 for BGZF) to leave the following bytes in it.
 
 Options bound what untrusted input can cost:
