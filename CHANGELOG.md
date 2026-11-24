@@ -4,6 +4,10 @@ Changes by version, newest first. Before 1.0, a minor version may change the API
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-23
+
+0.3.2 fixes a crash on crafted BGZF input and adds the CRC-32 and Adler-32 checks to the public API. If you read BGZF files you did not write, move to this release. Decoded and compressed bytes, and every other error, are the same as in 0.3.1.
+
 ### Added
 
 - `zipir.Crc32` and `zipir.Adler32`: the CRC-32 and Adler-32 checks the codecs use, with the same kernels chosen for the CPU, for callers that frame or verify their own data. Each has `init`, `update`, and `final`.

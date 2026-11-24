@@ -74,7 +74,7 @@ pub fn Compressor(comptime format: Format) type {
 pub const version: std.SemanticVersion = .{
     .major = 0,
     .minor = 3,
-    .patch = 1,
+    .patch = 2,
 };
 
 test {
